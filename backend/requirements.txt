@@ -1,0 +1,60 @@
+# FastAPI & Server
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+websockets>=12.0
+
+# Database
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0
+psycopg[asyncio]>=3.1.0
+psycopg>=3.1.0
+alembic>=1.13.0
+
+# Pydantic
+pydantic[email]>=2.0.0
+pydantic-settings>=2.0.0
+
+# Auth & Security
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+cryptography>=42.0.0
+
+# RBAC
+casbin>=1.36.0
+casbin-sqlalchemy-adapter>=1.0.0
+
+# Task Queue
+celery[redis]>=5.4.0
+redis>=5.0.0
+
+# System Monitoring
+psutil>=6.0.0
+docker>=7.0.0
+
+# Exchange API
+ccxt>=4.0.0
+
+# AI
+anthropic>=0.39.0
+openai>=1.54.0
+
+# Financial Computation
+pandas>=2.2.0
+numpy>=1.26.0
+python-binance>=1.0.17
+ta>=0.11.0
+python-dateutil>=2.8.2
+# TA-Lib>=0.4.28  # Requires system-level ta-lib install
+
+# HTTP Client
+httpx>=0.27.0
+aiohttp>=3.9.0
+
+# Rate Limiting
+slowapi>=0.1.9
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0

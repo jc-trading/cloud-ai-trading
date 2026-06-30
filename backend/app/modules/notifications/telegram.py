@@ -1,0 +1,144 @@
+"""Telegram notification service."""
+
+import logging
+import aiohttp
+from typing import Optional
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class TelegramNotifier:
+    """Send notifications via Telegram."""
+
+    def __init__(self, bot_token: Optional[str] = None, chat_id: Optional[str] = None):
+        self.bot_token = bot_token or settings.TELEGRAM_BOT_TOKEN
+        self.chat_id = chat_id or settings.TELEGRAM_CHAT_ID
+        self.api_url = f"https://api.telegram.org/bot{self.bot_token}"
+
+    async def send_message(self, message: str) -> bool:
+        """
+        Send a message to Telegram.
+
+        Args:
+            message: Message text (supports Markdown)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.bot_token or not self.chat_id:
+            logger.warning(
+                "Telegram credentials not configured. "
+                "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
+            )
+            return False
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": message,
+                    "parse_mode": "Markdown"
+                }
+                async with session.post(
+                    f"{self.api_url}/sendMessage",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Telegram message sent: {message[:50]}...")
+                        return True
+                    else:
+                        logger.error(
+                            f"Telegram API error: {response.status} - {await response.text()}"
+                        )
+                        return False
+        except Exception as e:
+            logger.error(f"Failed to send Telegram message: {e}")
+            return False
+
+    async def send_trading_signal(
+        self,
+        symbol: str,
+        signal_type: str,
+        signal_strength: float,
+        confidence: float,
+        recommendation: str,
+    ) -> bool:
+        """Send trading signal notification."""
+        emoji = {
+            "STRONG_BUY": "🚀",
+            "BUY": "📈",
+            "HOLD": "⏸️",
+            "SELL": "📉",
+            "STRONG_SELL": "💥",
+        }
+
+        emoji_char = emoji.get(signal_type, "📊")
+
+        message = (
+            f"{emoji_char} *Trading Signal*\n\n"
+            f"Symbol: `{symbol}`\n"
+            f"Signal: *{signal_type}*\n"
+            f"Strength: {signal_strength:.1f}%\n"
+            f"Confidence: {confidence:.1f}%\n\n"
+            f"__{recommendation}__"
+        )
+
+        return await self.send_message(message)
+
+    async def send_position_alert(
+        self,
+        symbol: str,
+        action: str,  # "opened" or "closed"
+        entry_price: Optional[float] = None,
+        exit_price: Optional[float] = None,
+        quantity: float = None,
+        pnl: Optional[float] = None,
+    ) -> bool:
+        """Send position alert notification."""
+        if action == "opened":
+            message = (
+                f"📍 *Position Opened*\n\n"
+                f"Symbol: `{symbol}`\n"
+                f"Entry Price: ${entry_price:.2f}\n"
+                f"Quantity: {quantity}\n"
+                f"Total Invested: ${entry_price * quantity:.2f}"
+            )
+        else:  # closed
+            pnl_emoji = "✅" if pnl and pnl > 0 else "❌"
+            pnl_color = "+" if pnl and pnl > 0 else ""
+
+            message = (
+                f"{pnl_emoji} *Position Closed*\n\n"
+                f"Symbol: `{symbol}`\n"
+                f"Entry: ${entry_price:.2f}\n"
+                f"Exit: ${exit_price:.2f}\n"
+                f"Quantity: {quantity}\n"
+                f"P&L: *{pnl_color}${pnl:.2f}*"
+            )
+
+        return await self.send_message(message)
+
+    async def send_portfolio_update(
+        self,
+        total_invested: float,
+        current_value: float,
+        total_pnl: float,
+        return_percent: float,
+        win_rate: float,
+    ) -> bool:
+        """Send portfolio statistics update."""
+        pnl_emoji = "📈" if total_pnl >= 0 else "📉"
+        pnl_sign = "+" if total_pnl >= 0 else ""
+
+        message = (
+            f"{pnl_emoji} *Portfolio Update*\n\n"
+            f"Total Invested: ${total_invested:.2f}\n"
+            f"Current Value: ${current_value:.2f}\n"
+            f"P&L: *{pnl_sign}${total_pnl:.2f}*\n"
+            f"Return: *{pnl_sign}{return_percent:.2f}%*\n"
+            f"Win Rate: {win_rate:.1f}%"
+        )
+
+        return await self.send_message(message)
