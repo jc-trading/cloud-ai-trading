@@ -30,6 +30,14 @@ class AnalysisResponse(BaseModel):
     risk_reward_ratio: Optional[float]
     tokens_used: int
     api_cost: float
+    # --- Decision fields (migration 010) ---
+    asset_class: str
+    verdict: str
+    verdict_reason: Optional[str]
+    data_completeness: dict
+    ai_invoked: bool
+    ai_skip_reason: Optional[str]
+    position_id: Optional[UUID]
     created_at: datetime
     model_config = {"from_attributes": True}
 
