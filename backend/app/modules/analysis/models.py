@@ -37,11 +37,15 @@ class AIAnalysisResult(Base):
     symbol: Mapped[str] = mapped_column(String(50), index=True)
     exchange_type: Mapped[str] = mapped_column(String(20), default="binance")
 
-    analysis_type: Mapped[AnalysisType] = mapped_column(SAEnum(AnalysisType))
+    analysis_type: Mapped[AnalysisType] = mapped_column(
+        SAEnum(AnalysisType, values_callable=lambda e: [m.value for m in e], native_enum=False)
+    )
     indicators_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
     claude_response: Mapped[dict] = mapped_column(JSONB, default=dict)
 
-    action: Mapped[TradeAction] = mapped_column(SAEnum(TradeAction))
+    action: Mapped[TradeAction] = mapped_column(
+        SAEnum(TradeAction, values_callable=lambda e: [m.value for m in e], native_enum=False)
+    )
     confidence: Mapped[int] = mapped_column(Integer, default=0)
 
     entry_price: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
