@@ -10,13 +10,28 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException
-from app.modules.analysis.models import AIAnalysisResult, AnalysisType, TradeAction
+from app.modules.analysis.models import AIAnalysisResult, AnalysisType, TradeAction, Verdict
 from app.modules.analysis.indicators import calculate_indicators
 from app.modules.analysis.multi_ai_provider import analyze_with_ai
 from app.modules.market.service import MarketService
 from app.modules.strategy.service import StrategyService
 
 logger = logging.getLogger("cloud_ai_trading.analysis")
+
+# Shared reason string for the no-AI / no-data no-go Decision (acceptance criterion 1).
+NO_AI_VERDICT_REASON = "AI 未调用/key缺失/数据不足"
+
+
+def _derive_verdict(action: TradeAction, confidence: int) -> Verdict:
+    """Happy-path verdict from the AI's action + confidence.
+
+    GO only on a directional call (BUY/SELL) with enough conviction; otherwise
+    WATCH (neutral / non-committal). NO_GO is reserved for the AI-unavailable /
+    data-missing paths and is set explicitly there, never derived here.
+    """
+    if action in (TradeAction.BUY, TradeAction.SELL) and confidence >= 60:
+        return Verdict.GO
+    return Verdict.WATCH
 
 
 class AnalysisService:
@@ -41,7 +56,23 @@ class AnalysisService:
         # Step 1: Fetch candle data (1h, 100 candles for indicator calculation)
         candles = await MarketService.get_candles(symbol, "1h", 100)
         if not candles or len(candles) < 30:
-            raise ValueError(f"Insufficient candle data for {symbol} (need at least 30)")
+            # No indicators possible. Don't raise (that path was silently swallowed
+            # by the caller's try/except = hidden breakage); persist exactly one
+            # no-go Decision so every cycle still records a row.
+            return await AnalysisService._persist_no_ai_decision(
+                db,
+                user_id=user_id,
+                symbol=symbol,
+                exchange_type=exchange_type,
+                analysis_type=analysis_type,
+                indicators={},
+                data_completeness={"indicators": False, "ai_output": False},
+                verdict_reason=(
+                    f"{NO_AI_VERDICT_REASON}: insufficient candle data for {symbol} "
+                    "(need >= 30)"
+                ),
+                ai_skip_reason="insufficient_candle_data",
+            )
 
         # Step 2: Calculate indicators
         indicators = calculate_indicators(candles)
@@ -68,12 +99,31 @@ class AnalysisService:
             user_strategy=user_strategy,
         )
 
-        # Step 5: Store result
+        # None-safe: analyze_with_ai returns None on missing key / API error /
+        # parse failure. Without this guard, ai_result.get(...) below raises
+        # AttributeError, which the caller's try/except swallows -> the cycle
+        # stores nothing (hidden breakage). Instead, persist one no-go Decision.
+        if ai_result is None:
+            return await AnalysisService._persist_no_ai_decision(
+                db,
+                user_id=user_id,
+                symbol=symbol,
+                exchange_type=exchange_type,
+                analysis_type=analysis_type,
+                indicators=indicators,
+                data_completeness={"indicators": True, "ai_output": False},
+                verdict_reason=NO_AI_VERDICT_REASON,
+                ai_skip_reason="ai_unavailable",
+            )
+
+        # Step 5: Store result (happy path — AI was invoked and returned a result)
         action_str = ai_result.get("action", "HOLD").upper()
         try:
             action = TradeAction(action_str.lower())
         except ValueError:
             action = TradeAction.HOLD
+
+        confidence = ai_result.get("confidence", 0) or 0
 
         analysis = AIAnalysisResult(
             user_id=user_id,
@@ -83,7 +133,7 @@ class AnalysisService:
             indicators_snapshot=indicators,
             claude_response=ai_result,  # Still named claude_response for backward compatibility
             action=action,
-            confidence=ai_result.get("confidence", 0),
+            confidence=confidence,
             entry_price=ai_result.get("entry_price"),
             stop_loss=ai_result.get("stop_loss"),
             take_profit=ai_result.get("take_profit"),
@@ -91,6 +141,52 @@ class AnalysisService:
             prompt_used=ai_result.get("prompt_used", ""),
             tokens_used=ai_result.get("tokens_used", 0),
             api_cost=ai_result.get("api_cost", 0),
+            # Decision fields: AI was invoked; verdict derived from action/confidence.
+            verdict=_derive_verdict(action, confidence),
+            verdict_reason=ai_result.get("reason"),
+            data_completeness={"indicators": True, "ai_output": True},
+            ai_invoked=True,
+            ai_skip_reason=None,
+        )
+        db.add(analysis)
+        await db.flush()
+        await db.refresh(analysis)
+        return analysis
+
+    @staticmethod
+    async def _persist_no_ai_decision(
+        db: AsyncSession,
+        *,
+        user_id: UUID,
+        symbol: str,
+        exchange_type: str,
+        analysis_type: AnalysisType,
+        indicators: dict,
+        data_completeness: dict,
+        verdict_reason: str,
+        ai_skip_reason: str,
+    ) -> AIAnalysisResult:
+        """Persist exactly one no-go Decision for the AI-unavailable / no-data path.
+
+        Keeps the per-cycle invariant (one Decision per symbol per cycle) without
+        raising. action=HOLD + verdict=NO_GO (HOLD != no-go elsewhere, but here the
+        decision genuinely is "don't act, we couldn't analyze"), ai_invoked=False,
+        and data_completeness flags what was missing.
+        """
+        analysis = AIAnalysisResult(
+            user_id=user_id,
+            symbol=symbol,
+            exchange_type=exchange_type,
+            analysis_type=analysis_type,
+            indicators_snapshot=indicators,
+            claude_response={},
+            action=TradeAction.HOLD,
+            confidence=0,
+            verdict=Verdict.NO_GO,
+            verdict_reason=verdict_reason,
+            data_completeness=data_completeness,
+            ai_invoked=False,
+            ai_skip_reason=ai_skip_reason,
         )
         db.add(analysis)
         await db.flush()
