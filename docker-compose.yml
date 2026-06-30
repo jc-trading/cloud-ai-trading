@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -44,12 +44,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
-      DATABASE_URL_SYNC: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      SECRET_KEY: ${SECRET_KEY}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
       REDIS_URL: redis://redis:6379
       ENVIRONMENT: ${ENVIRONMENT:-local}
       DEBUG: ${DEBUG:-False}
@@ -83,12 +83,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
-      DATABASE_URL_SYNC: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      SECRET_KEY: ${SECRET_KEY}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
       REDIS_URL: redis://redis:6379
       ENVIRONMENT: ${ENVIRONMENT:-local}
       DEBUG: ${DEBUG:-False}
@@ -120,12 +120,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
-      DATABASE_URL_SYNC: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      SECRET_KEY: ${SECRET_KEY}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
       REDIS_URL: redis://redis:6379
       ENVIRONMENT: ${ENVIRONMENT:-local}
       DEBUG: ${DEBUG:-False}
