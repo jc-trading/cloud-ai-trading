@@ -56,7 +56,13 @@ def _run_migrations():
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migrations applied successfully.")
     except Exception as e:
-        logger.warning(f"Migration runner: {e}")
+        logger.error(f"Migration runner failed: {e}", exc_info=True)
+        # Fail fast outside production so a broken migration aborts startup
+        # instead of booting a server whose every DB request 500s (false green).
+        # In production we keep booting (log-only) to avoid an outage on a
+        # transient migration error; the elevated log level surfaces it.
+        if settings.ENVIRONMENT != "production":
+            raise
 
 
 @asynccontextmanager
