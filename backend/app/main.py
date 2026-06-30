@@ -33,7 +33,7 @@ from app.modules.analysis.router import router as analysis_router
 from app.modules.trading.router import router as trading_router
 from app.modules.strategy.router import router as strategy_router
 from app.modules.system.routes import router as system_router
-# from app.modules.admin.router import router as admin_router  # TODO: Fix imports from trading module
+from app.modules.admin.router import router as admin_router
 
 settings = get_settings()
 
@@ -105,7 +105,7 @@ app.include_router(analysis_router, prefix=settings.API_V1_PREFIX)
 app.include_router(trading_router, prefix=settings.API_V1_PREFIX)
 app.include_router(strategy_router, prefix=settings.API_V1_PREFIX)
 app.include_router(system_router, prefix=settings.API_V1_PREFIX)
-# app.include_router(admin_router, prefix=settings.API_V1_PREFIX)  # TODO: Fix imports from trading module
+app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/api/health")
