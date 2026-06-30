@@ -6,14 +6,12 @@ from logging.config import fileConfig
 from sqlalchemy import create_engine, pool
 from alembic import context
 
-# Import all models so Alembic can detect them
+# Import the full model registry so Alembic autogenerate sees every table.
+# This is the single source of truth shared with app/main.py and
+# tasks/celery_app.py — adding a model module there makes it visible here too,
+# which prevents the metadata drift that previously hid the risk tables.
+import app.models_registry  # noqa: F401
 from app.database import Base
-from app.modules.auth.models import User
-from app.modules.exchange.models import ExchangeConnection
-from app.modules.watchlist.models import Watchlist, WatchlistItem
-from app.modules.market_data.models import OHLCVCandle, TechnicalIndicator, MarketDataEvent
-from app.modules.trading.models import TradingSignal, AlertRule, Alert, Position, PortfolioStats
-from app.modules.system.models import SystemLog, SystemMetric, TaskStatus
 
 import os
 

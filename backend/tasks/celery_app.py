@@ -9,27 +9,9 @@ from app.config import get_settings
 
 # Import all ORM models before Celery workers execute tasks. Some relationships
 # use string class names, so SQLAlchemy needs the full model registry loaded in
-# worker processes, not only in the FastAPI process.
-from app.modules.auth.models import User  # noqa: F401
-from app.modules.exchange.models import ExchangeConnection  # noqa: F401
-from app.modules.watchlist.models import Watchlist, WatchlistItem  # noqa: F401
-from app.modules.market.models import MarketCandle  # noqa: F401
-from app.modules.market_data.models import (  # noqa: F401
-    OHLCVCandle,
-    TechnicalIndicator,
-    MarketDataEvent,
-)
-from app.modules.analysis.models import AIAnalysisResult  # noqa: F401
-from app.modules.strategy.models import QuantStrategy  # noqa: F401
-from app.modules.trading.models import (  # noqa: F401
-    TradingSignal,
-    AlertRule,
-    Alert,
-    Position,
-    PortfolioStats,
-)
-from app.modules.risk.models import RiskLimit, PositionMetric, DrawdownRecord  # noqa: F401
-from app.modules.system.models import SystemLog, SystemMetric, TaskStatus  # noqa: F401
+# worker processes, not only in the FastAPI process. The registry is shared with
+# the FastAPI app and Alembic so the import lists cannot drift apart.
+import app.models_registry  # noqa: F401
 
 settings = get_settings()
 

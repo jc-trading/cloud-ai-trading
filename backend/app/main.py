@@ -11,17 +11,10 @@ from app.config import get_settings
 from app.core.middleware import setup_middleware
 
 # Import all ORM models before handling requests so SQLAlchemy can resolve
-# string-based relationships even when some routers are disabled.
-from app.modules.auth.models import User
-from app.modules.exchange.models import ExchangeConnection
-from app.modules.watchlist.models import Watchlist, WatchlistItem
-from app.modules.market.models import MarketCandle
-from app.modules.market_data.models import OHLCVCandle, TechnicalIndicator, MarketDataEvent
-from app.modules.analysis.models import AIAnalysisResult
-from app.modules.strategy.models import QuantStrategy
-from app.modules.trading.models import TradingSignal, AlertRule, Alert, Position, PortfolioStats
-from app.modules.risk.models import RiskLimit, PositionMetric, DrawdownRecord
-from app.modules.system.models import SystemLog, SystemMetric, TaskStatus
+# string-based relationships even when some routers are disabled. The full
+# registry lives in one place (app/models_registry.py) shared with Alembic and
+# Celery so the three import lists can no longer drift apart.
+import app.models_registry  # noqa: F401
 
 # Import all routers
 from app.modules.auth.router import router as auth_router
