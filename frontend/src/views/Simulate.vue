@@ -266,7 +266,9 @@ const portfolio = ref({
 })
 const tradeHistory = ref([])
 const openPositions = computed(() => portfolio.value.positions || [])
-const startBalance = computed(() => portfolio.value.current_balance || START_BALANCE)
+// The paper simulator always starts from a fixed virtual deposit. current_balance
+// is the *live* equity (moves with trades), so it must NOT be used as "start".
+const startBalance = START_BALANCE
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -298,8 +300,10 @@ const formatPercent = (value) => `${Number(value || 0).toFixed(2)}%`
 const formatTime = (timestamp) => (timestamp ? dayjs(timestamp).fromNow() : '—')
 
 // ── Data loading ────────────────────────────────────────────────
-const refresh = async () => {
-  loading.value = true
+// showLoading only on the first load — the 5s poll must not flip the full-page
+// loading flag (it would flicker skeletons over already-rendered data).
+const refresh = async (showLoading = false) => {
+  if (showLoading) loading.value = true
   try {
     const [portfolioRes, tradesRes] = await Promise.all([getPortfolio(), getTrades({ limit: 50 })])
     portfolio.value = portfolioRes.data
@@ -308,7 +312,7 @@ const refresh = async () => {
     error.value = err.response?.data?.detail || 'Failed to load portfolio'
     console.error('Error:', err)
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
@@ -379,7 +383,7 @@ const onReset = async () => {
 }
 
 onMounted(() => {
-  refresh()
+  refresh(true)
   refreshInterval = setInterval(refresh, 5000)
 })
 onBeforeUnmount(() => {

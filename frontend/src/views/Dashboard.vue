@@ -82,7 +82,7 @@
                 :stroke-dasharray="GAUGE_C" :stroke-dashoffset="gaugeOffset(d.confidence)" />
             </svg>
             <div class="lab">
-              <div class="n">{{ d.ai_invoked || clampPct(d.confidence) ? clampPct(d.confidence) : '—' }}<small v-if="clampPct(d.confidence)">%</small></div>
+              <div class="n">{{ d.confidence != null ? clampPct(d.confidence) : '—' }}<small v-if="d.confidence != null">%</small></div>
               <div class="t">{{ String(d.action || '').toUpperCase() || 'hold' }}</div>
             </div>
           </div>

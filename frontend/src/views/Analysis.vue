@@ -267,7 +267,7 @@ function price(v) {
 function verdictClass(v) {
   const k = String(v || '').toLowerCase()
   if (k === 'go') return 'green'
-  if (k === 'no-go') return 'red'
+  if (k === 'no-go' || k === 'no_go' || k === 'nogo') return 'red'
   if (k === 'watch') return 'yellow'
   return 'gray'
 }

@@ -237,7 +237,9 @@ const account = ref({
   total_pnl: 0, total_return_percent: 0,
 })
 const stats = ref({})
-const equity = computed(() => (Number(account.value.current_balance) || 0) + (Number(account.value.current_value) || 0))
+// Backend sets current_value = current_balance = total_invested + total_pnl,
+// so equity is that value once — not the sum (which would double-count).
+const equity = computed(() => Number(account.value.current_value) || 0)
 
 // ── Exchange connection state ─────────────────────────────────────
 const connections = ref([])
@@ -293,11 +295,10 @@ const toRow = (t) => ({
 let refreshInterval = null
 
 const loadData = async () => {
-  const [pf, st, tr, ex] = await Promise.allSettled([
+  const [pf, st, tr] = await Promise.allSettled([
     getPortfolio(),
     getPortfolioStats(),
     getTrades({ limit: 50 }),
-    exchangeApi.list(),
   ])
 
   if (pf.status === 'fulfilled') account.value = pf.value.data
@@ -308,8 +309,12 @@ const loadData = async () => {
     openOrders.value = trades.filter((t) => OPEN_STATUSES.includes(String(t.status).toLowerCase()))
     orderHistory.value = trades
   }
+}
 
-  if (ex.status === 'fulfilled') connections.value = ex.value.data || []
+// Exchange connections change on user config actions, not seconds — load once
+// (and after connecting), not on every 5s poll.
+const loadConnections = async () => {
+  try { connections.value = (await exchangeApi.list()).data || [] } catch { /* non-fatal */ }
 }
 
 const placeOrder = async (side) => {
@@ -369,6 +374,7 @@ const connectExchange = () => router.push('/settings/exchange')
 
 onMounted(() => {
   loadData()
+  loadConnections()
   refreshInterval = setInterval(loadData, 5000)
 })
 onBeforeUnmount(() => {
