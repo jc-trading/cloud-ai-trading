@@ -1,41 +1,8 @@
 <template>
-  <div class="feed">
-    <!-- Masthead — this page's one job: the latest verdict per symbol, and why -->
-    <header class="feed-masthead">
-      <div class="masthead-lede">
-        <div class="masthead-eyebrow">
-          <span class="pulse" :class="{ live: !loading }" aria-hidden="true"></span>
-          Decision log
-        </div>
-        <h1 class="masthead-title">What the analyst is calling right now</h1>
-        <p class="masthead-sub">
-          One case file per symbol — the data it pulled, how it reasoned, and its
-          go / no-go / watch verdict. Everything is on the record.
-        </p>
-      </div>
-      <div class="masthead-actions">
-        <router-link to="/portfolio" class="ledger-link">
-          Positions &amp; P&amp;L
-          <i class="pi pi-arrow-right" aria-hidden="true"></i>
-        </router-link>
-        <router-link to="/admin/system" class="ledger-link subtle">
-          System monitoring
-        </router-link>
-        <button
-          type="button"
-          class="refresh"
-          :disabled="loading"
-          @click="loadDecisions"
-        >
-          <i class="pi pi-refresh" :class="{ spin: loading }" aria-hidden="true"></i>
-          <span>{{ loading ? 'Reading…' : 'Refresh' }}</span>
-        </button>
-      </div>
-    </header>
-
-    <!-- Filter rail: crypto / equity -->
-    <div class="feed-rail" role="group" aria-label="Filter decisions by asset class">
-      <div class="segmented">
+  <div class="scope">
+    <!-- Filter rail + refresh -->
+    <div class="scope-rail">
+      <div class="segmented" role="group" aria-label="Filter decisions by asset class">
         <button
           v-for="opt in assetFilters"
           :key="opt.value"
@@ -44,140 +11,103 @@
           :class="{ active: assetClass === opt.value }"
           :aria-pressed="assetClass === opt.value"
           @click="setAssetClass(opt.value)"
-        >
-          {{ opt.label }}
-        </button>
+        >{{ opt.label }}</button>
       </div>
       <div class="rail-meta">
-        <span v-if="!loading && !error">{{ decisions.length }} on file</span>
-        <span v-if="lastUpdated" class="rail-time">Read {{ lastUpdatedLabel }}</span>
+        <span v-if="lastUpdated"><span class="jd-live-dot" :class="{ red: !!error }"></span> sweep {{ lastUpdatedLabel }}</span>
+        <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="loading" @click="loadDecisions">
+          <i class="pi pi-refresh" :class="{ 'animate-spin': loading }"></i>{{ loading ? 'Reading' : 'Refresh' }}
+        </button>
       </div>
+    </div>
+
+    <!-- Data-first stat strip -->
+    <div class="jd-strip" v-if="decisions.length || !loading">
+      <div class="jd-strip-item"><div class="l">Watched</div><div class="v">{{ stats.total }} <small>symbols</small></div></div>
+      <div class="jd-strip-item"><div class="l">Go / Watch / No-Go</div><div class="v"><span style="color:var(--jd-green)">{{ stats.go }}</span> · <span style="color:var(--jd-yellow)">{{ stats.watch }}</span> · <span style="color:var(--jd-red)">{{ stats.nogo }}</span></div></div>
+      <div class="jd-strip-item"><div class="l">Avg confidence</div><div class="v" style="color:var(--jd-cyan)">{{ stats.avg }}<small>%</small></div></div>
+      <div class="jd-strip-item"><div class="l">AI invoked</div><div class="v">{{ stats.aiCount }} <small>/ {{ stats.total }}</small></div></div>
     </div>
 
     <!-- Error -->
-    <div v-if="error" class="state state-error" role="alert">
-      <p class="state-title">Could not read the decision log.</p>
-      <p class="state-body">{{ error }}</p>
-      <button type="button" class="refresh" @click="loadDecisions">Try again</button>
+    <div v-if="error" class="jd-decision nogo" style="padding:24px 22px" role="alert">
+      <div class="jd-take" style="margin-bottom:6px"><b>Could not read the decision log.</b></div>
+      <p style="color:var(--jd-text-muted);font-size:13px;margin-bottom:14px">{{ error }}</p>
+      <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" @click="loadDecisions">Try again</button>
     </div>
 
     <!-- Loading skeleton -->
-    <div v-else-if="loading && !decisions.length" class="feed-grid" aria-hidden="true">
-      <div v-for="n in 4" :key="n" class="skeleton-card">
-        <div class="sk-line sk-lg"></div>
-        <div class="sk-line sk-md"></div>
-        <div class="sk-block"></div>
+    <div v-else-if="loading && !decisions.length" class="scope-grid" aria-hidden="true">
+      <div v-for="n in 4" :key="n" class="jd-decision skeleton">
+        <div class="sk sk-lg"></div><div class="sk sk-md"></div><div class="sk sk-block"></div>
       </div>
     </div>
 
     <!-- Empty -->
-    <div v-else-if="!decisions.length" class="state state-empty">
-      <p class="state-title">No verdicts on file yet.</p>
-      <p class="state-body">
-        The analyst records a case file each cycle it runs. Add symbols to your
-        watchlist or trigger an analysis, and their verdicts will land here.
-      </p>
-      <router-link to="/watchlist" class="ledger-link">
-        Open watchlist
-        <i class="pi pi-arrow-right" aria-hidden="true"></i>
-      </router-link>
+    <div v-else-if="!decisions.length" class="jd-empty">
+      <i class="pi pi-inbox"></i>
+      <p>No verdicts on file yet.</p>
+      <p style="font-size:13px;max-width:420px">The analyst records a decision each cycle. Add symbols to your watchlist or trigger an analysis, and their verdicts land here.</p>
+      <router-link to="/watchlist" class="jd-btn jd-btn-ghost jd-btn-sm">Open watchlist<i class="pi pi-arrow-right"></i></router-link>
     </div>
 
-    <!-- The feed: one dossier card per symbol -->
-    <div v-else class="feed-grid">
+    <!-- The feed: one instrument card per symbol -->
+    <div v-else class="scope-grid">
       <article
         v-for="d in decisions"
         :key="d.id"
-        class="dossier"
-        :class="`v-${verdictKey(d.verdict)}`"
+        class="jd-decision"
+        :class="verdictKey(d.verdict)"
+        tabindex="0"
         @click="openCaseFile(d.symbol)"
+        @keydown.enter="openCaseFile(d.symbol)"
       >
-        <span class="dossier-spine" aria-hidden="true"></span>
-
-        <!-- Header: symbol + class + verdict stamp -->
-        <div class="dossier-head">
-          <div class="head-id">
-            <span class="symbol">{{ d.symbol }}</span>
-            <span class="asset-chip" :class="assetKey(d.asset_class)">
-              {{ d.asset_class }}
-            </span>
-            <span
-              v-if="d.position_id"
-              class="asset-chip placed"
-              title="Order placed on Alpaca paper — position open"
-            >
-              ● position
-            </span>
-          </div>
-          <span class="stamp" :class="`v-${verdictKey(d.verdict)}`">
-            {{ verdictLabel(d.verdict) }}
-          </span>
+        <!-- Header -->
+        <div class="d-head">
+          <span class="d-sym">{{ d.symbol }}</span>
+          <span class="jd-badge" :class="assetKey(d.asset_class) === 'equity' ? 'purple' : 'cyan'">{{ d.asset_class }}</span>
+          <span v-if="d.position_id" class="jd-badge green" title="Order placed (paper) — position open">● position</span>
+          <svg class="d-headspark" viewBox="0 0 88 22" preserveAspectRatio="none">
+            <polyline :points="wavePoints(d.symbol + '-h', verdictDir(d.verdict), 88, 22, 6)" fill="none" :stroke="verdictColor(d.verdict)" stroke-width="1.5" />
+          </svg>
+          <span class="jd-verdict" :class="verdictKey(d.verdict)">{{ verdictLabel(d.verdict) }}</span>
         </div>
 
-        <!-- Action + conviction -->
-        <div class="dossier-call">
-          <span class="call-action" :class="actionKey(d.action)">{{ String(d.action).toUpperCase() }}</span>
-          <div class="conviction" v-if="d.ai_invoked">
-            <span class="conviction-label">conviction</span>
-            <span class="conviction-track" aria-hidden="true">
-              <span class="conviction-fill" :style="{ width: clampPct(d.confidence) + '%' }"></span>
-            </span>
-            <span class="conviction-num">{{ clampPct(d.confidence) }}%</span>
-          </div>
-          <span v-else class="call-noai">AI not invoked</span>
-          <span class="call-time">{{ formatTime(d.created_at) }}</span>
-        </div>
-
-        <!-- Pulled data — the ledger, laid open -->
-        <section class="dossier-block" v-if="dataEntries(d).length">
-          <div class="block-label">Data pulled</div>
-          <dl class="ledger">
-            <div v-for="row in dataEntries(d)" :key="row.k" class="ledger-row">
-              <dt>{{ row.k }}</dt>
-              <dd>{{ row.v }}</dd>
+        <!-- Gauge + metrics -->
+        <div class="d-body">
+          <div class="jd-gauge" :class="verdictKey(d.verdict)">
+            <svg width="116" height="116" viewBox="0 0 116 116">
+              <circle class="ring-bg" cx="58" cy="58" r="50" fill="none" stroke-width="8" />
+              <circle class="ring-fg" cx="58" cy="58" r="50" fill="none" stroke-width="8"
+                :stroke-dasharray="GAUGE_C" :stroke-dashoffset="gaugeOffset(d.confidence)" />
+            </svg>
+            <div class="lab">
+              <div class="n">{{ d.ai_invoked || clampPct(d.confidence) ? clampPct(d.confidence) : '—' }}<small v-if="clampPct(d.confidence)">%</small></div>
+              <div class="t">{{ String(d.action || '').toUpperCase() || 'hold' }}</div>
             </div>
-          </dl>
-          <div v-if="dataOverflow(d) > 0" class="ledger-more">+{{ dataOverflow(d) }} more fields</div>
-        </section>
-        <section class="dossier-block muted" v-else>
-          <div class="block-label">Data pulled</div>
-          <p class="block-empty">No indicator snapshot on this cycle.</p>
-        </section>
-
-        <!-- Reasoning -->
-        <section class="dossier-block">
-          <div class="block-label">Reasoning</div>
-          <p class="reasoning" v-if="reasoning(d)">{{ reasoning(d) }}</p>
-          <p class="reasoning faint" v-else>No reasoning recorded for this verdict.</p>
-          <ul class="factors" v-if="keyFactors(d).length">
-            <li v-for="(f, i) in keyFactors(d)" :key="i">{{ f }}</li>
-          </ul>
-          <p class="risk" v-if="riskWarning(d)">
-            <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
-            {{ riskWarning(d) }}
-          </p>
-        </section>
-
-        <!-- Footer: completeness + open case file -->
-        <div class="dossier-foot">
-          <div class="completeness" :title="completenessTitle(d)">
-            <span
-              class="dot"
-              :class="{ ok: completeness(d).indicators }"
-            >indicators</span>
-            <span
-              class="dot"
-              :class="{ ok: completeness(d).ai_output }"
-            >AI output</span>
           </div>
-          <router-link
-            class="case-link"
-            :to="{ name: 'SymbolDetail', params: { symbol: d.symbol } }"
-            @click.stop
-          >
-            Open case file
-            <i class="pi pi-arrow-right" aria-hidden="true"></i>
-          </router-link>
+          <div class="d-right">
+            <div class="jd-metrics" v-if="dataEntries(d).length">
+              <div class="jd-metric" v-for="row in dataEntries(d)" :key="row.k">
+                <div class="k">{{ row.k }}</div><div class="v">{{ row.v }}</div>
+              </div>
+            </div>
+            <p v-else class="d-nodata">No indicator snapshot on this cycle.</p>
+          </div>
+        </div>
+
+        <!-- Footer: waveform + concise reasoning -->
+        <div class="d-foot">
+          <div class="jd-wave">
+            <svg viewBox="0 0 300 38" preserveAspectRatio="none">
+              <polyline :points="wavePoints(d.symbol, verdictDir(d.verdict))" fill="none" :stroke="verdictColor(d.verdict)" stroke-width="1.5" :style="{ filter: `drop-shadow(0 0 4px ${verdictColor(d.verdict)})` }" />
+            </svg>
+          </div>
+          <div class="d-reason">
+            <span v-for="(c, i) in chips(d)" :key="i" class="jd-chip">{{ c }}</span>
+            <span v-if="shortTake(d)" class="jd-take">{{ shortTake(d) }}</span>
+            <span class="jd-src">{{ d.ai_invoked ? 'ai' : (skipReason(d) || 'no ai') }}</span>
+          </div>
         </div>
       </article>
     </div>
@@ -210,7 +140,8 @@ const assetFilters = [
   { label: 'Equity', value: 'equity' },
 ]
 
-const MAX_LEDGER_ROWS = 6
+const MAX_METRICS = 6
+const GAUGE_C = (2 * Math.PI * 50).toFixed(2) // ring circumference
 
 const loadDecisions = async () => {
   loading.value = true
@@ -233,9 +164,7 @@ const setAssetClass = (value) => {
   loadDecisions()
 }
 
-const openCaseFile = (symbol) => {
-  router.push({ name: 'SymbolDetail', params: { symbol } })
-}
+const openCaseFile = (symbol) => router.push({ name: 'SymbolDetail', params: { symbol } })
 
 // --- Verdict / action / asset helpers ---
 const verdictKey = (v) => {
@@ -248,14 +177,34 @@ const verdictLabel = (v) => {
   const k = verdictKey(v)
   return k === 'nogo' ? 'NO-GO' : k.toUpperCase()
 }
-const actionKey = (a) => String(a || '').toLowerCase()
+const VERDICT_COLORS = { go: '#2ee08a', watch: '#ffc24b', nogo: '#ff5470' }
+const verdictColor = (v) => VERDICT_COLORS[verdictKey(v)]
+const verdictDir = (v) => ({ go: 1, watch: 0, nogo: -1 }[verdictKey(v)])
 const assetKey = (c) => (String(c || '').toLowerCase() === 'equity' ? 'equity' : 'crypto')
-const clampPct = (n) => {
-  const x = Number(n) || 0
-  return Math.max(0, Math.min(100, Math.round(x)))
+const clampPct = (n) => Math.max(0, Math.min(100, Math.round(Number(n) || 0)))
+
+// gauge: offset so the arc fills clockwise to pct
+const gaugeOffset = (n) => (Number(GAUGE_C) * (1 - clampPct(n) / 100)).toFixed(2)
+
+// --- Ambient waveform (deterministic per symbol; visual signal motif, not a live series) ---
+const hashSeed = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h || 1 }
+const wavePoints = (seed, dir = 0, w = 300, h = 38, n = 11) => {
+  let x = (hashSeed(seed) % 2147483646) + 1
+  const rnd = () => (x = (x * 16807) % 2147483647) / 2147483647
+  const mid = h / 2
+  const pts = []
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1)
+    const trend = -dir * (t - 0.5) * (h * 0.5)
+    const noise = (rnd() - 0.5) * (h * 0.4)
+    let y = mid + trend + noise
+    y = Math.max(4, Math.min(h - 4, y))
+    pts.push(`${(t * w).toFixed(0)},${y.toFixed(1)}`)
+  }
+  return pts.join(' ')
 }
 
-// --- Pulled-data ledger (indicators_snapshot / FA) ---
+// --- Pulled-data metrics (indicators_snapshot / FA) ---
 const formatVal = (v) => {
   if (v === null || v === undefined) return '—'
   if (typeof v === 'number') {
@@ -267,55 +216,50 @@ const formatVal = (v) => {
   if (typeof v === 'boolean') return v ? 'yes' : 'no'
   if (typeof v === 'object') {
     const s = JSON.stringify(v)
-    return s.length > 40 ? s.slice(0, 39) + '…' : s
+    return s.length > 20 ? s.slice(0, 19) + '…' : s
   }
   const s = String(v)
-  return s.length > 40 ? s.slice(0, 39) + '…' : s
+  return s.length > 18 ? s.slice(0, 17) + '…' : s
 }
 const snapshotEntries = (d) => {
   const snap = d?.indicators_snapshot
   if (!snap || typeof snap !== 'object') return []
   return Object.entries(snap).filter(([, v]) => v !== null && v !== undefined && v !== '')
 }
-const dataEntries = (d) =>
-  snapshotEntries(d)
-    .slice(0, MAX_LEDGER_ROWS)
-    .map(([k, v]) => ({ k, v: formatVal(v) }))
-const dataOverflow = (d) => Math.max(0, snapshotEntries(d).length - MAX_LEDGER_ROWS)
+const prettyKey = (k) => String(k).replace(/_/g, ' ').replace(/\b(eps|rsi|macd|bb|pct|fa|ai)\b/gi, (m) => m.toUpperCase())
+const dataEntries = (d) => snapshotEntries(d).slice(0, MAX_METRICS).map(([k, v]) => ({ k: prettyKey(k), v: formatVal(v) }))
 
-// --- Reasoning ---
+// --- Concise reasoning: chips + one short take (data-viz > prose) ---
 const reasoning = (d) => {
   if (d?.verdict_reason) return d.verdict_reason
   const r = d?.claude_response?.reason
   return typeof r === 'string' ? r : ''
 }
-const keyFactors = (d) => {
+const chips = (d) => {
   const f = d?.claude_response?.key_factors
-  return Array.isArray(f) ? f.filter((x) => typeof x === 'string' && x.trim()).slice(0, 4) : []
+  const arr = Array.isArray(f) ? f.filter((x) => typeof x === 'string' && x.trim()) : []
+  return arr.slice(0, 3).map((s) => (s.length > 26 ? s.slice(0, 25) + '…' : s))
 }
-const riskWarning = (d) => {
-  const w = d?.claude_response?.risk_warning
-  return typeof w === 'string' && w.trim() ? w : ''
+const shortTake = (d) => {
+  const r = reasoning(d)
+  if (!r) return ''
+  const first = r.split(/(?<=[.!?])\s/)[0] || r
+  return first.length > 96 ? first.slice(0, 95) + '…' : first
 }
-
-// --- Completeness ---
-const completeness = (d) => {
-  const dc = d?.data_completeness || {}
-  return {
-    indicators: !!dc.indicators,
-    ai_output: dc.ai_output !== undefined ? !!dc.ai_output : !!d?.ai_invoked,
-  }
-}
-const completenessTitle = (d) => {
-  const c = completeness(d)
-  return `Indicators: ${c.indicators ? 'present' : 'missing'} · AI output: ${c.ai_output ? 'present' : 'missing'}`
+const skipReason = (d) => {
+  const s = d?.ai_skip_reason
+  return typeof s === 'string' && s.trim() ? s.replace(/_/g, ' ') : ''
 }
 
-// --- Time (recomputes against the clock ref so relative labels stay fresh) ---
-const formatTime = (ts) => {
-  void now.value
-  return ts ? dayjs(ts).fromNow() : '—'
-}
+// --- Stats strip ---
+const stats = computed(() => {
+  const arr = decisions.value
+  const cnt = (k) => arr.filter((d) => verdictKey(d.verdict) === k).length
+  const confs = arr.map((d) => clampPct(d.confidence)).filter((n) => n > 0)
+  const avg = confs.length ? Math.round(confs.reduce((a, b) => a + b, 0) / confs.length) : 0
+  return { total: arr.length, go: cnt('go'), watch: cnt('watch'), nogo: cnt('nogo'), avg, aiCount: arr.filter((d) => d.ai_invoked).length }
+})
+
 const lastUpdatedLabel = computed(() => {
   void now.value
   return lastUpdated.value ? dayjs(lastUpdated.value).fromNow() : ''
@@ -333,477 +277,40 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-/* ── Verdict ledger tokens — a calm ink/graphite terminal, not a stat dashboard.
-   Deliberately warm-neutral (not the app's navy) and muted (no neon), so the
-   verdict itself — go / no-go / watch — is the only thing that carries colour. */
-.feed {
-  --ink:        #0e0f12;
-  --graphite:   #16181d;
-  --graphite-2: #1b1e24;
-  --graphite-h: #1f232a;
-  --rule:       rgba(150, 154, 165, 0.10);
-  --rule-2:     rgba(150, 154, 165, 0.16);
-  --ink-text:   #d8dae0;
-  --ink-muted:  #8a8f9a;
-  --ink-faint:  #5b606b;
+.scope { display: flex; flex-direction: column; gap: 16px; }
 
-  --go:      #63a986;   --go-bg:   rgba(64, 120, 92, 0.16);   --go-line:   rgba(99, 169, 134, 0.42);
-  --nogo:    #c8735a;   --nogo-bg: rgba(150, 68, 48, 0.16);   --nogo-line: rgba(200, 115, 90, 0.42);
-  --watch:   #d0a24c;   --watch-bg:rgba(160, 122, 48, 0.15);  --watch-line:rgba(208, 162, 76, 0.40);
+/* filter rail */
+.scope-rail { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.segmented { display: inline-flex; background: rgba(8,11,20,0.6); border: 1px solid var(--jd-border); border-radius: 10px; padding: 3px; gap: 2px; }
+.seg { font-family: var(--jd-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jd-text-muted); background: transparent; border: none; border-radius: 7px; padding: 6px 16px; cursor: pointer; transition: all var(--jd-trans); }
+.seg:hover { color: var(--jd-text); }
+.seg.active { color: #04121a; background: var(--jd-cyan); font-weight: 600; }
+.rail-meta { display: flex; align-items: center; gap: 14px; font-family: var(--jd-mono); font-size: 11px; color: var(--jd-text-muted); }
+.rail-meta > span { display: inline-flex; align-items: center; gap: 7px; }
 
-  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Menlo', 'Cascadia Code', monospace;
-  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+/* feed grid */
+.scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 14px; }
 
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-  color: var(--ink-text);
-  font-family: var(--sans);
-}
+/* decision card layout (visuals inherit from global .jd-decision / .jd-gauge / etc) */
+.jd-decision { cursor: pointer; }
+.d-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; }
+.d-sym { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: #fff; }
+.d-headspark { width: 88px; height: 22px; margin-left: auto; opacity: 0.9; }
+.d-body { display: grid; grid-template-columns: 120px 1fr; gap: 16px; padding: 4px 16px 12px; align-items: center; }
+.d-right { min-width: 0; }
+.d-nodata { font-family: var(--jd-mono); font-size: 12px; color: var(--jd-text-faint); }
+.d-foot { border-top: 1px solid var(--jd-line-2); }
+.d-reason { padding: 9px 16px 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.d-reason .jd-src { margin-left: auto; white-space: nowrap; }
 
-/* ── Masthead ── */
-.feed-masthead {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 24px;
-  flex-wrap: wrap;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--rule-2);
-}
-.masthead-lede { max-width: 640px; }
-.masthead-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-  margin-bottom: 12px;
-}
-.pulse {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--ink-faint);
-}
-.pulse.live { background: var(--go); box-shadow: 0 0 0 0 var(--go-bg); animation: pulse 2.4s ease-out infinite; }
-.masthead-title {
-  font-family: var(--mono);
-  font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: #eef0f3;
-  margin: 0 0 8px;
-  line-height: 1.2;
-}
-.masthead-sub {
-  font-size: 0.9375rem;
-  line-height: 1.55;
-  color: var(--ink-muted);
-  margin: 0;
-}
-.masthead-actions {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-.ledger-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  letter-spacing: 0.02em;
-  color: var(--ink-text);
-  text-decoration: none;
-  border-bottom: 1px solid transparent;
-  transition: border-color var(--jd-trans, 0.2s), color var(--jd-trans, 0.2s);
-}
-.ledger-link:hover { border-bottom-color: var(--rule-2); }
-.ledger-link.subtle { color: var(--ink-muted); }
-.ledger-link i { font-size: 0.6875rem; }
+/* skeleton */
+.jd-decision.skeleton { padding: 20px; display: flex; flex-direction: column; gap: 12px; cursor: default; animation: sk 1.6s ease-in-out infinite; }
+.sk { border-radius: 6px; background: var(--jd-card-hover); }
+.sk-lg { width: 38%; height: 22px; }
+.sk-md { width: 62%; height: 14px; }
+.sk-block { height: 96px; }
+@keyframes sk { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-.refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  color: var(--ink-text);
-  background: var(--graphite-2);
-  border: 1px solid var(--rule-2);
-  border-radius: 7px;
-  padding: 8px 14px;
-  cursor: pointer;
-  transition: background var(--jd-trans, 0.2s), border-color var(--jd-trans, 0.2s);
-}
-.refresh:hover:not(:disabled) { background: var(--graphite-h); border-color: rgba(150,154,165,0.28); }
-.refresh:disabled { opacity: 0.55; cursor: default; }
-.refresh i.spin { animation: spin 1s linear infinite; }
-
-/* ── Filter rail ── */
-.feed-rail {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.segmented {
-  display: inline-flex;
-  background: var(--graphite);
-  border: 1px solid var(--rule-2);
-  border-radius: 8px;
-  padding: 3px;
-  gap: 2px;
-}
-.seg {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 16px;
-  cursor: pointer;
-  transition: color var(--jd-trans, 0.2s), background var(--jd-trans, 0.2s);
-}
-.seg:hover { color: var(--ink-text); }
-.seg.active { color: #0e0f12; background: var(--ink-text); font-weight: 600; }
-.rail-meta {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--ink-faint);
-}
-.rail-time { color: var(--ink-faint); }
-
-/* ── Feed grid ── */
-.feed-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 18px;
-}
-
-/* ── Dossier card ── */
-.dossier {
-  position: relative;
-  background: var(--graphite);
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  padding: 20px 22px 18px 26px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: background var(--jd-trans, 0.2s), border-color var(--jd-trans, 0.2s), transform var(--jd-trans, 0.2s);
-}
-.dossier:hover { background: var(--graphite-2); border-color: var(--rule-2); }
-.dossier-spine {
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 4px;
-}
-.dossier.v-go   .dossier-spine { background: var(--go-line); }
-.dossier.v-nogo .dossier-spine { background: var(--nogo-line); }
-.dossier.v-watch .dossier-spine { background: var(--watch-line); }
-
-/* header */
-.dossier-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
-}
-.head-id { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.symbol {
-  font-family: var(--mono);
-  font-size: 1.375rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: #eef0f3;
-}
-.asset-chip {
-  font-family: var(--mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 2px 7px;
-  border-radius: 4px;
-  border: 1px solid var(--rule-2);
-  color: var(--ink-muted);
-}
-.asset-chip.equity { color: #a9a2d6; border-color: rgba(150, 140, 210, 0.3); }
-.asset-chip.crypto { color: #86b4c2; border-color: rgba(120, 170, 190, 0.3); }
-/* Execution state: go-Decision has been placed (paper) and a position is open. */
-.asset-chip.placed { color: #7fd1a3; border-color: rgba(120, 200, 150, 0.38); }
-
-.stamp {
-  font-family: var(--mono);
-  font-size: 0.875rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  padding: 5px 12px;
-  border-radius: 5px;
-  border: 1px solid;
-  white-space: nowrap;
-}
-.stamp.v-go   { color: var(--go);   background: var(--go-bg);   border-color: var(--go-line); }
-.stamp.v-nogo { color: var(--nogo); background: var(--nogo-bg); border-color: var(--nogo-line); }
-.stamp.v-watch{ color: var(--watch);background: var(--watch-bg);border-color: var(--watch-line); }
-
-/* call row */
-.dossier-call {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  padding-bottom: 16px;
-  margin-bottom: 4px;
-  border-bottom: 1px dashed var(--rule-2);
-}
-.call-action {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--ink-muted);
-}
-.call-action.buy  { color: var(--go); }
-.call-action.sell { color: var(--nogo); }
-.conviction { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 140px; }
-.conviction-label {
-  font-family: var(--mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-.conviction-track {
-  flex: 1;
-  height: 4px;
-  min-width: 48px;
-  background: rgba(150, 154, 165, 0.14);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.conviction-fill { display: block; height: 100%; background: var(--ink-muted); border-radius: 2px; }
-.conviction-num { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-text); }
-.call-noai {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.06em;
-  color: var(--ink-faint);
-  flex: 1;
-}
-.call-time {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  color: var(--ink-faint);
-  margin-left: auto;
-}
-
-/* blocks */
-.dossier-block { padding: 14px 0; border-bottom: 1px solid var(--rule); }
-.dossier-block.muted { opacity: 0.75; }
-.block-label {
-  font-family: var(--mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  margin-bottom: 10px;
-}
-.block-empty { font-size: 0.8125rem; color: var(--ink-faint); margin: 0; }
-
-/* ledger (data pulled) */
-.ledger {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px 20px;
-  margin: 0;
-}
-.ledger-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 4px 0;
-  border-bottom: 1px dotted var(--rule);
-}
-.ledger-row dt {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--ink-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ledger-row dd {
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  color: var(--ink-text);
-  margin: 0;
-  text-align: right;
-}
-.ledger-more {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  color: var(--ink-faint);
-  margin-top: 8px;
-}
-
-/* reasoning */
-.reasoning {
-  font-size: 0.9375rem;
-  line-height: 1.6;
-  color: var(--ink-text);
-  margin: 0;
-}
-.reasoning.faint { color: var(--ink-faint); }
-.factors {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 12px 0 0;
-  padding: 0;
-}
-.factors li {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  color: var(--ink-muted);
-  background: var(--graphite-2);
-  border: 1px solid var(--rule-2);
-  border-radius: 4px;
-  padding: 3px 8px;
-}
-.risk {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  color: var(--watch);
-  margin: 12px 0 0;
-}
-.risk i { font-size: 0.75rem; margin-top: 3px; }
-
-/* footer */
-.dossier-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 14px;
-}
-.completeness { display: flex; gap: 14px; }
-.completeness .dot {
-  position: relative;
-  font-family: var(--mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  padding-left: 13px;
-}
-.completeness .dot::before {
-  content: '';
-  position: absolute;
-  left: 0; top: 50%;
-  transform: translateY(-50%);
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: var(--ink-faint);
-}
-.completeness .dot.ok { color: var(--ink-muted); }
-.completeness .dot.ok::before { background: var(--go); }
-.case-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
-  color: var(--ink-text);
-  text-decoration: none;
-  border-bottom: 1px solid transparent;
-  transition: border-color var(--jd-trans, 0.2s);
-}
-.case-link:hover { border-bottom-color: var(--rule-2); }
-.case-link i { font-size: 0.625rem; }
-
-/* ── States ── */
-.state {
-  border: 1px solid var(--rule-2);
-  border-radius: 10px;
-  background: var(--graphite);
-  padding: 40px 28px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-.state-error { border-color: var(--nogo-line); }
-.state-title { font-family: var(--mono); font-size: 1rem; color: var(--ink-text); margin: 0; }
-.state-body { font-size: 0.9375rem; line-height: 1.55; color: var(--ink-muted); max-width: 460px; margin: 0 0 8px; }
-
-/* ── Skeleton ── */
-.skeleton-card {
-  background: var(--graphite);
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  padding: 22px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.sk-line { height: 14px; border-radius: 4px; background: var(--graphite-h); }
-.sk-line.sk-lg { width: 40%; height: 22px; }
-.sk-line.sk-md { width: 65%; }
-.sk-block { height: 90px; border-radius: 6px; background: var(--graphite-2); margin-top: 6px; }
-.skeleton-card { animation: shimmer 1.6s ease-in-out infinite; }
-
-/* ── Focus (keyboard) ── */
-.seg:focus-visible,
-.refresh:focus-visible,
-.ledger-link:focus-visible,
-.case-link:focus-visible,
-.dossier:focus-visible {
-  outline: 2px solid var(--watch);
-  outline-offset: 2px;
-  border-radius: 6px;
-}
-
-/* ── Motion ── */
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse {
-  0%   { box-shadow: 0 0 0 0 var(--go-bg); }
-  70%  { box-shadow: 0 0 0 6px rgba(99, 169, 134, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(99, 169, 134, 0); }
-}
-@keyframes shimmer { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
-
-@media (prefers-reduced-motion: reduce) {
-  .pulse.live, .refresh i.spin, .skeleton-card { animation: none; }
-  .dossier, .refresh, .seg, .ledger-link, .case-link { transition: none; }
-}
-
-/* ── Responsive ── */
-@media (max-width: 820px) {
-  .feed-grid { grid-template-columns: 1fr; }
-  .feed-masthead { align-items: flex-start; }
-}
-@media (max-width: 520px) {
-  .dossier { padding: 16px 16px 14px 20px; }
-  .ledger { grid-template-columns: 1fr; }
-  .masthead-title { font-size: 1.25rem; }
-  .masthead-actions { width: 100%; }
-}
+@media (max-width: 820px) { .scope-grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .jd-decision.skeleton { animation: none; } }
 </style>
