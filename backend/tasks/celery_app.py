@@ -29,6 +29,7 @@ celery_app = Celery(
         "app.tasks.risk_tasks",
         "app.tasks.fundamentals_tasks",
         "app.tasks.equity_tasks",
+        "app.tasks.execution_tasks",
     ],
 )
 
@@ -162,5 +163,15 @@ celery_app.conf.beat_schedule = {
     "equity-eod": {
         "task": "equity.eod",
         "schedule": crontab(minute=30, hour=21, day_of_week="mon-fri"),
+    },
+    # Auto-execution (EXEC-auto-task) — weekday, just AFTER the equity market-open
+    # run. market_open (14:30 UTC) stamps "order intent" on today's GO Decisions;
+    # this fires 5 min later to place the actual PAPER Alpaca BUYs inside the risk
+    # budget. 14:35 UTC = 09:35 EST / 10:35 EDT (after the 09:30 ET open, year-round).
+    # day_of_week="mon-fri" gates weekends; the task ALSO skips US market holidays
+    # (is_us_trading_day). PAPER + equity ONLY — crypto/Binance is never executed.
+    "execution-auto-execute-equity": {
+        "task": "execution.auto_execute_equity",
+        "schedule": crontab(minute=35, hour=14, day_of_week="mon-fri"),
     },
 }
