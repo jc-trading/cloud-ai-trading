@@ -153,7 +153,7 @@ async def _analyze_with_claude(
         )
 
         message = await client.messages.create(
-            model=settings.CLAUDE_MODEL,
+            model=settings.ANTHROPIC_MODEL,
             max_tokens=512,  # Reduced from 1024, JSON doesn't need that much
             system=ANALYSIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],

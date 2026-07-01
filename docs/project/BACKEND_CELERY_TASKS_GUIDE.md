@@ -442,7 +442,7 @@ Output Tokens：
 **当前配置：** `backend/app/config.py`
 
 ```python
-CLAUDE_MODEL: str = "claude-sonnet-4-20250514"  # 最贵的
+ANTHROPIC_MODEL: str = "claude-opus-4-8"  # 最贵的
 ```
 
 **价格（官方价格，2026年）：**
@@ -629,7 +629,7 @@ except Exception as claude_error:
 **方案 B：换更便宜的模型**
 ```python
 # config.py
-CLAUDE_MODEL: str = "claude-haiku-4-5-20251001"  # 改成 Haiku
+ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"  # 改成 Haiku
 ```
 成本降到 1/4。
 
@@ -690,7 +690,7 @@ def should_call_claude(all_signals: dict) -> bool:
 ## 下一步优化方向
 
 1. **立即可做（成本最低）**
-   - 把 CLAUDE_MODEL 从 Sonnet 4 改成 Haiku（节省 75%）
+   - 把 ANTHROPIC_MODEL 从 Sonnet 4 改成 Haiku（节省 75%）
 
 2. **本周可做（效果最好）**
    - 添加信号强度过滤逻辑（减少 60-80% Claude 调用）

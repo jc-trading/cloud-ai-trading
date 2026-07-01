@@ -187,7 +187,7 @@ all_signals = [
 ```env
 AI_PROVIDER=claude
 ANTHROPIC_API_KEY=sk-ant-xxxxx
-CLAUDE_MODEL=claude-haiku-4-5-20251001
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 ```
 - **定价：** $0.80/MTok input, $4/MTok output
 - **优点：** 可靠性好，准确率高
@@ -424,7 +424,7 @@ GROUP BY 1;
 # 恢复 Claude Sonnet 4
 # .env: 
 # AI_PROVIDER=claude
-# CLAUDE_MODEL=claude-sonnet-4-20250514
+# ANTHROPIC_MODEL=claude-sonnet-4-20250514
 ```
 
 ---

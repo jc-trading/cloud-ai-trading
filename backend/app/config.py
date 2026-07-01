@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # Claude API
     ANTHROPIC_API_KEY: str = ""
-    CLAUDE_MODEL: str = "claude-haiku-4-5-20251001"  # Changed to cheaper Haiku model
+    ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"  # Changed to cheaper Haiku model
 
     # OpenAI API
     OPENAI_API_KEY: str = ""
