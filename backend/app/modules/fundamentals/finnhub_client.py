@@ -155,6 +155,20 @@ class FinnhubClient:
             return data
         return None
 
+    # ---- index membership -------------------------------------------------
+
+    def index_constituents(self, symbol: str = "^GSPC") -> list[str]:
+        """Index constituents (e.g. S&P 500 via ^GSPC). Returns [] on failure.
+
+        Note: this endpoint is premium on some Finnhub plans; on the free tier it
+        degrades to [] (logged), so S&P membership is simply left untouched.
+        """
+        data = self._get("/index/constituents", {"symbol": symbol})
+        if not isinstance(data, dict):
+            return []
+        rows = data.get("constituents")
+        return rows if isinstance(rows, list) else []
+
     # ---- helpers ----------------------------------------------------------
 
     @staticmethod

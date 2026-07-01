@@ -4,6 +4,7 @@ Handles periodic tasks like market data pulling and AI analysis.
 """
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import get_settings
 
@@ -26,6 +27,7 @@ celery_app = Celery(
         "app.tasks.market_data_tasks",
         "app.tasks.trading_tasks",
         "app.tasks.risk_tasks",
+        "app.tasks.fundamentals_tasks",
     ],
 )
 
@@ -119,5 +121,25 @@ celery_app.conf.beat_schedule = {
     "risk-check-emergency-conditions": {
         "task": "risk.check_emergency_conditions",
         "schedule": 300.0,  # every 5 minutes
+    },
+    # Fundamentals cache refresh (Phase 3 FA). Scoped to watchlist equities only
+    # and throttled inside each task to respect the Finnhub free-tier quota, so
+    # the schedules are deliberately coarse.
+    # Company profiles + historical financials — WEEKLY (Sunday 06:00 UTC).
+    "refresh-company-profiles": {
+        "task": "fundamentals.refresh_company_profiles",
+        "schedule": crontab(minute=0, hour=6, day_of_week="sunday"),
+    },
+    # Earnings calendar + estimates — DAILY, pre-market (12:00 UTC ~ 08:00 ET,
+    # before the 09:30 ET open).
+    "refresh-earnings-calendar": {
+        "task": "fundamentals.refresh_earnings_calendar",
+        "schedule": crontab(minute=0, hour=12),
+    },
+    # Fill actual EPS/revenue for symbols that just reported — DAILY, after the
+    # US close (23:30 UTC) so amc reports are already out.
+    "refresh-financials-on-earnings": {
+        "task": "fundamentals.refresh_financials_on_earnings",
+        "schedule": crontab(minute=30, hour=23),
     },
 }
