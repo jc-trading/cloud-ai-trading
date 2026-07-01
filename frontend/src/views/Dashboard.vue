@@ -1,353 +1,800 @@
 <template>
-  <div class="jd-page">
-    <!-- Stat Cards Grid -->
-    <div class="stats-grid">
-      <!-- System Status -->
-      <div class="jd-stat-card jd-stat-card-green">
-        <div class="jd-stat-content">
-          <div class="jd-stat-label">System Status</div>
-          <div class="jd-stat-value">Healthy</div>
-          <div class="jd-stat-sub">All systems operational</div>
+  <div class="feed">
+    <!-- Masthead — this page's one job: the latest verdict per symbol, and why -->
+    <header class="feed-masthead">
+      <div class="masthead-lede">
+        <div class="masthead-eyebrow">
+          <span class="pulse" :class="{ live: !loading }" aria-hidden="true"></span>
+          Decision log
         </div>
-        <div class="jd-stat-icon green">
-          <i class="pi pi-check-circle"></i>
-        </div>
+        <h1 class="masthead-title">What the analyst is calling right now</h1>
+        <p class="masthead-sub">
+          One case file per symbol — the data it pulled, how it reasoned, and its
+          go / no-go / watch verdict. Everything is on the record.
+        </p>
       </div>
-
-      <!-- Uptime -->
-      <div class="jd-stat-card jd-stat-card-blue">
-        <div class="jd-stat-content">
-          <div class="jd-stat-label">Uptime</div>
-          <div class="jd-stat-value">{{ uptime }}%</div>
-          <div class="jd-stat-sub">Last 30 days</div>
-        </div>
-        <div class="jd-stat-icon blue">
-          <i class="pi pi-clock"></i>
-        </div>
+      <div class="masthead-actions">
+        <router-link to="/portfolio" class="ledger-link">
+          Positions &amp; P&amp;L
+          <i class="pi pi-arrow-right" aria-hidden="true"></i>
+        </router-link>
+        <router-link to="/admin/system" class="ledger-link subtle">
+          System monitoring
+        </router-link>
+        <button
+          type="button"
+          class="refresh"
+          :disabled="loading"
+          @click="loadDecisions"
+        >
+          <i class="pi pi-refresh" :class="{ spin: loading }" aria-hidden="true"></i>
+          <span>{{ loading ? 'Reading…' : 'Refresh' }}</span>
+        </button>
       </div>
+    </header>
 
-      <!-- Active Tasks -->
-      <div class="jd-stat-card jd-stat-card-yellow">
-        <div class="jd-stat-content">
-          <div class="jd-stat-label">Active Tasks</div>
-          <div class="jd-stat-value">{{ activeTaskCount }}</div>
-          <div class="jd-stat-sub">Running now</div>
-        </div>
-        <div class="jd-stat-icon yellow">
-          <i class="pi pi-list-check"></i>
-        </div>
+    <!-- Filter rail: crypto / equity -->
+    <div class="feed-rail" role="group" aria-label="Filter decisions by asset class">
+      <div class="segmented">
+        <button
+          v-for="opt in assetFilters"
+          :key="opt.value"
+          type="button"
+          class="seg"
+          :class="{ active: assetClass === opt.value }"
+          :aria-pressed="assetClass === opt.value"
+          @click="setAssetClass(opt.value)"
+        >
+          {{ opt.label }}
+        </button>
       </div>
-
-      <!-- Last Update -->
-      <div class="jd-stat-card jd-stat-card-purple">
-        <div class="jd-stat-content">
-          <div class="jd-stat-label">Last Update</div>
-          <div class="jd-stat-value">{{ lastUpdate }}</div>
-          <div class="jd-stat-sub">Auto-refreshing</div>
-        </div>
-        <div class="jd-stat-icon purple">
-          <i class="pi pi-refresh"></i>
-        </div>
+      <div class="rail-meta">
+        <span v-if="!loading && !error">{{ decisions.length }} on file</span>
+        <span v-if="lastUpdated" class="rail-time">Read {{ lastUpdatedLabel }}</span>
       </div>
     </div>
 
-    <!-- Main Content Grid -->
-    <div class="main-grid">
-      <!-- System Health Card -->
-      <div class="jd-card system-health-card">
-        <div class="jd-card-header">
-          <h3 class="jd-card-title">System Health</h3>
-          <i class="pi pi-heart"></i>
-        </div>
-        <div class="jd-card-body">
-          <SystemMonitor :metrics="metrics" :health="health" :isDarkMode="true" />
-        </div>
-      </div>
+    <!-- Error -->
+    <div v-if="error" class="state state-error" role="alert">
+      <p class="state-title">Could not read the decision log.</p>
+      <p class="state-body">{{ error }}</p>
+      <button type="button" class="refresh" @click="loadDecisions">Try again</button>
+    </div>
 
-      <!-- Task Status Card -->
-      <div class="jd-card task-status-card">
-        <div class="jd-card-header">
-          <h3 class="jd-card-title">Task Health Status</h3>
-          <button
-            @click="refreshAll"
-            :disabled="refreshing"
-            class="jd-btn jd-btn-primary jd-btn-sm refresh-btn"
-            :class="{ 'is-spinning': refreshing }"
-          >
-            <i class="pi pi-refresh"></i>
-            <span>{{ refreshing ? 'Refreshing...' : 'Refresh' }}</span>
-          </button>
-        </div>
-        <div class="jd-card-body">
-          <TaskStatusPanel :tasks="taskStatus" :isDarkMode="true" />
-        </div>
+    <!-- Loading skeleton -->
+    <div v-else-if="loading && !decisions.length" class="feed-grid" aria-hidden="true">
+      <div v-for="n in 4" :key="n" class="skeleton-card">
+        <div class="sk-line sk-lg"></div>
+        <div class="sk-line sk-md"></div>
+        <div class="sk-block"></div>
       </div>
     </div>
 
-    <!-- System Logs Card -->
-    <div class="jd-card logs-card">
-      <div class="jd-card-header">
-        <div class="logs-header-left">
-          <h3 class="jd-card-title">System Logs</h3>
-          <div class="jd-live-dot"></div>
-          <span class="live-label">LIVE</span>
+    <!-- Empty -->
+    <div v-else-if="!decisions.length" class="state state-empty">
+      <p class="state-title">No verdicts on file yet.</p>
+      <p class="state-body">
+        The analyst records a case file each cycle it runs. Add symbols to your
+        watchlist or trigger an analysis, and their verdicts will land here.
+      </p>
+      <router-link to="/watchlist" class="ledger-link">
+        Open watchlist
+        <i class="pi pi-arrow-right" aria-hidden="true"></i>
+      </router-link>
+    </div>
+
+    <!-- The feed: one dossier card per symbol -->
+    <div v-else class="feed-grid">
+      <article
+        v-for="d in decisions"
+        :key="d.id"
+        class="dossier"
+        :class="`v-${verdictKey(d.verdict)}`"
+        @click="openCaseFile(d.symbol)"
+      >
+        <span class="dossier-spine" aria-hidden="true"></span>
+
+        <!-- Header: symbol + class + verdict stamp -->
+        <div class="dossier-head">
+          <div class="head-id">
+            <span class="symbol">{{ d.symbol }}</span>
+            <span class="asset-chip" :class="assetKey(d.asset_class)">
+              {{ d.asset_class }}
+            </span>
+          </div>
+          <span class="stamp" :class="`v-${verdictKey(d.verdict)}`">
+            {{ verdictLabel(d.verdict) }}
+          </span>
         </div>
-        <div class="logs-header-right">
-          <label for="log-filter" class="filter-label">Filter:</label>
-          <select
-            id="log-filter"
-            @change="handleFilterChange({ level: $event.target.value })"
-            class="jd-input jd-select"
+
+        <!-- Action + conviction -->
+        <div class="dossier-call">
+          <span class="call-action" :class="actionKey(d.action)">{{ String(d.action).toUpperCase() }}</span>
+          <div class="conviction" v-if="d.ai_invoked">
+            <span class="conviction-label">conviction</span>
+            <span class="conviction-track" aria-hidden="true">
+              <span class="conviction-fill" :style="{ width: clampPct(d.confidence) + '%' }"></span>
+            </span>
+            <span class="conviction-num">{{ clampPct(d.confidence) }}%</span>
+          </div>
+          <span v-else class="call-noai">AI not invoked</span>
+          <span class="call-time">{{ formatTime(d.created_at) }}</span>
+        </div>
+
+        <!-- Pulled data — the ledger, laid open -->
+        <section class="dossier-block" v-if="dataEntries(d).length">
+          <div class="block-label">Data pulled</div>
+          <dl class="ledger">
+            <div v-for="row in dataEntries(d)" :key="row.k" class="ledger-row">
+              <dt>{{ row.k }}</dt>
+              <dd>{{ row.v }}</dd>
+            </div>
+          </dl>
+          <div v-if="dataOverflow(d) > 0" class="ledger-more">+{{ dataOverflow(d) }} more fields</div>
+        </section>
+        <section class="dossier-block muted" v-else>
+          <div class="block-label">Data pulled</div>
+          <p class="block-empty">No indicator snapshot on this cycle.</p>
+        </section>
+
+        <!-- Reasoning -->
+        <section class="dossier-block">
+          <div class="block-label">Reasoning</div>
+          <p class="reasoning" v-if="reasoning(d)">{{ reasoning(d) }}</p>
+          <p class="reasoning faint" v-else>No reasoning recorded for this verdict.</p>
+          <ul class="factors" v-if="keyFactors(d).length">
+            <li v-for="(f, i) in keyFactors(d)" :key="i">{{ f }}</li>
+          </ul>
+          <p class="risk" v-if="riskWarning(d)">
+            <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+            {{ riskWarning(d) }}
+          </p>
+        </section>
+
+        <!-- Footer: completeness + open case file -->
+        <div class="dossier-foot">
+          <div class="completeness" :title="completenessTitle(d)">
+            <span
+              class="dot"
+              :class="{ ok: completeness(d).indicators }"
+            >indicators</span>
+            <span
+              class="dot"
+              :class="{ ok: completeness(d).ai_output }"
+            >AI output</span>
+          </div>
+          <router-link
+            class="case-link"
+            :to="{ name: 'SymbolDetail', params: { symbol: d.symbol } }"
+            @click.stop
           >
-            <option value="">All Levels</option>
-            <option value="INFO">Info</option>
-            <option value="WARNING">Warning</option>
-            <option value="ERROR">Error</option>
-          </select>
+            Open case file
+            <i class="pi pi-arrow-right" aria-hidden="true"></i>
+          </router-link>
         </div>
-      </div>
-      <div class="jd-card-body">
-        <LogViewer :logs="logs" :isDarkMode="true" @filter-change="handleFilterChange" />
-      </div>
+      </article>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { getMetrics, getLogs, getTaskStatus, getHealth } from '@/api'
-import { wsManager } from '@/utils/websocket'
-import SystemMonitor from '@/components/SystemMonitor.vue'
-import LogViewer from '@/components/LogViewer.vue'
-import TaskStatusPanel from '@/components/TaskStatusPanel.vue'
+import { useRouter } from 'vue-router'
+import { getDecisions } from '@/api'
+import dayjs from 'dayjs'
+import relativeTime from 'dayjs/plugin/relativeTime'
 
-const metrics = ref(null)
-const logs = ref([])
-const taskStatus = ref([])
-const health = ref(null)
-const refreshing = ref(false)
-const metricsInterval = ref(null)
-const logFilter = ref({})
-const uptime = ref(99.9)
-const lastUpdate = ref('Now')
-let timeTimer = null
+dayjs.extend(relativeTime)
 
-const activeTaskCount = computed(() => {
-  return taskStatus.value?.filter(t => t.status === 'online').length || 0
-})
+const router = useRouter()
 
-const refreshAll = async () => {
-  refreshing.value = true
+const decisions = ref([])
+const loading = ref(false)
+const error = ref(null)
+const assetClass = ref('') // '' = all, 'crypto', 'equity'
+const lastUpdated = ref(null)
+let poll = null
+let clock = null
+const now = ref(Date.now())
+
+const assetFilters = [
+  { label: 'All', value: '' },
+  { label: 'Crypto', value: 'crypto' },
+  { label: 'Equity', value: 'equity' },
+]
+
+const MAX_LEDGER_ROWS = 6
+
+const loadDecisions = async () => {
+  loading.value = true
+  error.value = null
   try {
-    await Promise.all([
-      refreshMetrics(),
-      refreshLogs(),
-      refreshTaskStatus()
-    ])
-    lastUpdate.value = 'Just now'
-  } catch (error) {
-    console.error('Error refreshing:', error)
+    const res = await getDecisions(assetClass.value || null)
+    decisions.value = Array.isArray(res.data) ? res.data : []
+    lastUpdated.value = Date.now()
+  } catch (err) {
+    error.value = err.response?.data?.detail || 'The decisions endpoint did not respond. Check that the API is up.'
+    console.error('Failed to load decisions:', err)
   } finally {
-    refreshing.value = false
+    loading.value = false
   }
 }
 
-const refreshMetrics = async () => {
-  try {
-    const response = await getMetrics()
-    metrics.value = response.data
+const setAssetClass = (value) => {
+  if (assetClass.value === value) return
+  assetClass.value = value
+  loadDecisions()
+}
 
-    const healthResponse = await getHealth()
-    health.value = healthResponse.data
-  } catch (error) {
-    console.error('Failed to fetch metrics:', error)
+const openCaseFile = (symbol) => {
+  router.push({ name: 'SymbolDetail', params: { symbol } })
+}
+
+// --- Verdict / action / asset helpers ---
+const verdictKey = (v) => {
+  const s = String(v || '').toLowerCase()
+  if (s === 'go') return 'go'
+  if (s === 'no-go' || s === 'no_go' || s === 'nogo') return 'nogo'
+  return 'watch'
+}
+const verdictLabel = (v) => {
+  const k = verdictKey(v)
+  return k === 'nogo' ? 'NO-GO' : k.toUpperCase()
+}
+const actionKey = (a) => String(a || '').toLowerCase()
+const assetKey = (c) => (String(c || '').toLowerCase() === 'equity' ? 'equity' : 'crypto')
+const clampPct = (n) => {
+  const x = Number(n) || 0
+  return Math.max(0, Math.min(100, Math.round(x)))
+}
+
+// --- Pulled-data ledger (indicators_snapshot / FA) ---
+const formatVal = (v) => {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) return '—'
+    const abs = Math.abs(v)
+    if (abs !== 0 && (abs < 0.001 || abs >= 1e7)) return v.toExponential(2)
+    return Number.isInteger(v) ? String(v) : v.toFixed(abs >= 100 ? 2 : 4)
+  }
+  if (typeof v === 'boolean') return v ? 'yes' : 'no'
+  if (typeof v === 'object') {
+    const s = JSON.stringify(v)
+    return s.length > 40 ? s.slice(0, 39) + '…' : s
+  }
+  const s = String(v)
+  return s.length > 40 ? s.slice(0, 39) + '…' : s
+}
+const snapshotEntries = (d) => {
+  const snap = d?.indicators_snapshot
+  if (!snap || typeof snap !== 'object') return []
+  return Object.entries(snap).filter(([, v]) => v !== null && v !== undefined && v !== '')
+}
+const dataEntries = (d) =>
+  snapshotEntries(d)
+    .slice(0, MAX_LEDGER_ROWS)
+    .map(([k, v]) => ({ k, v: formatVal(v) }))
+const dataOverflow = (d) => Math.max(0, snapshotEntries(d).length - MAX_LEDGER_ROWS)
+
+// --- Reasoning ---
+const reasoning = (d) => {
+  if (d?.verdict_reason) return d.verdict_reason
+  const r = d?.claude_response?.reason
+  return typeof r === 'string' ? r : ''
+}
+const keyFactors = (d) => {
+  const f = d?.claude_response?.key_factors
+  return Array.isArray(f) ? f.filter((x) => typeof x === 'string' && x.trim()).slice(0, 4) : []
+}
+const riskWarning = (d) => {
+  const w = d?.claude_response?.risk_warning
+  return typeof w === 'string' && w.trim() ? w : ''
+}
+
+// --- Completeness ---
+const completeness = (d) => {
+  const dc = d?.data_completeness || {}
+  return {
+    indicators: !!dc.indicators,
+    ai_output: dc.ai_output !== undefined ? !!dc.ai_output : !!d?.ai_invoked,
   }
 }
-
-const refreshLogs = async () => {
-  try {
-    const response = await getLogs(logFilter.value.category, logFilter.value.level)
-    logs.value = response.data.logs || []
-  } catch (error) {
-    console.error('Failed to fetch logs:', error)
-  }
+const completenessTitle = (d) => {
+  const c = completeness(d)
+  return `Indicators: ${c.indicators ? 'present' : 'missing'} · AI output: ${c.ai_output ? 'present' : 'missing'}`
 }
 
-const refreshTaskStatus = async () => {
-  try {
-    const response = await getTaskStatus()
-    taskStatus.value = response.data?.tasks || []
-  } catch (error) {
-    console.error('Failed to fetch task status:', error)
-  }
+// --- Time (recomputes against the clock ref so relative labels stay fresh) ---
+const formatTime = (ts) => {
+  void now.value
+  return ts ? dayjs(ts).fromNow() : '—'
 }
-
-const handleFilterChange = (filter) => {
-  logFilter.value = filter
-  refreshLogs()
-}
-
-const setupWebSocket = async () => {
-  try {
-    await wsManager.connect()
-    wsManager.on('message', (data) => {
-      if (data.type === 'log' && logs.value) {
-        logs.value.unshift(data.data)
-        if (logs.value.length > 100) {
-          logs.value.pop()
-        }
-      }
-    })
-  } catch (error) {
-    console.warn('WebSocket connection failed, will use polling:', error)
-  }
-}
-
-const updateLastUpdate = () => {
-  const now = new Date()
-  const hours = now.getHours()
-  const minutes = now.getMinutes()
-  const ampm = hours >= 12 ? 'PM' : 'AM'
-  const displayHours = hours % 12 || 12
-  lastUpdate.value = `${displayHours}:${minutes.toString().padStart(2, '0')} ${ampm}`
-}
-
-onMounted(async () => {
-  await refreshAll()
-
-  metricsInterval.value = setInterval(refreshMetrics, 5000)
-  timeTimer = setInterval(updateLastUpdate, 60000)
-  updateLastUpdate()
-
-  await setupWebSocket()
+const lastUpdatedLabel = computed(() => {
+  void now.value
+  return lastUpdated.value ? dayjs(lastUpdated.value).fromNow() : ''
 })
 
+onMounted(() => {
+  loadDecisions()
+  poll = setInterval(loadDecisions, 30000)
+  clock = setInterval(() => { now.value = Date.now() }, 30000)
+})
 onBeforeUnmount(() => {
-  if (metricsInterval.value) clearInterval(metricsInterval.value)
-  if (timeTimer) clearInterval(timeTimer)
-  wsManager.disconnect()
+  if (poll) clearInterval(poll)
+  if (clock) clearInterval(clock)
 })
 </script>
 
 <style scoped>
-/* Stats Grid Layout */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
+/* ── Verdict ledger tokens — a calm ink/graphite terminal, not a stat dashboard.
+   Deliberately warm-neutral (not the app's navy) and muted (no neon), so the
+   verdict itself — go / no-go / watch — is the only thing that carries colour. */
+.feed {
+  --ink:        #0e0f12;
+  --graphite:   #16181d;
+  --graphite-2: #1b1e24;
+  --graphite-h: #1f232a;
+  --rule:       rgba(150, 154, 165, 0.10);
+  --rule-2:     rgba(150, 154, 165, 0.16);
+  --ink-text:   #d8dae0;
+  --ink-muted:  #8a8f9a;
+  --ink-faint:  #5b606b;
+
+  --go:      #63a986;   --go-bg:   rgba(64, 120, 92, 0.16);   --go-line:   rgba(99, 169, 134, 0.42);
+  --nogo:    #c8735a;   --nogo-bg: rgba(150, 68, 48, 0.16);   --nogo-line: rgba(200, 115, 90, 0.42);
+  --watch:   #d0a24c;   --watch-bg:rgba(160, 122, 48, 0.15);  --watch-line:rgba(208, 162, 76, 0.40);
+
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Menlo', 'Cascadia Code', monospace;
+  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  color: var(--ink-text);
+  font-family: var(--sans);
 }
 
-/* Main Content Grid Layout */
-.main-grid {
-  display: grid;
-  grid-template-columns: 1fr 2fr;
-  gap: 20px;
+/* ── Masthead ── */
+.feed-masthead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--rule-2);
 }
-
-/* System Health Card - spans 1 column */
-.system-health-card {
-  min-width: 0;
+.masthead-lede { max-width: 640px; }
+.masthead-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 12px;
 }
-
-/* Task Status Card - spans 2 columns */
-.task-status-card {
-  min-width: 0;
+.pulse {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ink-faint);
 }
-
-/* Logs Card - full width */
-.logs-card {
-  grid-column: 1 / -1;
+.pulse.live { background: var(--go); box-shadow: 0 0 0 0 var(--go-bg); animation: pulse 2.4s ease-out infinite; }
+.masthead-title {
+  font-family: var(--mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #eef0f3;
+  margin: 0 0 8px;
+  line-height: 1.2;
 }
-
-/* Refresh Button Styling */
-.refresh-btn {
+.masthead-sub {
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--ink-muted);
+  margin: 0;
+}
+.masthead-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ledger-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-text);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--jd-trans, 0.2s), color var(--jd-trans, 0.2s);
+}
+.ledger-link:hover { border-bottom-color: var(--rule-2); }
+.ledger-link.subtle { color: var(--ink-muted); }
+.ledger-link i { font-size: 0.6875rem; }
+
+.refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--ink-text);
+  background: var(--graphite-2);
+  border: 1px solid var(--rule-2);
+  border-radius: 7px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background var(--jd-trans, 0.2s), border-color var(--jd-trans, 0.2s);
+}
+.refresh:hover:not(:disabled) { background: var(--graphite-h); border-color: rgba(150,154,165,0.28); }
+.refresh:disabled { opacity: 0.55; cursor: default; }
+.refresh i.spin { animation: spin 1s linear infinite; }
+
+/* ── Filter rail ── */
+.feed-rail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.segmented {
+  display: inline-flex;
+  background: var(--graphite);
+  border: 1px solid var(--rule-2);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+.seg {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: color var(--jd-trans, 0.2s), background var(--jd-trans, 0.2s);
+}
+.seg:hover { color: var(--ink-text); }
+.seg.active { color: #0e0f12; background: var(--ink-text); font-weight: 600; }
+.rail-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+.rail-time { color: var(--ink-faint); }
+
+/* ── Feed grid ── */
+.feed-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 18px;
+}
+
+/* ── Dossier card ── */
+.dossier {
+  position: relative;
+  background: var(--graphite);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 20px 22px 18px 26px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: background var(--jd-trans, 0.2s), border-color var(--jd-trans, 0.2s), transform var(--jd-trans, 0.2s);
+}
+.dossier:hover { background: var(--graphite-2); border-color: var(--rule-2); }
+.dossier-spine {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+}
+.dossier.v-go   .dossier-spine { background: var(--go-line); }
+.dossier.v-nogo .dossier-spine { background: var(--nogo-line); }
+.dossier.v-watch .dossier-spine { background: var(--watch-line); }
+
+/* header */
+.dossier-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.head-id { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.symbol {
+  font-family: var(--mono);
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #eef0f3;
+}
+.asset-chip {
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--rule-2);
+  color: var(--ink-muted);
+}
+.asset-chip.equity { color: #a9a2d6; border-color: rgba(150, 140, 210, 0.3); }
+.asset-chip.crypto { color: #86b4c2; border-color: rgba(120, 170, 190, 0.3); }
+
+.stamp {
+  font-family: var(--mono);
   font-size: 0.875rem;
-  padding: 6px 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: 1px solid;
   white-space: nowrap;
 }
+.stamp.v-go   { color: var(--go);   background: var(--go-bg);   border-color: var(--go-line); }
+.stamp.v-nogo { color: var(--nogo); background: var(--nogo-bg); border-color: var(--nogo-line); }
+.stamp.v-watch{ color: var(--watch);background: var(--watch-bg);border-color: var(--watch-line); }
 
-.refresh-btn i {
-  font-size: 0.875rem;
-}
-
-.refresh-btn.is-spinning i {
-  animation: spin-icon 1s linear infinite;
-}
-
-/* Logs Header Layout */
-.logs-header-left {
+/* call row */
+.dossier-call {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-bottom: 16px;
+  margin-bottom: 4px;
+  border-bottom: 1px dashed var(--rule-2);
 }
-
-.logs-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.filter-label {
-  font-size: 0.875rem;
-  color: var(--jd-text-muted);
-  font-weight: 500;
-}
-
-/* Live Label and Dot */
-.live-label {
+.call-action {
+  font-family: var(--mono);
   font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  color: var(--jd-green);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+}
+.call-action.buy  { color: var(--go); }
+.call-action.sell { color: var(--nogo); }
+.conviction { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 140px; }
+.conviction-label {
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.conviction-track {
+  flex: 1;
+  height: 4px;
+  min-width: 48px;
+  background: rgba(150, 154, 165, 0.14);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.conviction-fill { display: block; height: 100%; background: var(--ink-muted); border-radius: 2px; }
+.conviction-num { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-text); }
+.call-noai {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  flex: 1;
+}
+.call-time {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--ink-faint);
+  margin-left: auto;
 }
 
-/* Spin Animation for Icon */
-@keyframes spin-icon {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+/* blocks */
+.dossier-block { padding: 14px 0; border-bottom: 1px solid var(--rule); }
+.dossier-block.muted { opacity: 0.75; }
+.block-label {
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+}
+.block-empty { font-size: 0.8125rem; color: var(--ink-faint); margin: 0; }
+
+/* ledger (data pulled) */
+.ledger {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 20px;
+  margin: 0;
+}
+.ledger-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px dotted var(--rule);
+}
+.ledger-row dt {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ledger-row dd {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--ink-text);
+  margin: 0;
+  text-align: right;
+}
+.ledger-more {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--ink-faint);
+  margin-top: 8px;
 }
 
-/* Responsive Grid for smaller screens */
-@media (max-width: 1024px) {
-  .main-grid {
-    grid-template-columns: 1fr;
-  }
+/* reasoning */
+.reasoning {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-text);
+  margin: 0;
+}
+.reasoning.faint { color: var(--ink-faint); }
+.factors {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.factors li {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--ink-muted);
+  background: var(--graphite-2);
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+.risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--watch);
+  margin: 12px 0 0;
+}
+.risk i { font-size: 0.75rem; margin-top: 3px; }
 
-  .task-status-card {
-    grid-column: 1;
-  }
+/* footer */
+.dossier-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 14px;
+}
+.completeness { display: flex; gap: 14px; }
+.completeness .dot {
+  position: relative;
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding-left: 13px;
+}
+.completeness .dot::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 50%;
+  transform: translateY(-50%);
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+.completeness .dot.ok { color: var(--ink-muted); }
+.completeness .dot.ok::before { background: var(--go); }
+.case-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-text);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--jd-trans, 0.2s);
+}
+.case-link:hover { border-bottom-color: var(--rule-2); }
+.case-link i { font-size: 0.625rem; }
 
-  .logs-card {
-    grid-column: 1;
-  }
+/* ── States ── */
+.state {
+  border: 1px solid var(--rule-2);
+  border-radius: 10px;
+  background: var(--graphite);
+  padding: 40px 28px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.state-error { border-color: var(--nogo-line); }
+.state-title { font-family: var(--mono); font-size: 1rem; color: var(--ink-text); margin: 0; }
+.state-body { font-size: 0.9375rem; line-height: 1.55; color: var(--ink-muted); max-width: 460px; margin: 0 0 8px; }
+
+/* ── Skeleton ── */
+.skeleton-card {
+  background: var(--graphite);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sk-line { height: 14px; border-radius: 4px; background: var(--graphite-h); }
+.sk-line.sk-lg { width: 40%; height: 22px; }
+.sk-line.sk-md { width: 65%; }
+.sk-block { height: 90px; border-radius: 6px; background: var(--graphite-2); margin-top: 6px; }
+.skeleton-card { animation: shimmer 1.6s ease-in-out infinite; }
+
+/* ── Focus (keyboard) ── */
+.seg:focus-visible,
+.refresh:focus-visible,
+.ledger-link:focus-visible,
+.case-link:focus-visible,
+.dossier:focus-visible {
+  outline: 2px solid var(--watch);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
-@media (max-width: 768px) {
-  .stats-grid {
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
-  }
+/* ── Motion ── */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 var(--go-bg); }
+  70%  { box-shadow: 0 0 0 6px rgba(99, 169, 134, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(99, 169, 134, 0); }
+}
+@keyframes shimmer { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
-  .logs-header-left,
-  .logs-header-right {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-  }
+@media (prefers-reduced-motion: reduce) {
+  .pulse.live, .refresh i.spin, .skeleton-card { animation: none; }
+  .dossier, .refresh, .seg, .ledger-link, .case-link { transition: none; }
+}
 
-  .logs-header-right {
-    width: 100%;
-  }
-
-  .jd-select {
-    width: 100%;
-  }
+/* ── Responsive ── */
+@media (max-width: 820px) {
+  .feed-grid { grid-template-columns: 1fr; }
+  .feed-masthead { align-items: flex-start; }
+}
+@media (max-width: 520px) {
+  .dossier { padding: 16px 16px 14px 20px; }
+  .ledger { grid-template-columns: 1fr; }
+  .masthead-title { font-size: 1.25rem; }
+  .masthead-actions { width: 100%; }
 }
 </style>

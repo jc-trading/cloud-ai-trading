@@ -20,7 +20,7 @@
 
         <div class="jd-nav-section">
           <div class="jd-nav-label">Overview</div>
-          <SidebarItem to="/" icon="pi-chart-bar" label="System Monitoring" :isActive="route.path === '/'" />
+          <SidebarItem to="/" icon="pi-book" label="Decision Feed" :isActive="route.path === '/'" />
         </div>
 
         <div class="jd-nav-section">
@@ -182,7 +182,7 @@ const currentTime = ref('')
 let timeTimer = null
 
 const pageTitles = {
-  'Dashboard': 'System Monitoring',
+  'Dashboard': 'Decision Feed',
   'Watchlist': 'Watchlist',
   'WatchlistPage': 'Watchlist',
   'Market': 'Market Overview',
@@ -200,7 +200,7 @@ const pageTitles = {
 }
 
 const pageDescriptions = {
-  'Dashboard': 'Real-time system health and task monitoring',
+  'Dashboard': 'The latest go / no-go / watch verdict per symbol, and why',
   'Watchlist': 'Track your favorite assets',
   'Market': 'Live crypto & US stock prices',
   'SymbolDetail': 'In-depth market analysis',
