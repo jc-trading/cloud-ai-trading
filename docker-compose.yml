@@ -73,6 +73,7 @@ services:
       - ./backend/tasks:/app/tasks
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/tests:/app/tests
     networks:
       - cat_network
     restart: unless-stopped
@@ -112,6 +113,7 @@ services:
       - ./backend/tasks:/app/tasks
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/tests:/app/tests
     networks:
       - cat_network
     restart: unless-stopped
@@ -151,6 +153,7 @@ services:
       - ./backend/tasks:/app/tasks
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/tests:/app/tests
     networks:
       - cat_network
     restart: unless-stopped
