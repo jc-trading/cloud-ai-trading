@@ -13,24 +13,20 @@
       <div class="jd-card-body" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; align-items: flex-end;">
         <div class="jd-form-group">
           <label class="jd-label">Simulation Mode</label>
-          <Dropdown
-            v-model="simulationMode"
-            :options="modes"
-            optionLabel="label"
-            optionValue="value"
-            class="w-full jd-select"
-          />
+          <select v-model="simulationMode" class="jd-input jd-select w-full">
+            <option v-for="o in modes" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
         </div>
         <div class="jd-form-group">
           <label class="jd-label">Start Date</label>
-          <Calendar v-model="startDate" showIcon class="w-full jd-input"></Calendar>
+          <input type="date" v-model="startDate" class="jd-input w-full" />
         </div>
         <div class="jd-form-group">
           <label class="jd-label">End Date</label>
-          <Calendar v-model="endDate" showIcon class="w-full jd-input"></Calendar>
+          <input type="date" v-model="endDate" class="jd-input w-full" />
         </div>
         <div>
-          <Button label="Start Simulation" icon="pi pi-play" class="jd-btn jd-btn-primary"></Button>
+          <button class="jd-btn jd-btn-primary"><i class="pi pi-play"></i> Start Simulation</button>
         </div>
       </div>
     </div>
@@ -71,28 +67,22 @@
             <!-- Symbol Selection -->
             <div class="jd-form-group">
               <label class="jd-label">Symbol</label>
-              <InputText placeholder="BTCUSDT" class="w-full jd-input" />
+              <input placeholder="BTCUSDT" class="jd-input w-full" />
             </div>
 
             <!-- Order Type and Side -->
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div class="jd-form-group">
                 <label class="jd-label">Order Type</label>
-                <Dropdown
-                  :options="orderTypes"
-                  optionLabel="label"
-                  optionValue="value"
-                  class="w-full jd-select"
-                />
+                <select class="jd-input jd-select w-full">
+                  <option v-for="o in orderTypes" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
               </div>
               <div class="jd-form-group">
                 <label class="jd-label">Side</label>
-                <Dropdown
-                  :options="orderSides"
-                  optionLabel="label"
-                  optionValue="value"
-                  class="w-full jd-select"
-                />
+                <select class="jd-input jd-select w-full">
+                  <option v-for="o in orderSides" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
               </div>
             </div>
 
@@ -100,11 +90,11 @@
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div class="jd-form-group">
                 <label class="jd-label">Price (USDT)</label>
-                <InputNumber placeholder="0.00" class="w-full jd-input" />
+                <input type="number" placeholder="0.00" class="jd-input w-full" />
               </div>
               <div class="jd-form-group">
                 <label class="jd-label">Amount</label>
-                <InputNumber placeholder="0.00" class="w-full jd-input" />
+                <input type="number" placeholder="0.00" class="jd-input w-full" />
               </div>
             </div>
 
@@ -116,8 +106,8 @@
 
             <!-- Action Buttons -->
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-top: 16px;">
-              <Button label="Buy" icon="pi pi-arrow-up" class="jd-btn jd-btn-success jd-btn-lg"></Button>
-              <Button label="Sell" icon="pi pi-arrow-down" class="jd-btn jd-btn-danger jd-btn-lg"></Button>
+              <button class="jd-btn jd-btn-success jd-btn-lg"><i class="pi pi-arrow-up"></i> Buy</button>
+              <button class="jd-btn jd-btn-danger jd-btn-lg"><i class="pi pi-arrow-down"></i> Sell</button>
             </div>
           </div>
         </div>
@@ -167,7 +157,7 @@
         <span :class="value >= 0 ? 'price-up' : 'price-down'">{{ value >= 0 ? '+' : '' }}{{ value }}%</span>
       </template>
       <template #row-actions>
-        <Button label="Close" icon="pi pi-times" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
+        <button class="jd-btn jd-btn-ghost jd-btn-sm"><i class="pi pi-times"></i> Close</button>
       </template>
     </DataTable>
 
@@ -193,12 +183,6 @@
 <script setup>
 import { ref } from 'vue'
 import DataTable from '@/components/common/DataTable.vue'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import InputNumber from 'primevue/inputnumber'
-import Dropdown from 'primevue/dropdown'
-import Calendar from 'primevue/calendar'
-import Tag from 'primevue/tag'
 
 const simulationMode = ref('historical')
 const startDate = ref(null)
@@ -252,114 +236,5 @@ const tradeColumns = [
 
 .price-down {
   color: var(--jd-red);
-}
-
-:deep(.p-datatable) {
-  background-color: transparent;
-  color: var(--jd-text);
-}
-
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: transparent;
-  color: var(--jd-text);
-  border-color: var(--jd-border);
-  font-weight: 600;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  border-color: var(--jd-border);
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: var(--jd-border);
-  color: var(--jd-text);
-}
-
-:deep(.p-inputtext.jd-input),
-:deep(.p-inputnumber.jd-input) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  padding: 8px 12px;
-  border-radius: 6px;
-}
-
-:deep(.p-inputtext.jd-input:focus),
-:deep(.p-inputnumber.jd-input:focus) {
-  border-color: var(--jd-blue);
-  outline: none;
-}
-
-:deep(.p-dropdown.jd-select) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  border-radius: 6px;
-}
-
-:deep(.p-dropdown.jd-select:focus) {
-  border-color: var(--jd-blue);
-  outline: none;
-}
-
-:deep(.p-dropdown.jd-select .p-dropdown-trigger) {
-  color: var(--jd-text-muted);
-}
-
-:deep(.p-calendar.jd-input) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  border-radius: 6px;
-}
-
-:deep(.p-calendar.jd-input:focus) {
-  border-color: var(--jd-blue);
-  outline: none;
-}
-
-:deep(.p-button.jd-btn) {
-  background-color: var(--jd-blue);
-  border-color: var(--jd-blue);
-  color: white;
-  padding: 8px 16px;
-  border-radius: 6px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-:deep(.p-button.jd-btn:hover) {
-  opacity: 0.8;
-}
-
-:deep(.p-button.jd-btn-success) {
-  background-color: var(--jd-green);
-  border-color: var(--jd-green);
-}
-
-:deep(.p-button.jd-btn-danger) {
-  background-color: var(--jd-red);
-  border-color: var(--jd-red);
-}
-
-:deep(.p-button.jd-btn-ghost) {
-  background-color: transparent;
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-}
-
-:deep(.p-button.jd-btn-ghost:hover) {
-  background-color: var(--jd-card);
-}
-
-:deep(.p-button.jd-btn-lg) {
-  padding: 12px 24px;
-  font-size: 16px;
-}
-
-:deep(.p-button.jd-btn-sm) {
-  padding: 4px 8px;
-  font-size: 12px;
 }
 </style>

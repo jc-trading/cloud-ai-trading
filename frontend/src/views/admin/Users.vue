@@ -59,58 +59,42 @@
       </div>
     </div>
 
-    <!-- Edit User Dialog (Placeholder) -->
-    <Dialog
-      v-model:visible="showEditDialog"
-      header="Edit User"
-      :modal="true"
-      class="p-dialog"
-    >
+    <!-- Edit User Modal -->
+    <Modal v-model="showEditDialog" title="Edit User">
       <div v-if="selectedUser" class="space-y-4">
         <div>
           <label class="block text-gray-400 text-sm mb-2">Email</label>
-          <InputText v-model="selectedUser.email" class="w-full" />
+          <input v-model="selectedUser.email" class="jd-input w-full" />
         </div>
         <div>
           <label class="block text-gray-400 text-sm mb-2">Name</label>
-          <InputText v-model="selectedUser.name" class="w-full" />
+          <input v-model="selectedUser.name" class="jd-input w-full" />
         </div>
         <div>
           <label class="block text-gray-400 text-sm mb-2">Role</label>
-          <Dropdown
-            v-model="selectedUser.role"
-            :options="roles"
-            optionLabel="label"
-            optionValue="value"
-            class="w-full"
-          />
+          <select v-model="selectedUser.role" class="jd-input jd-select w-full">
+            <option v-for="o in roles" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
         </div>
         <div>
           <label class="block text-gray-400 text-sm mb-2">Status</label>
-          <Dropdown
-            v-model="selectedUser.status"
-            :options="statusOptions"
-            optionLabel="label"
-            optionValue="value"
-            class="w-full"
-          />
+          <select v-model="selectedUser.status" class="jd-input jd-select w-full">
+            <option v-for="o in statusOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
         </div>
       </div>
       <template #footer>
-        <Button label="Cancel" icon="pi pi-times" class="p-button-outlined" @click="showEditDialog = false"></Button>
-        <Button label="Save" icon="pi pi-check" @click="saveUser"></Button>
+        <button class="jd-btn jd-btn-ghost" @click="showEditDialog = false">Cancel</button>
+        <button class="jd-btn jd-btn-primary" @click="saveUser">Save</button>
       </template>
-    </Dialog>
+    </Modal>
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue'
 import DataTable from '@/components/common/DataTable.vue'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import Dropdown from 'primevue/dropdown'
-import Dialog from 'primevue/dialog'
+import Modal from '@/components/common/Modal.vue'
 
 const showEditDialog = ref(false)
 const selectedUser = ref(null)
@@ -162,51 +146,6 @@ const saveUser = () => {
 .jd-back-link { color: var(--jd-cyan); font-size: 13px; text-decoration: none; }
 .jd-back-link:hover { color: var(--jd-text); }
 .jd-row-actions { display: flex; gap: 8px; }
-
-:deep(.p-dialog) {
-  background-color: #1f2937;
-}
-
-:deep(.p-dialog .p-dialog-header) {
-  background-color: #111827;
-  border-color: #374151;
-  color: #f3f4f6;
-}
-
-:deep(.p-dialog .p-dialog-content) {
-  background-color: #111827;
-  color: #f3f4f6;
-}
-
-:deep(.p-inputtext) {
-  background-color: rgba(75, 85, 99, 0.5);
-  border-color: #374151;
-  color: #f3f4f6;
-}
-
-:deep(.p-inputtext:focus) {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.25);
-}
-
-:deep(.p-dropdown) {
-  background-color: rgba(75, 85, 99, 0.5);
-  border-color: #374151;
-  color: #f3f4f6;
-}
-
-:deep(.p-dropdown .p-dropdown-trigger) {
-  color: #9ca3af;
-}
-
-:deep(.p-button) {
-  background-color: #3b82f6;
-  border-color: #3b82f6;
-}
-
-:deep(.p-button:hover) {
-  background-color: #2563eb;
-}
 
 a {
   text-decoration: none;

@@ -6,30 +6,22 @@
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div>
             <label style="display: block; color: var(--jd-text-muted); font-size: 0.875rem; margin-bottom: 8px">Select Symbol</label>
-            <InputText placeholder="Symbol..." class="w-full" />
+            <input class="jd-input w-full" placeholder="Symbol..." />
           </div>
           <div>
             <label style="display: block; color: var(--jd-text-muted); font-size: 0.875rem; margin-bottom: 8px">Timeframe</label>
-            <Dropdown
-              :options="timeframes"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Select timeframe"
-              class="w-full"
-            />
+            <select class="jd-input jd-select w-full">
+              <option v-for="o in timeframes" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
           </div>
           <div>
             <label style="display: block; color: var(--jd-text-muted); font-size: 0.875rem; margin-bottom: 8px">Model</label>
-            <Dropdown
-              :options="models"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Select model"
-              class="w-full"
-            />
+            <select class="jd-input jd-select w-full">
+              <option v-for="o in models" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
           </div>
           <div class="flex items-end">
-            <Button label="Run Analysis" icon="pi pi-play" class="w-full"></Button>
+            <button class="jd-btn jd-btn-primary w-full"><i class="pi pi-play"></i> Run Analysis</button>
           </div>
         </div>
       </div>
@@ -68,7 +60,7 @@
             </div>
             <div>
               <p style="color: var(--jd-text-muted); font-size: 0.875rem; margin-bottom: 4px">Confidence</p>
-              <ProgressBar :value="0" class="mb-2"></ProgressBar>
+              <div class="pbar mb-2"><i :style="{ width: 0 + '%' }"></i></div>
             </div>
           </div>
         </div>
@@ -120,10 +112,7 @@
           empty-text="No metrics available"
         >
           <template #cell:status="{ value }">
-            <Tag
-              :value="value"
-              :severity="value === 'Bullish' ? 'success' : value === 'Bearish' ? 'danger' : 'info'"
-            ></Tag>
+            <span class="jd-badge" :class="value === 'Bullish' ? 'green' : value === 'Bearish' ? 'red' : 'cyan'">{{ value }}</span>
           </template>
         </DataTable>
         <div style="margin-top: 24px; text-align: center">
@@ -137,11 +126,6 @@
 <script setup>
 import { ref } from 'vue'
 import DataTable from '@/components/common/DataTable.vue'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import Dropdown from 'primevue/dropdown'
-import Tag from 'primevue/tag'
-import ProgressBar from 'primevue/progressbar'
 
 const timeframes = ref([
   { label: '1H', value: '1h' },
@@ -166,29 +150,16 @@ const metrics = ref([])
 </script>
 
 <style scoped>
-:deep(.p-inputtext) {
-  background-color: rgba(75, 85, 99, 0.5);
-  border-color: var(--jd-border);
-  color: var(--jd-text);
+.pbar {
+  height: 6px;
+  background: var(--jd-border);
+  border-radius: 3px;
+  overflow: hidden;
 }
-
-:deep(.p-dropdown) {
-  background-color: rgba(75, 85, 99, 0.5);
-  border-color: var(--jd-border);
-  color: var(--jd-text);
-}
-
-:deep(.p-dropdown .p-dropdown-trigger) {
-  color: var(--jd-text-muted);
-}
-
-:deep(.p-button) {
-  background-color: var(--jd-blue);
-  border-color: var(--jd-blue);
-}
-
-:deep(.p-button:hover) {
-  background-color: var(--jd-blue);
-  opacity: 0.85;
+.pbar i {
+  display: block;
+  height: 100%;
+  background: var(--jd-cyan);
+  border-radius: 3px;
 }
 </style>

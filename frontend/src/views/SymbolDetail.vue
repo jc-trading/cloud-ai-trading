@@ -14,14 +14,18 @@
           <span class="text-sm" style="color: var(--jd-text-muted)">{{ isStock ? 'US Stock' : 'Crypto · USDT pair' }}</span>
         </div>
         <div class="header-actions">
-          <Button
-            :label="inWatchlist ? 'In Watchlist' : 'Add to Watchlist'"
-            :icon="inWatchlist ? 'pi pi-heart-fill' : 'pi pi-heart'"
-            :class="inWatchlist ? 'p-button-success p-button-outlined' : 'p-button-outlined'"
-            :loading="addingToWatchlist"
+          <button
+            class="jd-btn jd-btn-ghost"
+            :disabled="addingToWatchlist"
             @click="toggleWatchlist"
-          />
-          <Button label="Trade" icon="pi pi-arrow-right" severity="success" />
+          >
+            <i :class="addingToWatchlist ? 'pi pi-spin pi-spinner' : (inWatchlist ? 'pi pi-heart-fill' : 'pi pi-heart')"></i>
+            {{ inWatchlist ? 'In Watchlist' : 'Add to Watchlist' }}
+          </button>
+          <button class="jd-btn jd-btn-primary">
+            <i class="pi pi-arrow-right"></i>
+            Trade
+          </button>
         </div>
       </div>
     </div>
@@ -124,15 +128,19 @@
           </div>
           <div class="jd-card-body">
             <div class="space-y-3">
-              <Button
-                :label="inWatchlist ? 'Remove from Watchlist' : 'Add to Watchlist'"
-                :icon="inWatchlist ? 'pi pi-heart-fill' : 'pi pi-heart'"
-                :class="inWatchlist ? 'w-full p-button-danger p-button-outlined' : 'w-full p-button-outlined'"
-                :loading="addingToWatchlist"
+              <button
+                :class="['jd-btn w-full', inWatchlist ? 'jd-btn-danger' : 'jd-btn-ghost']"
+                :disabled="addingToWatchlist"
                 @click="toggleWatchlist"
-              />
-              <Button label="Trade →" class="w-full" severity="success" />
-              <Button label="Set Alert" icon="pi pi-bell" class="w-full p-button-outlined" />
+              >
+                <i :class="addingToWatchlist ? 'pi pi-spin pi-spinner' : (inWatchlist ? 'pi pi-heart-fill' : 'pi pi-heart')"></i>
+                {{ inWatchlist ? 'Remove from Watchlist' : 'Add to Watchlist' }}
+              </button>
+              <button class="jd-btn jd-btn-primary w-full">Trade →</button>
+              <button class="jd-btn jd-btn-ghost w-full">
+                <i class="pi pi-bell"></i>
+                Set Alert
+              </button>
             </div>
             <div v-if="watchlistMsg" class="watchlist-msg" :class="watchlistMsg.type === 'success' ? 'success' : 'error'">
               {{ watchlistMsg.text }}
@@ -147,18 +155,18 @@
       <i class="pi pi-exclamation-circle"></i>
       <p>Failed to load {{ symbol }}</p>
       <p class="text-sm" style="color: var(--jd-text-muted)">{{ error }}</p>
-      <Button label="Retry" icon="pi pi-refresh" @click="loadData" class="mt-4" />
+      <button class="jd-btn jd-btn-primary mt-4" @click="loadData">
+        <i class="pi pi-refresh"></i>
+        Retry
+      </button>
     </div>
   </div>
-  <Toast />
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import Button from 'primevue/button'
-import Toast from 'primevue/toast'
-import { useToast } from 'primevue/usetoast'
+import { useToast } from '@/composables/useToast'
 import { createChart } from 'lightweight-charts'
 import { marketApi, watchlistApi } from '@/api/market'
 

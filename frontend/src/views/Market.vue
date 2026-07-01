@@ -51,12 +51,13 @@
         <div class="header-right">
           <span v-if="loading" class="update-text">Loading...</span>
           <span v-else class="update-text">Updated {{ lastUpdated }}</span>
-          <Button
-            icon="pi pi-refresh"
-            class="p-button-sm p-button-text p-button-rounded"
-            :loading="loading"
+          <button
+            class="jd-btn jd-btn-ghost jd-btn-sm"
+            :disabled="loading"
             @click="loadActiveTab"
-          />
+          >
+            <i class="pi pi-refresh" :class="{ 'animate-spin': loading }"></i>
+          </button>
         </div>
       </div>
 
@@ -135,7 +136,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import Button from 'primevue/button'
 import DataTable from '@/components/common/DataTable.vue'
 import { marketApi } from '@/api/market'
 
@@ -291,9 +291,5 @@ onMounted(() => {
 
 .mb-4 {
   margin-bottom: 16px;
-}
-
-:deep(.p-button.p-button-text) {
-  color: var(--jd-text-muted);
 }
 </style>

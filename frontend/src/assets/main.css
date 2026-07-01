@@ -965,48 +965,6 @@ body {
 .jd-pager .pg button.on { color: #04121a; background: var(--jd-cyan); border-color: var(--jd-cyan); }
 .jd-pager .pg button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ══════════════════════════════════════════════════════════════
-   PrimeVue DataTable overrides (retuned)
-   ══════════════════════════════════════════════════════════════ */
-:deep(.p-datatable) { background: transparent !important; color: var(--jd-text) !important; }
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background: transparent !important;
-  color: var(--jd-text-muted) !important;
-  border-color: var(--jd-border) !important;
-  font-size: 10px !important;
-  text-transform: uppercase !important;
-  letter-spacing: 0.1em !important;
-  font-weight: 500 !important;
-  font-family: var(--jd-mono) !important;
-  padding: 11px 16px !important;
-}
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  background: transparent !important;
-  border-color: rgba(27,36,64,0.5) !important;
-  transition: background var(--jd-trans) !important;
-}
-:deep(.p-datatable .p-datatable-tbody > tr:hover) {
-  background: rgba(63,224,255,0.03) !important;
-}
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: rgba(27,36,64,0.5) !important;
-  color: var(--jd-text) !important;
-  font-family: var(--jd-mono) !important;
-  font-size: 12px !important;
-  padding: 11px 16px !important;
-}
-:deep(.p-paginator) {
-  background: transparent !important;
-  border-color: var(--jd-border) !important;
-  color: var(--jd-text-muted) !important;
-}
-:deep(.p-paginator .p-paginator-page.p-highlight) {
-  background: var(--jd-cyan) !important;
-  color: #04121a !important;
-}
-:deep(.p-button.p-button-outlined) { border-color: rgba(63,224,255,0.35) !important; color: var(--jd-cyan) !important; }
-:deep(.p-button.p-button-text) { color: var(--jd-text-muted) !important; }
-
 /* Gradient text */
 .jd-gradient-text {
   background: linear-gradient(135deg, #3fe0ff, #a06bff);

@@ -15,7 +15,7 @@
           <div class="jd-live-dot"></div>
           <span>Exchange Status: <span style="color: var(--jd-red);">Disconnected</span></span>
         </div>
-        <Button label="Connect Exchange" icon="pi pi-link" class="jd-btn jd-btn-primary"></Button>
+        <button class="jd-btn jd-btn-primary"><i class="pi pi-link"></i> Connect Exchange</button>
       </div>
     </div>
 
@@ -32,30 +32,22 @@
               <!-- Symbol Selection -->
               <div class="jd-form-group">
                 <label class="jd-label">Symbol</label>
-                <InputText v-model="orderSymbol" placeholder="BTCUSDT" class="w-full jd-input" />
+                <input v-model="orderSymbol" placeholder="BTCUSDT" class="w-full jd-input" />
               </div>
 
               <!-- Order Type and Side -->
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                 <div class="jd-form-group">
                   <label class="jd-label">Order Type</label>
-                  <Dropdown
-                    v-model="orderType"
-                    :options="orderTypes"
-                    optionLabel="label"
-                    optionValue="value"
-                    class="w-full jd-select"
-                  />
+                  <select v-model="orderType" class="w-full jd-input jd-select">
+                    <option v-for="o in orderTypes" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </select>
                 </div>
                 <div class="jd-form-group">
                   <label class="jd-label">Side</label>
-                  <Dropdown
-                    v-model="orderSide"
-                    :options="orderSides"
-                    optionLabel="label"
-                    optionValue="value"
-                    class="w-full jd-select"
-                  />
+                  <select v-model="orderSide" class="w-full jd-input jd-select">
+                    <option v-for="o in orderSides" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </select>
                 </div>
               </div>
 
@@ -63,11 +55,11 @@
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                 <div class="jd-form-group">
                   <label class="jd-label">Price (USDT)</label>
-                  <InputNumber placeholder="0.00" class="w-full jd-input" />
+                  <input type="number" placeholder="0.00" class="w-full jd-input" />
                 </div>
                 <div class="jd-form-group">
                   <label class="jd-label">Amount</label>
-                  <InputNumber placeholder="0.00" class="w-full jd-input" />
+                  <input type="number" placeholder="0.00" class="w-full jd-input" />
                 </div>
               </div>
 
@@ -79,7 +71,7 @@
 
               <!-- Advanced Options -->
               <div style="border-top: 1px solid var(--jd-border); padding-top: 16px; display: flex; align-items: center; gap: 8px;">
-                <Checkbox v-model="advancedOptions" binary inputId="advanced"></Checkbox>
+                <input type="checkbox" v-model="advancedOptions" id="advanced" />
                 <label for="advanced" class="jd-label">Show Advanced Options</label>
               </div>
 
@@ -87,18 +79,18 @@
               <div v-if="advancedOptions" style="display: flex; flex-direction: column; gap: 16px; background: var(--jd-card); border: 1px solid var(--jd-border); border-radius: 8px; padding: 16px;">
                 <div class="jd-form-group">
                   <label class="jd-label">Stop Loss</label>
-                  <InputNumber placeholder="0.00" class="w-full jd-input" />
+                  <input type="number" placeholder="0.00" class="w-full jd-input" />
                 </div>
                 <div class="jd-form-group">
                   <label class="jd-label">Take Profit</label>
-                  <InputNumber placeholder="0.00" class="w-full jd-input" />
+                  <input type="number" placeholder="0.00" class="w-full jd-input" />
                 </div>
               </div>
 
               <!-- Action Buttons -->
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-top: 16px;">
-                <Button label="Buy" icon="pi pi-arrow-up" class="jd-btn jd-btn-success jd-btn-lg"></Button>
-                <Button label="Sell" icon="pi pi-arrow-down" class="jd-btn jd-btn-danger jd-btn-lg"></Button>
+                <button class="jd-btn jd-btn-success jd-btn-lg"><i class="pi pi-arrow-up"></i> Buy</button>
+                <button class="jd-btn jd-btn-danger jd-btn-lg"><i class="pi pi-arrow-down"></i> Sell</button>
               </div>
             </div>
           </div>
@@ -151,7 +143,7 @@
               <span class="jd-badge" :class="value === 'Buy' ? 'green' : 'red'">{{ value }}</span>
             </template>
             <template #row-actions>
-              <Button label="Cancel" icon="pi pi-times" class="jd-btn jd-btn-danger jd-btn-sm"></Button>
+              <button class="jd-btn jd-btn-danger jd-btn-sm"><i class="pi pi-times"></i> Cancel</button>
             </template>
           </DataTable>
         </div>
@@ -185,12 +177,6 @@
 <script setup>
 import { ref } from 'vue'
 import DataTable from '@/components/common/DataTable.vue'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import InputNumber from 'primevue/inputnumber'
-import Dropdown from 'primevue/dropdown'
-import Tag from 'primevue/tag'
-import Checkbox from 'primevue/checkbox'
 
 const orderSymbol = ref('')
 const orderType = ref('limit')
@@ -233,75 +219,5 @@ const orderHistoryColumns = [
 <style scoped>
 .w-full {
   width: 100%;
-}
-
-:deep(.p-inputtext.jd-input),
-:deep(.p-inputnumber.jd-input) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  padding: 8px 12px;
-  border-radius: 6px;
-}
-
-:deep(.p-inputtext.jd-input:focus),
-:deep(.p-inputnumber.jd-input:focus) {
-  border-color: var(--jd-blue);
-  outline: none;
-}
-
-:deep(.p-dropdown.jd-select) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  border-radius: 6px;
-}
-
-:deep(.p-dropdown.jd-select:focus) {
-  border-color: var(--jd-blue);
-  outline: none;
-}
-
-:deep(.p-dropdown.jd-select .p-dropdown-trigger) {
-  color: var(--jd-text-muted);
-}
-
-:deep(.p-button.jd-btn) {
-  background-color: var(--jd-blue);
-  border-color: var(--jd-blue);
-  color: white;
-  padding: 8px 16px;
-  border-radius: 6px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-:deep(.p-button.jd-btn:hover) {
-  opacity: 0.8;
-}
-
-:deep(.p-button.jd-btn-success) {
-  background-color: var(--jd-green);
-  border-color: var(--jd-green);
-}
-
-:deep(.p-button.jd-btn-danger) {
-  background-color: var(--jd-red);
-  border-color: var(--jd-red);
-}
-
-:deep(.p-button.jd-btn-lg) {
-  padding: 12px 24px;
-  font-size: 16px;
-}
-
-:deep(.p-button.jd-btn-sm) {
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-:deep(.p-checkbox) {
-  margin-right: 8px;
 }
 </style>

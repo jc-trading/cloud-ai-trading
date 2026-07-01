@@ -5,10 +5,12 @@
     </div>
   </div>
   <router-view />
+  <ToastHost />
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import ToastHost from '@/components/common/ToastHost.vue'
 
 const showPreloader = ref(document.documentElement.getAttribute('data-preloader') === 'enable')
 
@@ -27,9 +29,7 @@ onMounted(() => {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
