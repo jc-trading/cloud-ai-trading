@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     BINANCE_API_KEY: str = ""
     BINANCE_API_SECRET: str = ""
 
+    # Finnhub (fundamental analysis data source — earnings, estimates, news, profile)
+    FINNHUB_API_KEY: str = ""
+
     # Exchange defaults
     DEFAULT_SIMULATE_BALANCE: float = 10000.0  # USDT
     BINANCE_FEE_RATE: float = 0.001  # 0.1%
