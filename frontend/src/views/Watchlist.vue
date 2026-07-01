@@ -186,7 +186,7 @@
       <span class="mr-2">⚠</span>
       <span>
         US stock prices not loading — Alpaca API key may not be active in Docker.
-        Run <code class="bg-gray-800 px-1.5 py-0.5 rounded text-xs font-mono">docker compose up --build -d</code> to reload environment variables.
+        Run <code class="px-1.5 py-0.5 rounded text-xs" style="background:var(--jd-input);font-family:var(--jd-mono)">docker compose up --build -d</code> to reload environment variables.
       </span>
     </div>
 

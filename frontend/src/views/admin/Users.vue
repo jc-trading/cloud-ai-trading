@@ -63,21 +63,21 @@
     <Modal v-model="showEditDialog" title="Edit User">
       <div v-if="selectedUser" class="space-y-4">
         <div>
-          <label class="block text-gray-400 text-sm mb-2">Email</label>
+          <label class="jd-label">Email</label>
           <input v-model="selectedUser.email" class="jd-input w-full" />
         </div>
         <div>
-          <label class="block text-gray-400 text-sm mb-2">Name</label>
+          <label class="jd-label">Name</label>
           <input v-model="selectedUser.name" class="jd-input w-full" />
         </div>
         <div>
-          <label class="block text-gray-400 text-sm mb-2">Role</label>
+          <label class="jd-label">Role</label>
           <select v-model="selectedUser.role" class="jd-input jd-select w-full">
             <option v-for="o in roles" :key="o.value" :value="o.value">{{ o.label }}</option>
           </select>
         </div>
         <div>
-          <label class="block text-gray-400 text-sm mb-2">Status</label>
+          <label class="jd-label">Status</label>
           <select v-model="selectedUser.status" class="jd-input jd-select w-full">
             <option v-for="o in statusOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
           </select>
