@@ -34,7 +34,7 @@
 
     <!-- Card with tabs and data -->
     <div class="jd-card">
-      <!-- Card Header -->
+      <!-- Card Header: crypto/stocks tab switch above the table -->
       <div class="jd-card-header flex-header">
         <div class="jd-tabs">
           <button
@@ -81,61 +81,44 @@
           <p class="text-xs">Sign up free at <a href="https://alpaca.markets" target="_blank">alpaca.markets</a></p>
         </div>
 
-        <!-- Data Table -->
+        <!-- Data Table (reusable component) — active tab feeds :data -->
         <DataTable
-          :value="activeTickers"
+          :columns="columns"
+          :data="activeTickers"
+          row-key="symbol"
+          :searchable="['symbol']"
+          search-placeholder="Search symbol…"
+          :page-size="25"
           :loading="loading"
-          stripedRows
-          responsiveLayout="scroll"
-          class="p-datatable-sm"
-          :paginator="activeTickers.length > 10"
-          :rows="10"
+          clickable-rows
+          @row-click="goToSymbol"
         >
-          <Column field="symbol" header="Symbol" :sortable="true">
-            <template #body="{ data }">
-              <div class="flex items-center gap-2">
-                <span class="font-semibold">{{ data.symbol }}</span>
-                <span v-if="activeTab === 'stocks'" class="jd-badge blue">US</span>
-              </div>
-            </template>
-          </Column>
-          <Column field="last" header="Price" :sortable="true">
-            <template #body="{ data }">
-              <span class="font-mono">${{ formatPrice(data.last) }}</span>
-            </template>
-          </Column>
-          <Column field="change_24h" header="24h Change" :sortable="true">
-            <template #body="{ data }">
-              <span
-                class="font-semibold"
-                :class="(data.change_24h ?? 0) >= 0 ? 'price-up' : 'price-down'"
-              >
-                {{ (data.change_24h ?? 0) >= 0 ? '+' : '' }}{{ (data.change_24h ?? 0).toFixed(2) }}%
-              </span>
-            </template>
-          </Column>
-          <Column field="high" header="Day High" :sortable="true">
-            <template #body="{ data }">
-              <span class="font-mono" style="color: var(--jd-text-muted)">${{ formatPrice(data.high) }}</span>
-            </template>
-          </Column>
-          <Column field="low" header="Day Low" :sortable="true">
-            <template #body="{ data }">
-              <span class="font-mono" style="color: var(--jd-text-muted)">${{ formatPrice(data.low) }}</span>
-            </template>
-          </Column>
-          <Column field="volume" header="Volume" :sortable="true">
-            <template #body="{ data }">
-              <span style="color: var(--jd-text-muted)">{{ formatVolume(data.volume) }}</span>
-            </template>
-          </Column>
-          <Column header="Action">
-            <template #body="{ data }">
-              <router-link :to="`/market/${encodeURIComponent(data.symbol)}`">
-                <Button label="View" class="p-button-sm p-button-rounded p-button-outlined" />
-              </router-link>
-            </template>
-          </Column>
+          <template #cell:symbol="{ value }">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold">{{ value }}</span>
+              <span v-if="activeTab === 'stocks'" class="jd-badge blue">US</span>
+            </div>
+          </template>
+          <template #cell:last="{ value }">
+            <span class="font-mono">${{ formatPrice(value) }}</span>
+          </template>
+          <template #cell:change_24h="{ value }">
+            <span
+              class="font-semibold"
+              :class="(value ?? 0) >= 0 ? 'price-up' : 'price-down'"
+            >
+              {{ (value ?? 0) >= 0 ? '+' : '' }}{{ (value ?? 0).toFixed(2) }}%
+            </span>
+          </template>
+          <template #cell:high="{ value }">
+            <span class="font-mono" style="color: var(--jd-text-muted)">${{ formatPrice(value) }}</span>
+          </template>
+          <template #cell:low="{ value }">
+            <span class="font-mono" style="color: var(--jd-text-muted)">${{ formatPrice(value) }}</span>
+          </template>
+          <template #cell:volume="{ value }">
+            <span style="color: var(--jd-text-muted)">{{ formatVolume(value) }}</span>
+          </template>
 
           <template #empty>
             <div class="jd-empty">
@@ -151,10 +134,12 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
+import DataTable from '@/components/common/DataTable.vue'
 import { marketApi } from '@/api/market'
+
+const router = useRouter()
 
 // ── State ───────────────────────────────────────────────────────
 const activeTab = ref('crypto')
@@ -167,6 +152,16 @@ const lastUpdated = ref('--')
 const tabs = [
   { key: 'crypto', label: '🔶 Crypto' },
   { key: 'stocks', label: '🇺🇸 US Stocks' },
+]
+
+// ── Table columns ───────────────────────────────────────────────
+const columns = [
+  { key: 'symbol', header: 'Symbol', sortable: true },
+  { key: 'last', header: 'Price', sortable: true, align: 'right' },
+  { key: 'change_24h', header: '24h Change', sortable: true, align: 'right' },
+  { key: 'high', header: 'Day High', sortable: true, align: 'right' },
+  { key: 'low', header: 'Day Low', sortable: true, align: 'right' },
+  { key: 'volume', header: 'Volume', sortable: true, align: 'right' },
 ]
 
 // ── Computed ────────────────────────────────────────────────────
@@ -208,6 +203,11 @@ function formatVolume(val) {
   if (val >= 1_000_000) return (val / 1_000_000).toFixed(2) + 'M'
   if (val >= 1_000) return (val / 1_000).toFixed(2) + 'K'
   return val.toFixed(0)
+}
+
+// ── Row navigation → SymbolDetail ───────────────────────────────
+function goToSymbol(row) {
+  router.push(`/market/${encodeURIComponent(row.symbol)}`)
 }
 
 // ── Tab switching ───────────────────────────────────────────────
@@ -293,61 +293,7 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
-:deep(.p-datatable) {
-  background-color: transparent;
-  color: var(--jd-text);
-}
-
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: rgba(75, 85, 99, 0.4);
-  color: var(--jd-text-muted);
-  border-color: var(--jd-border);
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  background-color: transparent;
-  border-color: var(--jd-border);
-  transition: background-color 0.15s;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr:hover) {
-  background-color: rgba(55, 65, 81, 0.5) !important;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: var(--jd-border);
-  color: var(--jd-text);
-  padding: 0.75rem 1rem;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr.p-row-odd) {
-  background-color: rgba(31, 41, 55, 0.3);
-}
-
-:deep(.p-button.p-button-outlined) {
-  border-color: var(--jd-blue);
-  color: var(--jd-blue);
-}
-
-:deep(.p-button.p-button-outlined:hover) {
-  background-color: rgba(59, 130, 246, 0.15);
-}
-
 :deep(.p-button.p-button-text) {
   color: var(--jd-text-muted);
-}
-
-:deep(.p-paginator) {
-  background-color: transparent;
-  border-color: var(--jd-border);
-  color: var(--jd-text-muted);
-}
-
-:deep(.p-paginator .p-paginator-page.p-highlight) {
-  background-color: var(--jd-blue);
-  color: white;
 }
 </style>

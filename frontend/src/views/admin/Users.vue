@@ -1,173 +1,131 @@
 <template>
-  <div class="min-h-screen bg-gray-950 text-white p-6">
-    <div class="max-w-7xl mx-auto">
-      <!-- Header -->
-      <div class="mb-8">
-        <router-link to="/admin" class="text-blue-400 hover:text-blue-300 mb-4 inline-block">← Back to Admin</router-link>
-        <h1 class="text-4xl font-bold text-white mb-2">User Management</h1>
-        <p class="text-gray-400">Manage user accounts and permissions</p>
-      </div>
-
-      <!-- User Controls -->
-      <div class="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-8">
-        <div class="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-          <div class="flex gap-4 flex-1">
-            <InputText
-              v-model="searchQuery"
-              placeholder="Search users by email or name..."
-              class="flex-1"
-            />
-            <Dropdown
-              v-model="filterRole"
-              :options="roles"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Filter by role"
-              class="w-40"
-            />
-            <Dropdown
-              v-model="filterStatus"
-              :options="statusOptions"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Filter by status"
-              class="w-40"
-            />
-          </div>
-          <Button label="Create User" icon="pi pi-plus"></Button>
-        </div>
-      </div>
-
-      <!-- Users Table -->
-      <div class="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-8">
-        <h2 class="text-xl font-bold text-white mb-4">All Users</h2>
-        <DataTable :value="users" stripedRows responsiveLayout="scroll" paginator :rows="10" class="p-datatable-sm">
-          <Column field="id" header="ID"></Column>
-          <Column field="email" header="Email"></Column>
-          <Column field="name" header="Name"></Column>
-          <Column field="role" header="Role">
-            <template #body="slotProps">
-              <Tag
-                :value="slotProps.data.role"
-                :severity="getRoleSeverity(slotProps.data.role)"
-              ></Tag>
-            </template>
-          </Column>
-          <Column field="status" header="Status">
-            <template #body="slotProps">
-              <Tag
-                :value="slotProps.data.status"
-                :severity="slotProps.data.status === 'Active' ? 'success' : 'warning'"
-              ></Tag>
-            </template>
-          </Column>
-          <Column field="joinedDate" header="Joined"></Column>
-          <Column field="lastLogin" header="Last Login"></Column>
-          <Column header="Actions" :style="{ width: '180px' }">
-            <template #body="slotProps">
-              <div class="flex gap-2">
-                <Button
-                  icon="pi pi-pencil"
-                  class="p-button-sm p-button-outlined"
-                  @click="editUser(slotProps.data)"
-                ></Button>
-                <Button
-                  icon="pi pi-trash"
-                  class="p-button-sm p-button-danger p-button-outlined"
-                  @click="deleteUser(slotProps.data.id)"
-                ></Button>
-              </div>
-            </template>
-          </Column>
-        </DataTable>
-        <div class="mt-6 text-center text-gray-400">
-          <p>No users found</p>
-        </div>
-      </div>
-
-      <!-- User Statistics -->
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p class="text-gray-400 text-sm mb-2">Total Users</p>
-          <p class="text-2xl font-bold">0</p>
-        </div>
-        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p class="text-gray-400 text-sm mb-2">Active Users</p>
-          <p class="text-2xl font-bold text-green-400">0</p>
-        </div>
-        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p class="text-gray-400 text-sm mb-2">Inactive Users</p>
-          <p class="text-2xl font-bold text-yellow-400">0</p>
-        </div>
-        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p class="text-gray-400 text-sm mb-2">Admins</p>
-          <p class="text-2xl font-bold">0</p>
-        </div>
-      </div>
-
-      <!-- Edit User Dialog (Placeholder) -->
-      <Dialog
-        v-model:visible="showEditDialog"
-        header="Edit User"
-        :modal="true"
-        class="p-dialog"
-      >
-        <div v-if="selectedUser" class="space-y-4">
-          <div>
-            <label class="block text-gray-400 text-sm mb-2">Email</label>
-            <InputText v-model="selectedUser.email" class="w-full" />
-          </div>
-          <div>
-            <label class="block text-gray-400 text-sm mb-2">Name</label>
-            <InputText v-model="selectedUser.name" class="w-full" />
-          </div>
-          <div>
-            <label class="block text-gray-400 text-sm mb-2">Role</label>
-            <Dropdown
-              v-model="selectedUser.role"
-              :options="roles"
-              optionLabel="label"
-              optionValue="value"
-              class="w-full"
-            />
-          </div>
-          <div>
-            <label class="block text-gray-400 text-sm mb-2">Status</label>
-            <Dropdown
-              v-model="selectedUser.status"
-              :options="statusOptions"
-              optionLabel="label"
-              optionValue="value"
-              class="w-full"
-            />
-          </div>
-        </div>
-        <template #footer>
-          <Button label="Cancel" icon="pi pi-times" class="p-button-outlined" @click="showEditDialog = false"></Button>
-          <Button label="Save" icon="pi pi-check" @click="saveUser"></Button>
-        </template>
-      </Dialog>
+  <div class="jd-page">
+    <!-- Header -->
+    <div>
+      <router-link to="/admin" class="jd-back-link">← Back to Admin</router-link>
+      <h1 class="jd-page-title" style="font-size: 28px; margin-top: 12px;">User Management</h1>
+      <p class="jd-page-desc">Manage user accounts and permissions</p>
     </div>
+
+    <!-- Users Table -->
+    <DataTable
+      :columns="userColumns"
+      :data="users"
+      :searchable="['email', 'name']"
+      search-placeholder="Search users by email or name…"
+      :page-size="10"
+      empty-text="No users found"
+    >
+      <template #toolbar-right>
+        <button class="jd-btn jd-btn-primary jd-btn-sm">
+          <i class="pi pi-plus"></i> Create User
+        </button>
+      </template>
+      <template #cell:role="{ value }">
+        <span class="jd-badge" :class="roleColor(value)">{{ value }}</span>
+      </template>
+      <template #cell:status="{ value }">
+        <span class="jd-badge" :class="statusColor(value)">{{ value }}</span>
+      </template>
+      <template #row-actions="{ row }">
+        <div class="jd-row-actions">
+          <button class="jd-btn jd-btn-ghost jd-btn-sm" title="Edit user" @click="editUser(row)">
+            <i class="pi pi-pencil"></i>
+          </button>
+          <button class="jd-btn jd-btn-danger jd-btn-sm" title="Delete user" @click="deleteUser(row.id)">
+            <i class="pi pi-trash"></i>
+          </button>
+        </div>
+      </template>
+    </DataTable>
+
+    <!-- User Statistics -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="jd-stat-card cyan">
+        <div class="jd-stat-label">Total Users</div>
+        <div class="jd-stat-value">0</div>
+      </div>
+      <div class="jd-stat-card green">
+        <div class="jd-stat-label">Active Users</div>
+        <div class="jd-stat-value" style="color: var(--jd-green)">0</div>
+      </div>
+      <div class="jd-stat-card yellow">
+        <div class="jd-stat-label">Inactive Users</div>
+        <div class="jd-stat-value" style="color: var(--jd-yellow)">0</div>
+      </div>
+      <div class="jd-stat-card purple">
+        <div class="jd-stat-label">Admins</div>
+        <div class="jd-stat-value">0</div>
+      </div>
+    </div>
+
+    <!-- Edit User Dialog (Placeholder) -->
+    <Dialog
+      v-model:visible="showEditDialog"
+      header="Edit User"
+      :modal="true"
+      class="p-dialog"
+    >
+      <div v-if="selectedUser" class="space-y-4">
+        <div>
+          <label class="block text-gray-400 text-sm mb-2">Email</label>
+          <InputText v-model="selectedUser.email" class="w-full" />
+        </div>
+        <div>
+          <label class="block text-gray-400 text-sm mb-2">Name</label>
+          <InputText v-model="selectedUser.name" class="w-full" />
+        </div>
+        <div>
+          <label class="block text-gray-400 text-sm mb-2">Role</label>
+          <Dropdown
+            v-model="selectedUser.role"
+            :options="roles"
+            optionLabel="label"
+            optionValue="value"
+            class="w-full"
+          />
+        </div>
+        <div>
+          <label class="block text-gray-400 text-sm mb-2">Status</label>
+          <Dropdown
+            v-model="selectedUser.status"
+            :options="statusOptions"
+            optionLabel="label"
+            optionValue="value"
+            class="w-full"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <Button label="Cancel" icon="pi pi-times" class="p-button-outlined" @click="showEditDialog = false"></Button>
+        <Button label="Save" icon="pi pi-check" @click="saveUser"></Button>
+      </template>
+    </Dialog>
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Dropdown from 'primevue/dropdown'
-import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 
-const searchQuery = ref('')
-const filterRole = ref('')
-const filterStatus = ref('')
 const showEditDialog = ref(false)
 const selectedUser = ref(null)
 
 const users = ref([])
+
+const userColumns = [
+  { key: 'id', header: 'ID', sortable: true, align: 'right' },
+  { key: 'email', header: 'Email', sortable: true },
+  { key: 'name', header: 'Name', sortable: true },
+  { key: 'role', header: 'Role', sortable: true, filterable: true, filterLabel: 'Role' },
+  { key: 'status', header: 'Status', sortable: true, filterable: true, filterLabel: 'Status' },
+  { key: 'joinedDate', header: 'Joined', sortable: true },
+  { key: 'lastLogin', header: 'Last Login', sortable: true },
+]
 
 const roles = ref([
   { label: 'User', value: 'user' },
@@ -181,16 +139,9 @@ const statusOptions = ref([
   { label: 'Suspended', value: 'Suspended' }
 ])
 
-const getRoleSeverity = (role) => {
-  switch (role) {
-    case 'admin':
-      return 'danger'
-    case 'trader':
-      return 'info'
-    default:
-      return 'success'
-  }
-}
+const roleColor = (role) => ({ admin: 'purple', trader: 'blue', user: 'gray' }[role] || 'gray')
+const statusColor = (status) =>
+  ({ Active: 'green', Inactive: 'yellow', Suspended: 'red' }[status] || 'gray')
 
 const editUser = (user) => {
   selectedUser.value = { ...user }
@@ -208,24 +159,23 @@ const saveUser = () => {
 </script>
 
 <style scoped>
-:deep(.p-datatable) {
-  background-color: transparent;
+.jd-back-link { color: var(--jd-cyan); font-size: 13px; text-decoration: none; }
+.jd-back-link:hover { color: var(--jd-text); }
+.jd-row-actions { display: flex; gap: 8px; }
+
+:deep(.p-dialog) {
+  background-color: #1f2937;
+}
+
+:deep(.p-dialog .p-dialog-header) {
+  background-color: #111827;
+  border-color: #374151;
   color: #f3f4f6;
 }
 
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: rgba(75, 85, 99, 0.5);
+:deep(.p-dialog .p-dialog-content) {
+  background-color: #111827;
   color: #f3f4f6;
-  border-color: #1f2937;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  border-color: #1f2937;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: #1f2937;
-  color: #e5e7eb;
 }
 
 :deep(.p-inputtext) {
@@ -256,21 +206,6 @@ const saveUser = () => {
 
 :deep(.p-button:hover) {
   background-color: #2563eb;
-}
-
-:deep(.p-dialog) {
-  background-color: #1f2937;
-}
-
-:deep(.p-dialog .p-dialog-header) {
-  background-color: #111827;
-  border-color: #374151;
-  color: #f3f4f6;
-}
-
-:deep(.p-dialog .p-dialog-content) {
-  background-color: #111827;
-  color: #f3f4f6;
 }
 
 a {

@@ -82,129 +82,105 @@
       </div>
     </div>
 
-    <!-- Watchlist Table Card -->
-    <div class="jd-card">
-      <div class="jd-card-header">
-        <div class="flex items-center justify-between w-full">
-          <h2 class="jd-card-title">
-            Your Watchlist
-            <span style="color: var(--jd-text-muted);" class="text-sm font-normal ml-2">({{ items.length }} symbols)</span>
-          </h2>
-          <div class="flex items-center gap-2">
-            <span v-if="loadingPrices" class="text-sm" style="color: var(--jd-text-muted);">Updating prices...</span>
-            <span v-else-if="items.length" class="text-sm" style="color: var(--jd-text-muted);">Updated {{ lastUpdated }}</span>
-            <Button
-              icon="pi pi-refresh"
-              class="p-button-sm p-button-text p-button-rounded"
-              :loading="loadingPrices"
-              :disabled="items.length === 0"
-              @click="loadPrices"
-            />
-          </div>
-        </div>
-      </div>
-      <div class="jd-card-body">
-        <!-- Loading skeleton -->
-        <div v-if="loading" class="space-y-3">
-          <div v-for="i in 3" :key="i" class="h-14 bg-gray-800 rounded animate-pulse" />
-        </div>
+    <!-- Watchlist Table -->
+    <DataTable
+      :columns="columns"
+      :data="items"
+      :searchable="['symbol']"
+      search-placeholder="Search symbols…"
+      :page-size="10"
+      :loading="loading"
+      empty-text="Your watchlist is empty"
+    >
+      <template #toolbar-left>
+        <h2 class="jd-card-title" style="margin-right: auto;">
+          Your Watchlist
+          <span style="color: var(--jd-text-muted);" class="text-sm font-normal ml-2">({{ items.length }} symbols)</span>
+        </h2>
+      </template>
+      <template #toolbar-right>
+        <span v-if="loadingPrices" class="text-sm" style="color: var(--jd-text-muted);">Updating prices...</span>
+        <span v-else-if="items.length" class="text-sm" style="color: var(--jd-text-muted);">Updated {{ lastUpdated }}</span>
+        <Button
+          icon="pi pi-refresh"
+          class="p-button-sm p-button-text p-button-rounded"
+          :loading="loadingPrices"
+          :disabled="items.length === 0"
+          @click="loadPrices"
+        />
+      </template>
 
-        <!-- Empty state -->
-        <div v-else-if="items.length === 0" class="jd-empty">
+      <template #cell:symbol="{ row }">
+        <div class="flex items-center gap-2">
+          <span class="font-semibold text-white">{{ row.symbol }}</span>
+          <span :class="['jd-badge', row.market_type === 'stock' ? 'blue' : 'yellow']">
+            {{ row.market_type === 'stock' ? 'US' : 'Crypto' }}
+          </span>
+        </div>
+      </template>
+
+      <template #cell:last="{ row }">
+        <span class="font-mono" :style="{ color: row.last ? 'var(--jd-text)' : 'var(--jd-text-muted)' }">
+          {{ row.last ? '$' + formatPrice(row.last) : '--' }}
+        </span>
+      </template>
+
+      <template #cell:change_24h="{ row }">
+        <span
+          v-if="row.change_24h !== null && row.change_24h !== undefined"
+          class="font-semibold"
+          :class="row.change_24h >= 0 ? 'price-up' : 'price-down'"
+        >
+          {{ row.change_24h >= 0 ? '+' : '' }}{{ row.change_24h.toFixed(2) }}%
+        </span>
+        <span v-else style="color: var(--jd-text-muted);">--</span>
+      </template>
+
+      <template #cell:high="{ row }">
+        <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
+          {{ row.high ? '$' + formatPrice(row.high) : '--' }}
+        </span>
+      </template>
+
+      <template #cell:low="{ row }">
+        <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
+          {{ row.low ? '$' + formatPrice(row.low) : '--' }}
+        </span>
+      </template>
+
+      <template #cell:created_at="{ row }">
+        <span style="color: var(--jd-text-muted);" class="text-sm">
+          {{ new Date(row.created_at).toLocaleDateString() }}
+        </span>
+      </template>
+
+      <template #row-actions="{ row }">
+        <div class="flex gap-2">
+          <router-link :to="`/market/${encodeURIComponent(row.symbol)}`">
+            <Button
+              icon="pi pi-chart-bar"
+              class="p-button-sm p-button-text p-button-rounded"
+              v-tooltip="'View Chart'"
+            />
+          </router-link>
+          <Button
+            icon="pi pi-trash"
+            class="jd-btn jd-btn-danger jd-btn-sm"
+            v-tooltip="'Remove'"
+            :loading="removingId === row.id"
+            @click="removeSymbol(row)"
+          />
+        </div>
+      </template>
+
+      <template #empty>
+        <div class="jd-empty">
           <i class="pi pi-star"></i>
           <p>Your watchlist is empty</p>
           <p>Add crypto or US stocks above to start tracking.</p>
         </div>
-
-        <!-- Data Table -->
-        <DataTable
-          v-else
-          :value="items"
-          stripedRows
-          responsiveLayout="scroll"
-          class="jd-table p-datatable-sm"
-        >
-          <Column header="Symbol" field="symbol" :sortable="true">
-            <template #body="{ data }">
-              <div class="flex items-center gap-2">
-                <span class="font-semibold text-white">{{ data.symbol }}</span>
-                <span
-                  :class="['jd-badge', data.market_type === 'stock' ? 'blue' : 'yellow']"
-                >
-                  {{ data.market_type === 'stock' ? 'US' : 'Crypto' }}
-                </span>
-              </div>
-            </template>
-          </Column>
-
-          <Column header="Price" field="last" :sortable="true">
-            <template #body="{ data }">
-              <span class="font-mono" :style="{ color: data.last ? 'var(--jd-text)' : 'var(--jd-text-muted)' }">
-                {{ data.last ? '$' + formatPrice(data.last) : '--' }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="24h Change" field="change_24h" :sortable="true">
-            <template #body="{ data }">
-              <span
-                v-if="data.change_24h !== null && data.change_24h !== undefined"
-                class="font-semibold"
-                :class="data.change_24h >= 0 ? 'price-up' : 'price-down'"
-              >
-                {{ data.change_24h >= 0 ? '+' : '' }}{{ data.change_24h.toFixed(2) }}%
-              </span>
-              <span v-else style="color: var(--jd-text-muted);">--</span>
-            </template>
-          </Column>
-
-          <Column header="Day High" field="high" :sortable="true">
-            <template #body="{ data }">
-              <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
-                {{ data.high ? '$' + formatPrice(data.high) : '--' }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="Day Low" field="low" :sortable="true">
-            <template #body="{ data }">
-              <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
-                {{ data.low ? '$' + formatPrice(data.low) : '--' }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="Added" field="created_at" :sortable="true">
-            <template #body="{ data }">
-              <span style="color: var(--jd-text-muted);" class="text-sm">
-                {{ new Date(data.created_at).toLocaleDateString() }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="Actions">
-            <template #body="{ data }">
-              <div class="flex gap-2">
-                <router-link :to="`/market/${encodeURIComponent(data.symbol)}`">
-                  <Button
-                    icon="pi pi-chart-bar"
-                    class="p-button-sm p-button-text p-button-rounded"
-                    v-tooltip="'View Chart'"
-                  />
-                </router-link>
-                <Button
-                  icon="pi pi-trash"
-                  class="jd-btn jd-btn-danger jd-btn-sm"
-                  v-tooltip="'Remove'"
-                  :loading="removingId === data.id"
-                  @click="removeSymbol(data)"
-                />
-              </div>
-            </template>
-          </Column>
-        </DataTable>
-      </div>
-    </div>
+      </template>
+    </DataTable>
 
     <!-- Alpaca prices missing warning -->
     <div
@@ -230,8 +206,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import AutoComplete from 'primevue/autocomplete'
 import Toast from 'primevue/toast'
@@ -260,6 +235,16 @@ const suggestions = ref([])
 
 // market_type is auto-detected from selected suggestion; default crypto for crypto /USDT normalisation
 const detectedMarketType = ref('crypto')
+
+// ── Table columns (reusable DataTable) ──────────────────────────
+const columns = [
+  { key: 'symbol', header: 'Symbol', sortable: true },
+  { key: 'last', header: 'Price', sortable: true, align: 'right' },
+  { key: 'change_24h', header: '24h Change', sortable: true, align: 'right' },
+  { key: 'high', header: 'Day High', sortable: true, align: 'right' },
+  { key: 'low', header: 'Day Low', sortable: true, align: 'right' },
+  { key: 'created_at', header: 'Added', sortable: true, align: 'right' },
+]
 
 // Show warning banner when stock items exist but have no prices
 const hasMissingStockPrices = computed(() =>
