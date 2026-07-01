@@ -35,6 +35,7 @@ from app.modules.trading.models import (  # noqa: F401
     PortfolioStats,
 )
 from app.modules.risk.models import RiskLimit, PositionMetric, DrawdownRecord  # noqa: F401
+from app.modules.fundamentals.models import CompanyFundamentals, EarningsCalendar  # noqa: F401
 from app.modules.system.models import SystemLog, SystemMetric, TaskStatus  # noqa: F401
 
 __all__ = [
@@ -57,6 +58,8 @@ __all__ = [
     "RiskLimit",
     "PositionMetric",
     "DrawdownRecord",
+    "CompanyFundamentals",
+    "EarningsCalendar",
     "SystemLog",
     "SystemMetric",
     "TaskStatus",
