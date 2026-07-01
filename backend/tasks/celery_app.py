@@ -28,6 +28,7 @@ celery_app = Celery(
         "app.tasks.trading_tasks",
         "app.tasks.risk_tasks",
         "app.tasks.fundamentals_tasks",
+        "app.tasks.equity_tasks",
     ],
 )
 
@@ -141,5 +142,25 @@ celery_app.conf.beat_schedule = {
     "refresh-financials-on-earnings": {
         "task": "fundamentals.refresh_financials_on_earnings",
         "schedule": crontab(minute=30, hour=23),
+    },
+    # Equity research schedule (EQUITY-schedule) — weekday, US-market-hours cron.
+    # Times are UTC (the app runs UTC and a fixed crontab cannot follow DST); each
+    # is chosen to hold year-round across EST/EDT:
+    #   pre_market  12:00 UTC = 07:00 EST / 08:00 EDT  (before the 09:30 ET open)
+    #   market_open 14:30 UTC = 09:30 EST / 10:30 EDT  (at/after the ET open)
+    #   eod         21:30 UTC = 16:30 EST / 17:30 EDT  (after the 16:00 ET close)
+    # day_of_week="mon-fri" gates weekends; each task ALSO skips US market holidays
+    # (is_us_trading_day) so it only runs on real trading days.
+    "equity-pre-market": {
+        "task": "equity.pre_market",
+        "schedule": crontab(minute=0, hour=12, day_of_week="mon-fri"),
+    },
+    "equity-market-open": {
+        "task": "equity.market_open",
+        "schedule": crontab(minute=30, hour=14, day_of_week="mon-fri"),
+    },
+    "equity-eod": {
+        "task": "equity.eod",
+        "schedule": crontab(minute=30, hour=21, day_of_week="mon-fri"),
     },
 }
