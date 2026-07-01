@@ -112,17 +112,19 @@
         <h2 class="jd-card-title">Key Metrics</h2>
       </div>
       <div class="jd-card-body">
-        <DataTable :value="metrics" stripedRows responsiveLayout="scroll" class="p-datatable-sm">
-          <Column field="metric" header="Metric"></Column>
-          <Column field="value" header="Value"></Column>
-          <Column field="status" header="Status">
-            <template #body="slotProps">
-              <Tag
-                :value="slotProps.data.status"
-                :severity="slotProps.data.status === 'Bullish' ? 'success' : slotProps.data.status === 'Bearish' ? 'danger' : 'info'"
-              ></Tag>
-            </template>
-          </Column>
+        <DataTable
+          :columns="metricColumns"
+          :data="metrics"
+          :row-key="(r) => r.metric"
+          :pagination="false"
+          empty-text="No metrics available"
+        >
+          <template #cell:status="{ value }">
+            <Tag
+              :value="value"
+              :severity="value === 'Bullish' ? 'success' : value === 'Bearish' ? 'danger' : 'info'"
+            ></Tag>
+          </template>
         </DataTable>
         <div style="margin-top: 24px; text-align: center">
           <p style="color: var(--jd-text-muted)">No metrics available</p>
@@ -134,8 +136,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Dropdown from 'primevue/dropdown'
@@ -155,30 +156,16 @@ const models = ref([
   { label: 'Transformer', value: 'transformer' }
 ])
 
+const metricColumns = [
+  { key: 'metric', header: 'Metric' },
+  { key: 'value', header: 'Value' },
+  { key: 'status', header: 'Status' },
+]
+
 const metrics = ref([])
 </script>
 
 <style scoped>
-:deep(.p-datatable) {
-  background-color: transparent;
-  color: var(--jd-text);
-}
-
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: rgba(75, 85, 99, 0.5);
-  color: var(--jd-text);
-  border-color: var(--jd-border);
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  border-color: var(--jd-border);
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: var(--jd-border);
-  color: var(--jd-text);
-}
-
 :deep(.p-inputtext) {
   background-color: rgba(75, 85, 99, 0.5);
   border-color: var(--jd-border);

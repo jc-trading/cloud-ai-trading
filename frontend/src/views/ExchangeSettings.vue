@@ -256,29 +256,19 @@
         <h2 class="jd-card-title">Connected Exchanges</h2>
       </div>
       <div class="jd-card-body">
-        <DataTable :value="connectedList" stripedRows responsiveLayout="scroll" class="p-datatable-sm">
-          <Column field="exchange_type" header="Exchange">
-            <template #body="{ data }">
-              <span style="text-transform: capitalize; font-weight: 500; color: var(--jd-text);">{{ data.exchange_type }}</span>
-            </template>
-          </Column>
-          <Column field="trading_mode" header="Mode">
-            <template #body="{ data }">
-              <span class="jd-badge" :class="data.trading_mode === 'live' ? 'red' : 'blue'">
-                {{ data.trading_mode }}
-              </span>
-            </template>
-          </Column>
-          <Column field="last_synced_at" header="Last Sync">
-            <template #body="{ data }">
-              {{ data.last_synced_at ? new Date(data.last_synced_at).toLocaleString() : 'Never' }}
-            </template>
-          </Column>
-          <Column header="Actions">
-            <template #body="{ data }">
-              <Button label="Get Balance" class="jd-btn jd-btn-ghost jd-btn-sm" @click="fetchBalance(data.id)" />
-            </template>
-          </Column>
+        <DataTable :columns="connectedColumns" :data="connectedList" :pagination="false" empty-text="No connected exchanges">
+          <template #cell:exchange_type="{ value }">
+            <span style="text-transform: capitalize; font-weight: 500; color: var(--jd-text);">{{ value }}</span>
+          </template>
+          <template #cell:trading_mode="{ value }">
+            <span class="jd-badge" :class="value === 'live' ? 'red' : 'blue'">{{ value }}</span>
+          </template>
+          <template #cell:last_synced_at="{ value }">
+            {{ value ? new Date(value).toLocaleString() : 'Never' }}
+          </template>
+          <template #row-actions="{ row }">
+            <Button label="Get Balance" class="jd-btn jd-btn-ghost jd-btn-sm" @click="fetchBalance(row.id)" />
+          </template>
         </DataTable>
       </div>
     </div>
@@ -303,8 +293,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useToast } from 'primevue/usetoast'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Password from 'primevue/password'
@@ -314,6 +303,13 @@ import Toast from 'primevue/toast'
 import { exchangeApi } from '@/api/exchange'
 
 const toast = useToast()
+
+// ── Connected Exchanges table columns ────────────────────────────
+const connectedColumns = [
+  { key: 'exchange_type', header: 'Exchange' },
+  { key: 'trading_mode', header: 'Mode' },
+  { key: 'last_synced_at', header: 'Last Sync' },
+]
 
 // ── State ────────────────────────────────────────────────────────
 const binance = ref({

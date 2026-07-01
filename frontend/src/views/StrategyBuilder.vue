@@ -98,34 +98,27 @@
         <TabPanel header="My Strategies">
           <!-- Strategies List -->
           <div class="jd-card-body">
-            <DataTable :value="strategies" stripedRows responsiveLayout="scroll" class="jd-table p-datatable-sm">
-              <Column field="name" header="Strategy Name" :sortable="true"></Column>
-              <Column field="status" header="Status">
-                <template #body="slotProps">
-                  <span class="jd-badge" :class="slotProps.data.status === 'Active' ? 'green' : 'yellow'">
-                    {{ slotProps.data.status }}
-                  </span>
-                </template>
-              </Column>
-              <Column field="winRate" header="Win Rate">
-                <template #body="slotProps">
-                  <span>{{ slotProps.data.winRate }}%</span>
-                </template>
-              </Column>
-              <Column field="totalTrades" header="Total Trades"></Column>
-              <Column header="Actions">
-                <template #body="slotProps">
-                  <div style="display: flex; gap: 8px;">
-                    <Button label="Edit" icon="pi pi-pencil" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
-                    <Button label="Backtest" icon="pi pi-chart-bar" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
-                    <Button label="Delete" icon="pi pi-trash" class="jd-btn jd-btn-danger jd-btn-sm"></Button>
-                  </div>
-                </template>
-              </Column>
+            <DataTable
+              :columns="strategyColumns"
+              :data="strategies"
+              row-key="name"
+              :searchable="['name']"
+              search-placeholder="Search strategies…"
+              :page-size="10"
+              empty-text="No strategies created yet. Create one to get started."
+            >
+              <template #cell:status="{ value }">
+                <span class="jd-badge" :class="value === 'Active' ? 'green' : 'yellow'">{{ value }}</span>
+              </template>
+              <template #cell:winRate="{ value }">{{ value }}%</template>
+              <template #row-actions>
+                <div style="display: flex; gap: 8px;">
+                  <Button label="Edit" icon="pi pi-pencil" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
+                  <Button label="Backtest" icon="pi pi-chart-bar" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
+                  <Button label="Delete" icon="pi pi-trash" class="jd-btn jd-btn-danger jd-btn-sm"></Button>
+                </div>
+              </template>
             </DataTable>
-            <div v-if="strategies.length === 0" class="jd-empty">
-              <p>No strategies created yet. Create one to get started.</p>
-            </div>
           </div>
         </TabPanel>
 
@@ -172,8 +165,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
@@ -200,6 +192,13 @@ const conditions = ref([
 ])
 
 const strategies = ref([])
+
+const strategyColumns = [
+  { key: 'name', header: 'Strategy Name', sortable: true },
+  { key: 'status', header: 'Status', filterable: true, filterLabel: 'Status' },
+  { key: 'winRate', header: 'Win Rate', sortable: true, align: 'right' },
+  { key: 'totalTrades', header: 'Total Trades', sortable: true, align: 'right' },
+]
 </script>
 
 <style scoped>

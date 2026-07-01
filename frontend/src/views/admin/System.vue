@@ -125,22 +125,19 @@
           <Button label="Clear Logs" icon="pi pi-trash" class="p-button-outlined p-button-danger"></Button>
         </div>
 
-        <DataTable :value="systemLogs" stripedRows responsiveLayout="scroll" paginator :rows="10" class="p-datatable-sm">
-          <Column field="timestamp" header="Time" :sortable="true"></Column>
-          <Column field="level" header="Level">
-            <template #body="slotProps">
-              <Tag
-                :value="slotProps.data.level"
-                :severity="getLogSeverity(slotProps.data.level)"
-              ></Tag>
-            </template>
-          </Column>
-          <Column field="message" header="Message"></Column>
-          <Column field="source" header="Source"></Column>
+        <DataTable
+          :columns="logColumns"
+          :data="systemLogs"
+          :row-key="(r) => `${r.timestamp}-${r.message}`"
+          :searchable="['message', 'source']"
+          search-placeholder="Search logs…"
+          :page-size="10"
+          empty-text="No system logs available"
+        >
+          <template #cell:level="{ value }">
+            <Tag :value="value" :severity="getLogSeverity(value)" />
+          </template>
         </DataTable>
-        <div class="mt-6 text-center text-gray-400">
-          <p>No system logs available</p>
-        </div>
       </div>
 
       <!-- Database Info -->
@@ -226,13 +223,19 @@
 
 <script setup>
 import { ref } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import ProgressBar from 'primevue/progressbar'
 
 const systemLogs = ref([])
+
+const logColumns = [
+  { key: 'timestamp', header: 'Time', sortable: true },
+  { key: 'level', header: 'Level', align: 'center', filterable: true, filterLabel: 'Level' },
+  { key: 'message', header: 'Message' },
+  { key: 'source', header: 'Source', sortable: true, filterable: true, filterLabel: 'Source' },
+]
 
 const getLogSeverity = (level) => {
   switch (level) {
@@ -249,26 +252,6 @@ const getLogSeverity = (level) => {
 </script>
 
 <style scoped>
-:deep(.p-datatable) {
-  background-color: transparent;
-  color: #f3f4f6;
-}
-
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: rgba(75, 85, 99, 0.5);
-  color: #f3f4f6;
-  border-color: #1f2937;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  border-color: #1f2937;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: #1f2937;
-  color: #e5e7eb;
-}
-
 :deep(.p-progressbar) {
   background-color: #374151;
 }

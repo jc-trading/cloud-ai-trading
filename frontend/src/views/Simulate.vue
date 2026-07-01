@@ -152,67 +152,47 @@
     </div>
 
     <!-- Open Positions -->
-    <div class="jd-card">
-      <div class="jd-card-header">
+    <DataTable
+      :columns="positionColumns"
+      :data="openPositions"
+      :row-key="(row) => row.symbol"
+      :searchable="['symbol']"
+      search-placeholder="Search positions…"
+      empty-text="No open positions"
+    >
+      <template #toolbar-left>
         <h2 class="jd-card-title">Open Positions</h2>
-      </div>
-      <div class="jd-card-body">
-        <DataTable :value="openPositions" stripedRows responsiveLayout="scroll" class="jd-table p-datatable-sm">
-          <Column field="symbol" header="Symbol"></Column>
-          <Column field="amount" header="Amount"></Column>
-          <Column field="entryPrice" header="Entry Price"></Column>
-          <Column field="currentPrice" header="Current Price"></Column>
-          <Column field="pnl" header="P/L">
-            <template #body="slotProps">
-              <span :class="slotProps.data.pnl >= 0 ? 'price-up' : 'price-down'">
-                {{ slotProps.data.pnl >= 0 ? '+' : '' }}{{ slotProps.data.pnl }}%
-              </span>
-            </template>
-          </Column>
-          <Column header="Actions">
-            <template #body>
-              <Button label="Close" icon="pi pi-times" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
-            </template>
-          </Column>
-        </DataTable>
-        <div v-if="openPositions.length === 0" class="jd-empty">
-          <p>No open positions</p>
-        </div>
-      </div>
-    </div>
+      </template>
+      <template #cell:pnl="{ value }">
+        <span :class="value >= 0 ? 'price-up' : 'price-down'">{{ value >= 0 ? '+' : '' }}{{ value }}%</span>
+      </template>
+      <template #row-actions>
+        <Button label="Close" icon="pi pi-times" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
+      </template>
+    </DataTable>
 
     <!-- Trade History -->
-    <div class="jd-card">
-      <div class="jd-card-header">
+    <DataTable
+      :columns="tradeColumns"
+      :data="tradeHistory"
+      :row-key="(row) => `${row.timestamp}-${row.symbol}`"
+      :searchable="['symbol']"
+      search-placeholder="Search trades…"
+      empty-text="No trades executed yet"
+    >
+      <template #toolbar-left>
         <h2 class="jd-card-title">Trade History</h2>
-      </div>
-      <div class="jd-card-body">
-        <DataTable :value="tradeHistory" stripedRows responsiveLayout="scroll" class="jd-table p-datatable-sm">
-          <Column field="symbol" header="Symbol"></Column>
-          <Column field="side" header="Side">
-            <template #body="slotProps">
-              <span class="jd-badge" :class="slotProps.data.side === 'Buy' ? 'green' : 'red'">
-                {{ slotProps.data.side }}
-              </span>
-            </template>
-          </Column>
-          <Column field="price" header="Price"></Column>
-          <Column field="amount" header="Amount"></Column>
-          <Column field="total" header="Total"></Column>
-          <Column field="timestamp" header="Time"></Column>
-        </DataTable>
-        <div v-if="tradeHistory.length === 0" class="jd-empty">
-          <p>No trades executed yet</p>
-        </div>
-      </div>
-    </div>
+      </template>
+      <template #cell:side="{ value }">
+        <span class="jd-badge" :class="value === 'Buy' ? 'green' : 'red'">{{ value }}</span>
+      </template>
+    </DataTable>
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
@@ -242,6 +222,23 @@ const orderSides = ref([
 
 const openPositions = ref([])
 const tradeHistory = ref([])
+
+const positionColumns = [
+  { key: 'symbol', header: 'Symbol', sortable: true },
+  { key: 'amount', header: 'Amount', sortable: true, align: 'right' },
+  { key: 'entryPrice', header: 'Entry Price', sortable: true, align: 'right' },
+  { key: 'currentPrice', header: 'Current Price', sortable: true, align: 'right' },
+  { key: 'pnl', header: 'P/L', sortable: true, align: 'right' },
+]
+
+const tradeColumns = [
+  { key: 'symbol', header: 'Symbol', sortable: true, filterable: true, filterLabel: 'Symbol' },
+  { key: 'side', header: 'Side', sortable: true, align: 'center', filterable: true, filterLabel: 'Side' },
+  { key: 'price', header: 'Price', sortable: true, align: 'right' },
+  { key: 'amount', header: 'Amount', sortable: true, align: 'right' },
+  { key: 'total', header: 'Total', sortable: true, align: 'right' },
+  { key: 'timestamp', header: 'Time', sortable: true },
+]
 </script>
 
 <style scoped>

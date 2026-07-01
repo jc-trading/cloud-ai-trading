@@ -138,27 +138,22 @@
           <h2 class="jd-card-title">Open Orders</h2>
         </div>
         <div class="jd-card-body">
-          <DataTable :value="openOrders" stripedRows responsiveLayout="scroll" class="jd-table p-datatable-sm">
-            <Column field="symbol" header="Symbol"></Column>
-            <Column field="side" header="Side">
-              <template #body="slotProps">
-                <span class="jd-badge" :class="slotProps.data.side === 'Buy' ? 'green' : 'red'">
-                  {{ slotProps.data.side }}
-                </span>
-              </template>
-            </Column>
-            <Column field="price" header="Price"></Column>
-            <Column field="amount" header="Amount"></Column>
-            <Column field="status" header="Status"></Column>
-            <Column header="Actions">
-              <template #body="slotProps">
-                <Button label="Cancel" icon="pi pi-times" class="jd-btn jd-btn-danger jd-btn-sm"></Button>
-              </template>
-            </Column>
+          <DataTable
+            :columns="openOrderColumns"
+            :data="openOrders"
+            row-key="symbol"
+            :searchable="['symbol']"
+            search-placeholder="Search open orders…"
+            :page-size="10"
+            empty-text="No open orders"
+          >
+            <template #cell:side="{ value }">
+              <span class="jd-badge" :class="value === 'Buy' ? 'green' : 'red'">{{ value }}</span>
+            </template>
+            <template #row-actions>
+              <Button label="Cancel" icon="pi pi-times" class="jd-btn jd-btn-danger jd-btn-sm"></Button>
+            </template>
           </DataTable>
-          <div v-if="openOrders.length === 0" class="jd-empty">
-            <p>No open orders</p>
-          </div>
         </div>
       </div>
 
@@ -168,23 +163,19 @@
           <h2 class="jd-card-title">Order History</h2>
         </div>
         <div class="jd-card-body">
-          <DataTable :value="orderHistory" stripedRows responsiveLayout="scroll" class="jd-table p-datatable-sm">
-            <Column field="symbol" header="Symbol"></Column>
-            <Column field="side" header="Side">
-              <template #body="slotProps">
-                <span class="jd-badge" :class="slotProps.data.side === 'Buy' ? 'green' : 'red'">
-                  {{ slotProps.data.side }}
-                </span>
-              </template>
-            </Column>
-            <Column field="price" header="Price"></Column>
-            <Column field="filledAmount" header="Filled"></Column>
-            <Column field="status" header="Status"></Column>
-            <Column field="timestamp" header="Time"></Column>
+          <DataTable
+            :columns="orderHistoryColumns"
+            :data="orderHistory"
+            row-key="symbol"
+            :searchable="['symbol']"
+            search-placeholder="Search order history…"
+            :page-size="10"
+            empty-text="No order history"
+          >
+            <template #cell:side="{ value }">
+              <span class="jd-badge" :class="value === 'Buy' ? 'green' : 'red'">{{ value }}</span>
+            </template>
           </DataTable>
-          <div v-if="orderHistory.length === 0" class="jd-empty">
-            <p>No order history</p>
-          </div>
         </div>
       </div>
     </div>
@@ -193,8 +184,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
+import DataTable from '@/components/common/DataTable.vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
@@ -221,32 +211,28 @@ const orderSides = ref([
 
 const openOrders = ref([])
 const orderHistory = ref([])
+
+const openOrderColumns = [
+  { key: 'symbol', header: 'Symbol', sortable: true, filterable: true, filterLabel: 'Symbol' },
+  { key: 'side', header: 'Side', sortable: true, align: 'center', filterable: true, filterLabel: 'Side' },
+  { key: 'price', header: 'Price', sortable: true, align: 'right' },
+  { key: 'amount', header: 'Amount', sortable: true, align: 'right' },
+  { key: 'status', header: 'Status', sortable: true, align: 'right', filterable: true, filterLabel: 'Status' },
+]
+
+const orderHistoryColumns = [
+  { key: 'symbol', header: 'Symbol', sortable: true, filterable: true, filterLabel: 'Symbol' },
+  { key: 'side', header: 'Side', sortable: true, align: 'center', filterable: true, filterLabel: 'Side' },
+  { key: 'price', header: 'Price', sortable: true, align: 'right' },
+  { key: 'filledAmount', header: 'Filled', sortable: true, align: 'right' },
+  { key: 'status', header: 'Status', sortable: true, align: 'right', filterable: true, filterLabel: 'Status' },
+  { key: 'timestamp', header: 'Time', sortable: true, align: 'right' },
+]
 </script>
 
 <style scoped>
 .w-full {
   width: 100%;
-}
-
-:deep(.p-datatable) {
-  background-color: transparent;
-  color: var(--jd-text);
-}
-
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: transparent;
-  color: var(--jd-text);
-  border-color: var(--jd-border);
-  font-weight: 600;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  border-color: var(--jd-border);
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: var(--jd-border);
-  color: var(--jd-text);
 }
 
 :deep(.p-inputtext.jd-input),
