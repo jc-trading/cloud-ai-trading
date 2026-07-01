@@ -70,7 +70,6 @@ services:
       - ./backend/tasks:/app/tasks
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - cat_network
     restart: unless-stopped
@@ -107,7 +106,6 @@ services:
       - ./backend/tasks:/app/tasks
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - cat_network
     restart: unless-stopped

@@ -1,6 +1,14 @@
-"""Docker container status and statistics collection."""
+"""Docker container status and statistics collection.
+
+The Docker socket (/var/run/docker.sock) is intentionally NOT mounted into the
+backend / celery-worker containers — mounting it grants host-root-equivalent
+access and turns any RCE on the public API into full host compromise. Container
+stats are therefore best-effort: when the socket is absent we degrade to a
+graceful no-op (return None / "offline") and let psutil-based metrics carry on.
+"""
 
 import logging
+import os
 from typing import Optional, List, Dict
 
 try:
@@ -15,18 +23,40 @@ class DockerStats:
     """Collect Docker container status and metrics."""
 
     _client = None
+    # Cache "Docker is not reachable" so we don't retry / log-spam every cycle.
+    _unavailable = False
+
+    @classmethod
+    def _socket_available(cls) -> bool:
+        """Return True if a Docker endpoint is plausibly reachable.
+
+        If DOCKER_HOST is set we defer to the library (could be TCP). Otherwise
+        we require the default unix socket to actually exist — which it won't,
+        by design, inside these containers.
+        """
+        if os.environ.get("DOCKER_HOST"):
+            return True
+        return os.path.exists("/var/run/docker.sock")
 
     @classmethod
     def get_client(cls):
-        """Get or create Docker client."""
-        if docker is None:
+        """Get or create a Docker client, or None if Docker is unavailable."""
+        if docker is None or cls._unavailable:
             return None
 
         if cls._client is None:
+            if not cls._socket_available():
+                cls._unavailable = True
+                logger.info(
+                    "Docker socket not available; container stats disabled "
+                    "(psutil metrics still collected)."
+                )
+                return None
             try:
                 cls._client = docker.from_env()
             except Exception as e:
-                logger.error(f"Failed to connect to Docker: {e}")
+                cls._unavailable = True
+                logger.info(f"Docker not reachable, container stats disabled: {e}")
                 return None
 
         return cls._client
