@@ -7,6 +7,7 @@ Candles  → Binance CCXT for crypto, Alpaca for stocks
 Search   → CoinGecko search (crypto) + curated stock list (stocks)
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime
@@ -15,7 +16,45 @@ from typing import Optional
 import httpx
 import ccxt.async_support as ccxt
 
+from app.modules.fundamentals.finnhub_client import get_finnhub_client
+
 logger = logging.getLogger("cloud_ai_trading.market")
+
+
+async def _override_stock_prices_with_finnhub(rows: list[dict]) -> None:
+    """Alpaca's free tier serves the thin/laggy IEX feed, so its 'last' price and
+    bid/ask drift from the real-time consolidated tape (what TradingView shows).
+    Finnhub's free /quote is real-time and matches. Override each row's price in
+    place from Finnhub; leave the row untouched if Finnhub has no quote. Best-effort,
+    never raises. Concurrent so N symbols cost ~1 round-trip."""
+    client = get_finnhub_client()
+    if not client.enabled or not rows:
+        return
+
+    async def _q(sym: str):
+        try:
+            return sym, await asyncio.to_thread(client.quote, sym)
+        except Exception:
+            return sym, None
+
+    quotes = dict(await asyncio.gather(*[_q(r["symbol"]) for r in rows]))
+    for row in rows:
+        q = quotes.get(row["symbol"])
+        if not q:
+            continue
+        c = _f(q.get("c"))
+        if c is None:
+            continue
+        pc = _f(q.get("pc"))
+        row["last"] = c
+        row["high"] = _f(q.get("h")) or row.get("high")
+        row["low"] = _f(q.get("l")) or row.get("low")
+        row["change_24h"] = round((c - pc) / pc * 100, 4) if pc else row.get("change_24h")
+        # Drop the stale IEX bid/ask rather than show a misleading spread.
+        row["bid"] = None
+        row["ask"] = None
+        if q.get("t"):
+            row["timestamp"] = int(q["t"]) * 1000
 
 # ── CoinGecko coin mapping ──────────────────────────────────────
 SYMBOL_TO_CG: dict[str, str] = {
@@ -314,10 +353,13 @@ class MarketService:
             )
             resp.raise_for_status()
             data = resp.json()
-            return [
+            rows = [
                 _format_alpaca_snapshot(sym, data[sym])
                 for sym in target if sym in data
             ]
+            # Real-time price from Finnhub (Alpaca free tier is delayed IEX).
+            await _override_stock_prices_with_finnhub(rows)
+            return rows
         except Exception as e:
             logger.error(f"Alpaca stock tickers failed: {e}")
             return []

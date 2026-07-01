@@ -125,6 +125,16 @@ class FinnhubClient:
         data = self._get("/stock/earnings", {"symbol": symbol})
         return data if isinstance(data, list) else []
 
+    # ---- real-time quote --------------------------------------------------
+
+    def quote(self, symbol: str) -> Optional[dict[str, Any]]:
+        """Real-time US stock quote (free tier). Keys: c=current, h=high, l=low,
+        o=open, pc=prev close, t=epoch. Returns None on failure / empty."""
+        data = self._get("/quote", {"symbol": symbol})
+        if not isinstance(data, dict) or data.get("c") in (None, 0):
+            return None
+        return data
+
     # ---- news -------------------------------------------------------------
 
     def company_news(
