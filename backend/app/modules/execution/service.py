@@ -59,7 +59,9 @@ from app.modules.equity.risk_config import (
 from app.modules.exchange.adapters.alpaca import AlpacaAdapter
 from app.modules.exchange.adapters.base import ExchangeAdapter, OrderRequest
 from app.modules.exchange.models import ExchangeConnection, ExchangeType, TradingMode
+from app.modules.notifications.telegram import TelegramNotifier
 from app.modules.trading.models import Position
+from app.modules.trading.portfolio import PortfolioManager
 from app.modules.watchlist.models import Watchlist
 
 logger = logging.getLogger("cloud_ai_trading.execution")
@@ -293,6 +295,50 @@ async def gather_risk_snapshot(
 
 
 # --------------------------------------------------------------------------- #
+# Post-fill side effects (best-effort — a filled paper order must never be       #
+# undone or crashed by a notification / stats hiccup)                            #
+# --------------------------------------------------------------------------- #
+async def _notify_paper_fill(
+    decision: AIAnalysisResult, symbol: str, quantity, entry_price
+) -> bool:
+    """Fire the PAPER-fill Telegram (symbol / qty / entry + Decision reasoning).
+
+    Best-effort and fully None-safe: the order is already filled at the broker, so
+    a missing Telegram config or a network error is logged and swallowed — it must
+    never propagate out of ``execute_decision`` or undo the trade.
+    """
+    try:
+        reason = getattr(decision, "verdict_reason", None)
+        notifier = TelegramNotifier()
+        return await notifier.send_paper_order_fill(
+            symbol=symbol,
+            quantity=quantity,
+            entry_price=entry_price,
+            reason=reason,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("execution: telegram paper-fill notify failed: %s", exc)
+        return False
+
+
+async def _refresh_portfolio_stats(db: AsyncSession, watchlist_id, symbol, entry_price) -> None:
+    """Recompute the watchlist's ``portfolio_stats`` so the dashboard Portfolio card
+    reflects the new Position immediately.
+
+    Best-effort: the fresh position was just opened at ``entry_price``, so we mark
+    it to its own entry (zero unrealized) rather than hitting the market again. Any
+    failure is logged and swallowed — stats are derived data, never worth crashing
+    a completed order over.
+    """
+    try:
+        price = _to_decimal(entry_price)
+        current_prices = {symbol: float(price)} if price is not None else {}
+        await PortfolioManager.update_portfolio_stats(db, watchlist_id, current_prices)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("execution: portfolio stats refresh failed: %s", exc)
+
+
+# --------------------------------------------------------------------------- #
 # Main entry                                                                    #
 # --------------------------------------------------------------------------- #
 async def execute_decision(
@@ -441,6 +487,14 @@ async def execute_decision(
     # 14) Link the Position back onto the Decision (idempotency marker).
     decision.position_id = position.id
     await db.flush()
+
+    # 15) Refresh portfolio_stats so the dashboard Portfolio reflects the new
+    #     Position (best-effort — never crashes / undoes the filled order).
+    await _refresh_portfolio_stats(db, watchlist_id, symbol, entry_price)
+
+    # 16) Notify Telegram of the PAPER fill (symbol / qty / entry + reasoning).
+    #     Best-effort: a notify failure must not fail the execution.
+    await _notify_paper_fill(decision, symbol, filled_qty, entry_price)
 
     logger.info(
         "execution: decision %s -> paper BUY %s x%s @ %s -> position %s",

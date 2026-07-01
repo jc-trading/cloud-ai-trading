@@ -26,6 +26,10 @@ class DecisionResponse(BaseModel):
     claude_response: dict
     ai_invoked: bool
     data_completeness: dict
+    # Execution link: set once the go-Decision has been placed as a paper order and
+    # a Position opened. None => not yet executed. Lets the dashboard show the
+    # "go-Decision -> placed / position open" state.
+    position_id: Optional[UUID] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

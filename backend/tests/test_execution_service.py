@@ -114,6 +114,7 @@ def _decision(**overrides):
         exchange_type="alpaca",
         asset_class=AssetClass.EQUITY,
         verdict=Verdict.GO,
+        verdict_reason="Strong catalyst; earnings beat + guidance raise.",
         action=TradeAction.BUY,
         position_id=None,
     )
@@ -341,6 +342,120 @@ def test_resolve_adapter_missing_connection():
     adapter, err = asyncio.run(service._resolve_alpaca_paper_adapter(session, uuid4()))
     assert adapter is None
     assert err == "no_active_alpaca_connection"
+
+
+# ---- post-fill side effects: PAPER Telegram + portfolio stats -------------
+
+
+class _RecordingNotifier:
+    """Fake TelegramNotifier: records send_paper_order_fill kwargs, no network."""
+
+    calls: list = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def send_paper_order_fill(self, **kwargs):
+        _RecordingNotifier.calls.append(kwargs)
+        return True
+
+
+def _patch_notifier(monkeypatch):
+    _RecordingNotifier.calls = []
+    monkeypatch.setattr(service, "TelegramNotifier", _RecordingNotifier)
+    return _RecordingNotifier
+
+
+def _silence_stats(monkeypatch):
+    """Stub the (best-effort) portfolio refresh so it doesn't touch the fake DB."""
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(service, "_refresh_portfolio_stats", _noop)
+
+
+def test_executed_paper_buy_sends_paper_telegram(monkeypatch):
+    notifier = _patch_notifier(monkeypatch)
+    _silence_stats(monkeypatch)
+
+    decision = _decision(verdict_reason="Breakout above 200D; volume surge.")
+    adapter = _MockAdapter()
+    result, _ = _run(decision, adapter, _snapshot())
+
+    assert result.status == STATUS_EXECUTED
+    assert len(notifier.calls) == 1
+    call = notifier.calls[0]
+    assert call["symbol"] == "AAPL"          # the traded symbol
+    assert call["quantity"] is not None      # size passed through
+    assert call["entry_price"] is not None   # entry passed through
+    assert call["reason"] == "Breakout above 200D; volume surge."  # Decision reasoning
+
+
+def test_rejected_decision_sends_no_telegram(monkeypatch):
+    notifier = _patch_notifier(monkeypatch)
+    _silence_stats(monkeypatch)
+
+    # A crypto decision is refused before any order — nothing to notify.
+    decision = _decision(asset_class=AssetClass.CRYPTO, exchange_type="binance", symbol="BTCUSDT")
+    result, _ = _run(decision, _MockAdapter(), _snapshot())
+
+    assert result.status == STATUS_REJECTED
+    assert notifier.calls == []
+
+
+def test_telegram_failure_does_not_break_execution(monkeypatch):
+    _silence_stats(monkeypatch)
+
+    class _BoomNotifier:
+        def __init__(self, *a, **k):
+            pass
+
+        async def send_paper_order_fill(self, **kwargs):
+            raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(service, "TelegramNotifier", _BoomNotifier)
+
+    decision = _decision()
+    result, session = _run(decision, _MockAdapter(), _snapshot())
+
+    # Notify blew up, but the paper order still stands: executed + position linked.
+    assert result.status == STATUS_EXECUTED
+    assert decision.position_id == session.added[0].id
+
+
+def test_executed_refreshes_portfolio_stats(monkeypatch):
+    _patch_notifier(monkeypatch)
+    refreshed = []
+
+    async def _record(db, watchlist_id, symbol, entry_price):
+        refreshed.append((watchlist_id, symbol, entry_price))
+
+    monkeypatch.setattr(service, "_refresh_portfolio_stats", _record)
+
+    decision = _decision()
+    result, _ = _run(decision, _MockAdapter(), _snapshot())
+
+    assert result.status == STATUS_EXECUTED
+    assert len(refreshed) == 1
+    _, symbol, entry_price = refreshed[0]
+    assert symbol == "AAPL"
+    assert entry_price is not None
+
+
+def test_rejected_decision_does_not_refresh_stats(monkeypatch):
+    _patch_notifier(monkeypatch)
+    refreshed = []
+
+    async def _record(*args, **kwargs):
+        refreshed.append(args)
+
+    monkeypatch.setattr(service, "_refresh_portfolio_stats", _record)
+
+    decision = _decision(verdict=Verdict.NO_GO)
+    result, _ = _run(decision, _MockAdapter(), _snapshot())
+
+    assert result.status == STATUS_REJECTED
+    assert refreshed == []
 
 
 def test_resolve_adapter_builds_paper_only(monkeypatch):

@@ -101,6 +101,13 @@
             <span class="asset-chip" :class="assetKey(d.asset_class)">
               {{ d.asset_class }}
             </span>
+            <span
+              v-if="d.position_id"
+              class="asset-chip placed"
+              title="Order placed on Alpaca paper — position open"
+            >
+              ● position
+            </span>
           </div>
           <span class="stamp" :class="`v-${verdictKey(d.verdict)}`">
             {{ verdictLabel(d.verdict) }}
@@ -533,6 +540,8 @@ onBeforeUnmount(() => {
 }
 .asset-chip.equity { color: #a9a2d6; border-color: rgba(150, 140, 210, 0.3); }
 .asset-chip.crypto { color: #86b4c2; border-color: rgba(120, 170, 190, 0.3); }
+/* Execution state: go-Decision has been placed (paper) and a position is open. */
+.asset-chip.placed { color: #7fd1a3; border-color: rgba(120, 200, 150, 0.38); }
 
 .stamp {
   font-family: var(--mono);

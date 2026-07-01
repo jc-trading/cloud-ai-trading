@@ -120,6 +120,43 @@ class TelegramNotifier:
 
         return await self.send_message(message)
 
+    async def send_paper_order_fill(
+        self,
+        symbol: str,
+        quantity=None,
+        entry_price=None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Notify a filled **PAPER** equity BUY.
+
+        Carries the standing PAPER disclaimer plus the symbol / quantity / entry
+        price and a short reasoning summary from the linked Decision. Fully
+        None-safe — missing fields degrade to a placeholder, never raise.
+        """
+        sym = symbol or "?"
+
+        qty_str = "?" if quantity is None else str(quantity)
+
+        try:
+            price_str = f"${float(entry_price):.2f}" if entry_price is not None else "n/a"
+        except (TypeError, ValueError):
+            price_str = "n/a"
+
+        reason_str = (reason or "").strip() or "No reasoning recorded."
+        if len(reason_str) > 400:
+            reason_str = reason_str[:397] + "..."
+
+        message = (
+            f"🧾 *PAPER Order Filled*\n\n"
+            f"⚠️ This is a *PAPER* trade — simulated, no real money.\n\n"
+            f"Symbol: `{sym}`\n"
+            f"Quantity: {qty_str}\n"
+            f"Entry: {price_str}\n\n"
+            f"_Why:_ {reason_str}"
+        )
+
+        return await self.send_message(message)
+
     async def send_portfolio_update(
         self,
         total_invested: float,
