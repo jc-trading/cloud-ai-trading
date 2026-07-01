@@ -89,6 +89,10 @@
 /* ── Reset & Base ───────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Native form controls don't inherit font by default → force the app font so
+   every button/input/select renders in Space Grotesk, not the system font. */
+button, input, select, textarea, optgroup { font-family: inherit; font-size: inherit; line-height: inherit; }
+
 html { scroll-behavior: smooth; }
 
 body {
