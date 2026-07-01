@@ -1007,33 +1007,6 @@ body {
 :deep(.p-button.p-button-outlined) { border-color: rgba(63,224,255,0.35) !important; color: var(--jd-cyan) !important; }
 :deep(.p-button.p-button-text) { color: var(--jd-text-muted) !important; }
 
-/* Ant Design overrides (retuned; removed in Phase 5) */
-:deep(.ant-input),
-:deep(.ant-input-affix-wrapper),
-:deep(.ant-input-password) {
-  background: var(--jd-input) !important;
-  border-color: var(--jd-border) !important;
-  color: var(--jd-text) !important;
-  border-radius: 9px !important;
-}
-:deep(.ant-input:focus),
-:deep(.ant-input-affix-wrapper:focus),
-:deep(.ant-input-affix-wrapper-focused) {
-  border-color: rgba(63,224,255,0.5) !important;
-  box-shadow: 0 0 0 3px rgba(63,224,255,0.1) !important;
-}
-:deep(.ant-input::placeholder) { color: var(--jd-text-faint) !important; }
-:deep(.ant-form-item-label > label) { color: var(--jd-text-muted) !important; font-size: 12px !important; }
-:deep(.ant-btn-primary) {
-  background: linear-gradient(135deg, #3fe0ff, #a06bff) !important;
-  border: none !important;
-  height: 42px !important;
-  border-radius: 9px !important;
-  font-weight: 600 !important;
-  color: #04121a !important;
-  box-shadow: 0 2px 8px rgba(63,224,255,0.3) !important;
-}
-
 /* Gradient text */
 .jd-gradient-text {
   background: linear-gradient(135deg, #3fe0ff, #a06bff);

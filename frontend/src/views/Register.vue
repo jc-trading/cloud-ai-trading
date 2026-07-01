@@ -3,90 +3,60 @@
     <div class="jd-auth-card">
       <!-- Logo and Title -->
       <div class="auth-header">
-        <div class="auth-logo">
-          <i class="pi pi-user-plus"></i>
-        </div>
-        <h1 class="jd-gradient-text auth-title">CloudAI Trading</h1>
+        <div class="auth-logo"><i class="pi pi-user-plus"></i></div>
+        <h1 class="jd-gradient-text auth-title">CAT Scope</h1>
         <p class="auth-subtitle">Create your account</p>
       </div>
 
       <!-- Secure Badge -->
       <div class="secure-badge">
-        <i class="pi pi-lock"></i>
-        <span>Secure Connection</span>
+        <i class="pi pi-lock"></i><span>Secure Connection</span>
       </div>
 
       <!-- Form -->
-      <form @submit.prevent="handleRegister" class="auth-form">
-        <!-- Name Field -->
+      <form @submit.prevent="handleRegister" class="auth-form" novalidate>
         <div class="jd-form-group">
-          <label class="jd-label">Full Name</label>
-          <a-input
-            v-model:value="form.name"
-            placeholder="Your full name"
-            class="jd-input"
-          />
+          <label class="jd-label" for="reg-name">Full Name</label>
+          <input id="reg-name" v-model.trim="form.name" type="text" autocomplete="name"
+                 placeholder="Your full name" class="jd-input" required />
         </div>
 
-        <!-- Email Field -->
         <div class="jd-form-group">
-          <label class="jd-label">Email</label>
-          <a-input
-            v-model:value="form.email"
-            placeholder="your@email.com"
-            type="email"
-            class="jd-input"
-          />
+          <label class="jd-label" for="reg-email">Email</label>
+          <input id="reg-email" v-model.trim="form.email" type="email" autocomplete="email"
+                 placeholder="your@email.com" class="jd-input" required />
         </div>
 
-        <!-- Password Field -->
         <div class="jd-form-group">
-          <label class="jd-label">Password</label>
-          <a-input-password
-            v-model:value="form.password"
-            placeholder="Min 8 characters"
-            class="jd-input"
-          />
+          <label class="jd-label" for="reg-password">Password</label>
+          <div class="pw-wrap">
+            <input id="reg-password" v-model="form.password" :type="showPw ? 'text' : 'password'"
+                   autocomplete="new-password" placeholder="Min 8 characters" class="jd-input" required />
+            <button type="button" class="pw-toggle" @click="showPw = !showPw" :aria-label="showPw ? 'Hide password' : 'Show password'">
+              <i :class="showPw ? 'pi pi-eye-slash' : 'pi pi-eye'"></i>
+            </button>
+          </div>
         </div>
 
-        <!-- Timezone Field -->
         <div class="jd-form-group">
-          <label class="jd-label">Timezone</label>
-          <a-select
-            v-model:value="form.timezone"
-            :options="timezones"
-            placeholder="Select your timezone"
-            class="jd-input"
-          />
+          <label class="jd-label" for="reg-tz">Timezone</label>
+          <select id="reg-tz" v-model="form.timezone" class="jd-input jd-select">
+            <option v-for="tz in timezones" :key="tz.value" :value="tz.value">{{ tz.label }}</option>
+          </select>
         </div>
 
-        <!-- Error Alert -->
-        <a-alert
-          v-if="errorMsg"
-          :message="errorMsg"
-          type="error"
-          show-icon
-          closable
-          @close="errorMsg = ''"
-          class="error-alert"
-        />
+        <div v-if="errorMsg" class="jd-alert error" style="margin-bottom:16px">
+          <i class="pi pi-exclamation-circle"></i><span>{{ errorMsg }}</span>
+        </div>
 
-        <!-- Sign Up Button -->
-        <a-button
-          type="primary"
-          html-type="submit"
-          block
-          class="jd-btn jd-btn-primary jd-btn-lg auth-button"
-        >
-          Create Account
-        </a-button>
+        <button type="submit" class="jd-btn jd-btn-primary jd-btn-lg" style="width:100%" :disabled="loading">
+          <i v-if="loading" class="pi pi-spinner animate-spin"></i>
+          {{ loading ? 'Creating…' : 'Create Account' }}
+        </button>
       </form>
 
-      <!-- Sign In Link -->
       <div class="auth-footer">
-        <p>Already have an account?
-          <router-link to="/login" class="link">Sign In</router-link>
-        </p>
+        <p>Already have an account? <router-link to="/login" class="link">Sign In</router-link></p>
       </div>
     </div>
   </div>
@@ -100,15 +70,12 @@ import { useAuthStore } from '@/stores/auth'
 const router = useRouter()
 const auth = useAuthStore()
 const errorMsg = ref('')
+const loading = ref(false)
+const showPw = ref(false)
 
 const form = reactive({
-  name: '',
-  email: '',
-  password: '',
-  timezone: 'Asia/Kuala_Lumpur',
-  country: 'Malaysia',
-  language: 'en',
-  currency: 'USD',
+  name: '', email: '', password: '',
+  timezone: 'Asia/Kuala_Lumpur', country: 'Malaysia', language: 'en', currency: 'USD',
 })
 
 const timezones = [
@@ -129,219 +96,52 @@ const timezones = [
 async function handleRegister() {
   errorMsg.value = ''
   if (!form.name || !form.email || !form.password) {
-    errorMsg.value = 'All fields are required'
+    errorMsg.value = 'All fields are required.'
     return
   }
   if (form.password.length < 8) {
-    errorMsg.value = 'Password must be at least 8 characters'
+    errorMsg.value = 'Password must be at least 8 characters.'
     return
   }
-
+  loading.value = true
   try {
     await auth.register(form)
     router.push('/')
   } catch (err) {
     errorMsg.value = err.response?.data?.detail || 'Registration failed.'
+  } finally {
+    loading.value = false
   }
 }
 </script>
 
 <style scoped>
-.auth-header {
-  text-align: center;
-  margin-bottom: 32px;
-}
-
-.auth-logo {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 16px;
-}
-
+.auth-header { text-align: center; margin-bottom: 32px; }
+.auth-logo { display: flex; justify-content: center; margin-bottom: 16px; }
 .auth-logo i {
-  font-size: 42px;
-  background: linear-gradient(135deg, var(--jd-blue), var(--jd-purple));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  font-size: 40px;
+  background: linear-gradient(135deg, var(--jd-cyan), var(--jd-purple));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
 }
-
-.auth-title {
-  font-size: 28px;
-  font-weight: 800;
-  margin: 0 0 8px 0;
-  letter-spacing: -0.5px;
-}
-
-.auth-subtitle {
-  font-size: 13px;
-  color: var(--jd-text-muted);
-  margin: 0;
-  letter-spacing: 0.3px;
-}
-
+.auth-title { font-size: 26px; font-weight: 700; margin: 0 0 8px 0; letter-spacing: -0.02em; }
+.auth-subtitle { font-size: 13px; color: var(--jd-text-muted); margin: 0; }
 .secure-badge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 16px;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.2);
-  border-radius: 6px;
-  margin-bottom: 24px;
-  font-size: 12px;
-  color: var(--jd-green);
-  font-weight: 500;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 16px; background: var(--jd-green-glow);
+  border: 1px solid rgba(46,224,138,0.22); border-radius: 8px;
+  margin-bottom: 24px; font-size: 12px; color: var(--jd-green); font-weight: 500;
 }
-
-.secure-badge i {
-  font-size: 14px;
+.secure-badge i { font-size: 14px; }
+.auth-form { margin-bottom: 20px; }
+.pw-wrap { position: relative; }
+.pw-toggle {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--jd-text-muted); cursor: pointer;
+  padding: 4px 8px; font-size: 14px;
 }
-
-.auth-form {
-  margin-bottom: 20px;
-}
-
-.jd-form-group {
-  margin-bottom: 16px;
-}
-
-:deep(.ant-input) {
-  background: var(--jd-input) !important;
-  border: 1px solid var(--jd-border) !important;
-  color: var(--jd-text) !important;
-  height: 40px !important;
-  padding: 8px 12px !important;
-  border-radius: 8px !important;
-  transition: all var(--jd-trans) !important;
-  font-size: 14px !important;
-}
-
-:deep(.ant-input::placeholder) {
-  color: var(--jd-text-faint) !important;
-}
-
-:deep(.ant-input:hover) {
-  border-color: var(--jd-border-hover) !important;
-}
-
-:deep(.ant-input:focus) {
-  border-color: var(--jd-blue) !important;
-  background: var(--jd-input) !important;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1) !important;
-}
-
-:deep(.ant-input-password) {
-  background: var(--jd-input) !important;
-  border: 1px solid var(--jd-border) !important;
-  border-radius: 8px !important;
-}
-
-:deep(.ant-input-password input) {
-  background: transparent !important;
-  color: var(--jd-text) !important;
-  height: 40px !important;
-  padding: 8px 12px !important;
-  font-size: 14px !important;
-}
-
-:deep(.ant-input-password-icon) {
-  color: var(--jd-text-muted) !important;
-}
-
-:deep(.ant-select) {
-  width: 100% !important;
-}
-
-:deep(.ant-select-selector) {
-  background: var(--jd-input) !important;
-  border: 1px solid var(--jd-border) !important;
-  border-radius: 8px !important;
-  height: 40px !important;
-}
-
-:deep(.ant-select-arrow) {
-  color: var(--jd-text-muted) !important;
-}
-
-:deep(.ant-select-selection-item) {
-  color: var(--jd-text) !important;
-}
-
-:deep(.ant-select:hover .ant-select-selector) {
-  border-color: var(--jd-border-hover) !important;
-}
-
-:deep(.ant-select-focused .ant-select-selector) {
-  border-color: var(--jd-blue) !important;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1) !important;
-}
-
-:deep(.ant-select-dropdown) {
-  background: var(--jd-card) !important;
-}
-
-:deep(.ant-select-item) {
-  color: var(--jd-text) !important;
-}
-
-:deep(.ant-select-item:hover) {
-  background: rgba(59, 130, 246, 0.1) !important;
-}
-
-:deep(.ant-select-item-option-selected) {
-  background: rgba(59, 130, 246, 0.15) !important;
-  color: var(--jd-blue) !important;
-}
-
-.auth-button {
-  height: 40px !important;
-  font-size: 14px !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.3px !important;
-}
-
-.error-alert {
-  margin-bottom: 16px !important;
-}
-
-:deep(.ant-alert) {
-  background: rgba(239, 68, 68, 0.08) !important;
-  border: 1px solid rgba(239, 68, 68, 0.2) !important;
-  border-radius: 8px !important;
-  color: var(--jd-red) !important;
-}
-
-:deep(.ant-alert-message) {
-  color: var(--jd-red) !important;
-}
-
-:deep(.ant-alert-close-icon) {
-  color: var(--jd-red) !important;
-}
-
-.auth-footer {
-  text-align: center;
-  border-top: 1px solid var(--jd-border);
-  padding-top: 20px;
-}
-
-.auth-footer p {
-  margin: 0;
-  font-size: 13px;
-  color: var(--jd-text-muted);
-}
-
-.link {
-  color: var(--jd-blue);
-  text-decoration: none;
-  font-weight: 600;
-  margin-left: 4px;
-  transition: all var(--jd-trans);
-}
-
-.link:hover {
-  color: #60a5fa;
-}
+.pw-toggle:hover { color: var(--jd-cyan); }
+.auth-footer { text-align: center; border-top: 1px solid var(--jd-border); padding-top: 20px; }
+.auth-footer p { margin: 0; font-size: 13px; color: var(--jd-text-muted); }
+.link { color: var(--jd-cyan); text-decoration: none; font-weight: 600; margin-left: 4px; }
+.link:hover { text-decoration: underline; }
 </style>

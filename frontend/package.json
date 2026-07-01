@@ -8,9 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ant-design/icons-vue": "^7.0.0",
     "@tanstack/vue-table": "^8.21.3",
-    "ant-design-vue": "^4.1.0",
     "axios": "^1.4.0",
     "dayjs": "^1.11.8",
     "echarts": "^5.4.2",
