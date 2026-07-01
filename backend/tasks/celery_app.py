@@ -25,6 +25,7 @@ celery_app = Celery(
         "tasks.system_tasks",
         "app.tasks.market_data_tasks",
         "app.tasks.trading_tasks",
+        "app.tasks.risk_tasks",
     ],
 )
 
@@ -39,8 +40,9 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
 )
 
-# Auto-discover tasks in tasks/ directory and app tasks
-celery_app.autodiscover_tasks(["tasks", "app.tasks"])
+# NOTE: no autodiscover_tasks() — every task module is registered explicitly via
+# the `include=[...]` list above. autodiscover was redundant (it re-scanned the same
+# packages) and masked missing includes; risk_tasks is now in `include` instead.
 
 # Periodic task schedule (Celery Beat)
 celery_app.conf.beat_schedule = {
@@ -104,5 +106,18 @@ celery_app.conf.beat_schedule = {
     "cleanup-old-metrics": {
         "task": "cleanup_old_metrics",
         "schedule": 86400.0,  # every 24 hours
+    },
+    # Risk Management Tasks
+    # Monitor portfolios (position metrics, drawdown, limit checks) every 5 minutes.
+    # Deliberately NOT 1-minute: metrics only move with new candles and 1m would
+    # spam position_metrics/drawdown_records rows.
+    "risk-monitor-portfolio": {
+        "task": "risk.monitor_portfolio",
+        "schedule": 300.0,  # every 5 minutes
+    },
+    # Check emergency conditions (daily loss limit, drawdown) every 5 minutes.
+    "risk-check-emergency-conditions": {
+        "task": "risk.check_emergency_conditions",
+        "schedule": 300.0,  # every 5 minutes
     },
 }

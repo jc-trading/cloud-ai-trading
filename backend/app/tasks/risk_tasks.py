@@ -6,13 +6,26 @@ from datetime import datetime, timezone
 
 from celery import shared_task
 
+from app.config import get_settings
 from app.celery_database import CeleryAsyncSessionLocal
+from app.modules.market_data.service import MarketDataService
 from app.modules.risk.tracker import PortfolioRiskTracker
 from app.modules.risk.engine import RiskEngine
 from app.modules.trading.models import Position
 from app.modules.watchlist.models import Watchlist
 
 logger = logging.getLogger(__name__)
+
+
+def _starting_capital() -> Decimal:
+    """Configured simulated starting capital (SIMULATE_BALANCE, default $10000).
+
+    This is the real, single source of the account's base equity for the paper /
+    simulated portfolio — replaces the old hardcoded placeholder equity. Current
+    portfolio net worth = this + open-position market value change, computed inside
+    PortfolioRiskTracker.calculate_portfolio_metrics.
+    """
+    return Decimal(str(get_settings().DEFAULT_SIMULATE_BALANCE))
 
 
 @shared_task(name="risk.monitor_portfolio")
@@ -60,32 +73,55 @@ def monitor_portfolio():
                     result = await session.execute(stmt)
                     open_positions = result.scalars().all()
 
+                    # Guardrail: no open positions -> nothing to price, no metrics to
+                    # write. Skip cleanly so we never emit placeholder rows or alerts.
                     if not open_positions:
                         continue
 
-                    # Get current prices (TODO: from exchange)
-                    current_prices = {}
-                    for position in open_positions:
-                        # In production, fetch from Binance/exchange API
-                        current_prices[position.symbol] = Decimal("100")  # Placeholder
+                    # Real current prices: latest stored OHLCV close per symbol.
+                    symbols = [p.symbol for p in open_positions]
+                    current_prices = await MarketDataService.get_latest_prices(
+                        session, watchlist.id, symbols
+                    )
 
-                    # Update position metrics
-                    for position in open_positions:
+                    # Only price positions we actually have a market price for. A
+                    # missing price means the collector has no candle yet — skip that
+                    # position rather than fabricate a value, so metrics stay truthful.
+                    priced_positions = [p for p in open_positions if p.symbol in current_prices]
+                    missing = {p.symbol for p in open_positions} - set(current_prices)
+                    if missing:
+                        logger.warning(
+                            f"No market price for {sorted(missing)} on watchlist "
+                            f"{watchlist.id}; skipping those positions this cycle"
+                        )
+                    if not priced_positions:
+                        logger.info(
+                            f"No priced positions for watchlist {watchlist.id}; "
+                            f"skipping metric/drawdown write this cycle"
+                        )
+                        continue
+
+                    # Update position metrics (only for priced positions)
+                    for position in priced_positions:
                         try:
                             await PortfolioRiskTracker.update_position_metrics(
                                 session,
                                 position.id,
-                                current_prices.get(position.symbol, position.entry_price),
+                                current_prices[position.symbol],
                             )
                         except Exception as e:
                             logger.error(f"Failed to update position {position.id}: {e}")
+
+                    # Starting capital from SIMULATE_BALANCE; equity is derived inside
+                    # calculate_portfolio_metrics as starting_capital + total P&L.
+                    starting_capital = _starting_capital()
 
                     # Calculate portfolio metrics
                     metrics = await PortfolioRiskTracker.calculate_portfolio_metrics(
                         session,
                         watchlist.id,
                         current_prices,
-                        Decimal("100000"),  # TODO: Get from account
+                        starting_capital,
                     )
 
                     # Record drawdown
@@ -103,11 +139,12 @@ def monitor_portfolio():
                         metrics,
                     )
 
-                    # Check portfolio limits
+                    # Check portfolio limits. Loss limits are measured against the
+                    # deployed base capital (fixed threshold), not a moving equity.
                     limits_ok, alert = await RiskEngine.check_portfolio_limits(
                         session,
                         watchlist.id,
-                        Decimal("100000"),  # TODO: Get from account
+                        starting_capital,
                         metrics["total_pnl"],
                     )
 
@@ -172,7 +209,7 @@ def update_risk_metrics():
                     # Calculate Sharpe ratio
                     sharpe = await PortfolioRiskTracker._calculate_sharpe_ratio(
                         closed_positions,
-                        Decimal("100000"),
+                        _starting_capital(),
                     )
 
                     # Calculate VaR
@@ -235,8 +272,12 @@ def check_emergency_conditions():
                     result = await session.execute(stmt)
                     all_positions = result.scalars().all()
 
-                    # Calculate daily P&L
-                    from datetime import timedelta
+                    # Guardrail: no positions at all -> no trades today -> no daily
+                    # loss possible. Skip so we never raise a false circuit-breaker.
+                    if not all_positions:
+                        continue
+
+                    # Calculate daily P&L (only realized on positions closed today)
                     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
                     daily_pnl = Decimal("0")
 
@@ -248,8 +289,8 @@ def check_emergency_conditions():
                                 )
                                 daily_pnl += pnl
 
-                    # Check daily loss limit
-                    account_equity = Decimal("100000")  # TODO: Get from account
+                    # Check daily loss limit against the configured base capital.
+                    account_equity = _starting_capital()
                     daily_loss_limit = account_equity * (risk_limit.daily_loss_limit_percent / Decimal("100"))
 
                     if daily_pnl < -daily_loss_limit:

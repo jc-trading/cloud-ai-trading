@@ -26,6 +26,37 @@ class MarketDataService:
     """Service for managing market data."""
 
     @staticmethod
+    async def get_latest_prices(
+        session: AsyncSession,
+        watchlist_id,
+        symbols: List[str],
+    ) -> dict:
+        """Return {symbol: Decimal(close_price)} from the most recent OHLCV candle
+        per symbol for a watchlist.
+
+        This is the real "current price" source used by the risk tasks (last stored
+        close from the market-data collector). Symbols with no candle yet are omitted
+        from the result — callers must treat a missing symbol as "no price", never
+        substitute a placeholder.
+        """
+        prices: dict = {}
+        for symbol in dict.fromkeys(symbols):  # de-dupe, preserve order
+            stmt = (
+                select(OHLCVCandle.close_price)
+                .where(
+                    OHLCVCandle.watchlist_id == watchlist_id,
+                    OHLCVCandle.symbol == symbol,
+                )
+                .order_by(desc(OHLCVCandle.open_time))
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            close = result.scalar_one_or_none()
+            if close is not None:
+                prices[symbol] = Decimal(str(close))
+        return prices
+
+    @staticmethod
     async def save_ohlcv_candle(
         session: AsyncSession,
         watchlist_id: UUID,

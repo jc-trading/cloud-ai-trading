@@ -195,6 +195,7 @@ class PortfolioRiskTracker:
             concentration_percent = (max_position_value / total_position_value) * Decimal("100")
 
         return {
+            "initial_capital": initial_capital,
             "unrealized_pnl": unrealized_pnl,
             "realized_pnl": realized_pnl,
             "total_pnl": total_pnl,
@@ -363,8 +364,13 @@ class PortfolioRiskTracker:
         stats.current_value = metrics["current_equity"]
         stats.unrealized_pnl = metrics["unrealized_pnl"]
         stats.realized_pnl = metrics["realized_pnl"]
+        # Total return is measured against the real starting capital carried in the
+        # metrics dict (SIMULATE_BALANCE-derived), not a hardcoded account size.
+        initial_capital = Decimal(str(metrics.get("initial_capital") or 0))
         stats.total_return_percent = (
-            (metrics["total_pnl"] / Decimal("100000")) * Decimal("100") if metrics["total_pnl"] != 0 else Decimal("0")
+            (Decimal(str(metrics["total_pnl"])) / initial_capital) * Decimal("100")
+            if metrics["total_pnl"] != 0 and initial_capital > Decimal("0")
+            else Decimal("0")
         )
         stats.win_rate = Decimal(str(metrics["win_rate"]))
         stats.max_drawdown = Decimal(str(metrics["max_drawdown_percent"]))
