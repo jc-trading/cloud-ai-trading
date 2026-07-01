@@ -465,12 +465,13 @@ class HardVetoInputs:
     price_below_5: bool = False               # penny stock < $5 banned
 
 
-def apply_hard_vetoes(result: ScoreResult, vetoes: HardVetoInputs) -> ScoreResult:
-    """Return a copy of ``result`` forced to no-go if any hard veto fires.
+def evaluate_hard_vetoes(vetoes: HardVetoInputs) -> list[str]:
+    """Return the list of hard-veto reasons that fire for ``vetoes`` (empty = none).
 
-    The composite number is preserved for transparency (so the dashboard still
-    shows what the setup scored) — only the verdict is overridden, with the firing
-    veto(s) recorded in ``reasons``. This keeps the audit trail intact.
+    Pure + score-independent, so it can be used both as a *scoring* override
+    (:func:`apply_hard_vetoes`) and as a standalone pre-entry GATE (the equity
+    risk layer calls this to block an order before sizing it). Keeping the two
+    call sites on ONE list keeps the veto set in a single place.
     """
     fired: list[str] = []
     if vetoes.macro_event_today:
@@ -485,6 +486,17 @@ def apply_hard_vetoes(result: ScoreResult, vetoes: HardVetoInputs) -> ScoreResul
         fired.append("crypto is banned on the equity path")
     if vetoes.price_below_5:
         fired.append("penny stock (< $5) banned")
+    return fired
+
+
+def apply_hard_vetoes(result: ScoreResult, vetoes: HardVetoInputs) -> ScoreResult:
+    """Return a copy of ``result`` forced to no-go if any hard veto fires.
+
+    The composite number is preserved for transparency (so the dashboard still
+    shows what the setup scored) — only the verdict is overridden, with the firing
+    veto(s) recorded in ``reasons``. This keeps the audit trail intact.
+    """
+    fired = evaluate_hard_vetoes(vetoes)
 
     if not fired:
         return result
