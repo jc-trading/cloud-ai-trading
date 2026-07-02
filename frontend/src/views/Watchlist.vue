@@ -124,8 +124,8 @@
 
       <div class="add-results">
         <div v-if="searching" class="add-hint"><i class="pi pi-spin pi-spinner"></i> Searching…</div>
-        <ul v-else-if="suggestions.length" class="add-list">
-          <li v-for="option in suggestions" :key="option.symbol" @click="pick(option)">
+        <ul v-else-if="visibleSuggestions.length" class="add-list">
+          <li v-for="option in visibleSuggestions" :key="option.symbol" @click="pick(option)">
             <div class="ava" :style="{ background: tickerGradient(option.symbol) }">
               {{ option.symbol.replace('/USDT','').charAt(0) }}
             </div>
@@ -152,6 +152,7 @@
             </button>
           </li>
         </ul>
+        <div v-else-if="suggestions.length" class="add-hint">All matches are already in your watchlist.</div>
         <div v-else-if="q.trim()" class="add-hint">No matches for “{{ q.trim() }}”.</div>
         <div v-else class="add-hint">Type a symbol or company name to search crypto &amp; US stocks.</div>
       </div>
@@ -213,6 +214,18 @@ const allStocksMissing = computed(() => {
   const stocks = items.value.filter(i => i.market_type === 'stock')
   return stocks.length > 0 && stocks.every(i => !i.last)
 })
+
+// Hide search results that are already in the watchlist. Mirror the crypto
+// symbol normalization used when adding (BTC -> BTC/USDT) so the match is exact.
+function normalizeSym(option) {
+  let s = option.symbol
+  if (option.market_type === 'crypto' && !s.includes('/')) s = `${s}/USDT`
+  return s.toUpperCase()
+}
+const existingSymbols = computed(() => new Set(items.value.map(i => String(i.symbol).toUpperCase())))
+const visibleSuggestions = computed(() =>
+  suggestions.value.filter(o => !existingSymbols.value.has(normalizeSym(o)))
+)
 
 // ── Ticker avatar gradient ──────────────────────────────────────
 const GRADIENTS = [
