@@ -135,6 +135,18 @@ class FinnhubClient:
             return None
         return data
 
+    # ---- symbol search ----------------------------------------------------
+
+    def symbol_search(self, query: str) -> list[dict[str, Any]]:
+        """Search ALL listed symbols by ticker, name, or description.
+        Returns Finnhub's `result` list: [{symbol, description, displaySymbol,
+        type}]. Returns [] on failure."""
+        data = self._get("/search", {"q": query})
+        if not isinstance(data, dict):
+            return []
+        rows = data.get("result")
+        return rows if isinstance(rows, list) else []
+
     # ---- news -------------------------------------------------------------
 
     def company_news(

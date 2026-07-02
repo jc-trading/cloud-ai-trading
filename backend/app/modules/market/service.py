@@ -398,12 +398,40 @@ class MarketService:
         if not q:
             return []
 
-        # Score and rank matches
-        exact   = [s for s in _STOCKS_INDEX if s["symbol"] == q]
-        starts  = [s for s in _STOCKS_INDEX if s["symbol"].startswith(q) and s["symbol"] != q]
-        mid_sym = [s for s in _STOCKS_INDEX if q in s["symbol"] and not s["symbol"].startswith(q)]
-        name_m  = [s for s in _STOCKS_INDEX if q in s["name"].upper() and q not in s["symbol"]]
-        matched = (exact + starts + mid_sym + name_m)[:limit]
+        # Full-universe search via Finnhub /search (matches ticker + company
+        # name/description across ALL US-listed symbols). Falls back to the
+        # built-in popular-stocks index when Finnhub is unavailable.
+        matched: list[dict] = []
+        _fc = get_finnhub_client()
+        if _fc.enabled:
+            try:
+                _raw = await asyncio.to_thread(_fc.symbol_search, q)
+            except Exception:
+                _raw = []
+            _seen: set[str] = set()
+            _us: list[dict] = []
+            for _r in _raw:
+                _sym = (_r.get("symbol") or "").upper()
+                _typ = _r.get("type") or ""
+                if not _sym or _sym in _seen:
+                    continue
+                if "." in _sym or ":" in _sym:  # skip non-US / exchange-suffixed listings
+                    continue
+                if _typ and _typ not in ("Common Stock", "ETP", "ETF", "ADR"):
+                    continue
+                _seen.add(_sym)
+                _us.append({"symbol": _sym, "name": _r.get("description") or ""})
+            _exact  = [s for s in _us if s["symbol"] == q]
+            _starts = [s for s in _us if s["symbol"].startswith(q) and s["symbol"] != q]
+            _rest   = [s for s in _us if s not in _exact and s not in _starts]
+            matched = (_exact + _starts + _rest)[:limit]
+
+        if not matched:  # Finnhub off/empty → built-in popular-stocks index
+            exact   = [s for s in _STOCKS_INDEX if s["symbol"] == q]
+            starts  = [s for s in _STOCKS_INDEX if s["symbol"].startswith(q) and s["symbol"] != q]
+            mid_sym = [s for s in _STOCKS_INDEX if q in s["symbol"] and not s["symbol"].startswith(q)]
+            name_m  = [s for s in _STOCKS_INDEX if q in s["name"].upper() and q not in s["symbol"]]
+            matched = (exact + starts + mid_sym + name_m)[:limit]
 
         if not matched:
             return [{"symbol": q, "name": "", "last": None, "change_24h": None, "market_type": "stock"}]
