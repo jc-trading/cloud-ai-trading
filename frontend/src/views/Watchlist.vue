@@ -124,8 +124,8 @@
 
       <div class="add-results">
         <div v-if="searching" class="add-hint"><i class="pi pi-spin pi-spinner"></i> Searching…</div>
-        <ul v-else-if="visibleSuggestions.length" class="add-list">
-          <li v-for="option in visibleSuggestions" :key="option.symbol" @click="pick(option)">
+        <ul v-else-if="suggestions.length" class="add-list">
+          <li v-for="option in suggestions" :key="option.symbol" @click="pick(option)">
             <div class="ava" :style="{ background: tickerGradient(option.symbol) }">
               {{ option.symbol.replace('/USDT','').charAt(0) }}
             </div>
@@ -142,7 +142,11 @@
               </div>
               <div class="val">${{ formatPrice(option.last) }}</div>
             </div>
+            <span v-if="isAdded(option)" class="added-tick" title="Already in watchlist" @click.stop>
+              <i class="pi pi-check"></i>
+            </span>
             <button
+              v-else
               class="jd-btn jd-btn-primary jd-btn-sm"
               :disabled="addingSymbol === option.symbol"
               @click.stop="addFromDropdown(option)"
@@ -152,7 +156,6 @@
             </button>
           </li>
         </ul>
-        <div v-else-if="suggestions.length" class="add-hint">All matches are already in your watchlist.</div>
         <div v-else-if="q.trim()" class="add-hint">No matches for “{{ q.trim() }}”.</div>
         <div v-else class="add-hint">Type a symbol or company name to search crypto &amp; US stocks.</div>
       </div>
@@ -223,9 +226,7 @@ function normalizeSym(option) {
   return s.toUpperCase()
 }
 const existingSymbols = computed(() => new Set(items.value.map(i => String(i.symbol).toUpperCase())))
-const visibleSuggestions = computed(() =>
-  suggestions.value.filter(o => !existingSymbols.value.has(normalizeSym(o)))
-)
+const isAdded = (option) => existingSymbols.value.has(normalizeSym(option))
 
 // ── Ticker avatar gradient ──────────────────────────────────────
 const GRADIENTS = [
@@ -374,6 +375,12 @@ onMounted(loadWatchlist)
 .add-list .px { text-align: right; flex-shrink: 0; font-family: var(--jd-mono); }
 .add-list .px .chg { font-size: 11px; font-weight: 600; }
 .add-list .px .val { color: #fff; font-size: 13px; font-weight: 600; }
+.add-list .added-tick {
+  width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--jd-green); background: var(--jd-green-glow);
+  border: 1px solid rgba(46, 224, 138, 0.3); font-size: 13px; cursor: default;
+}
 .price-up { color: var(--jd-green); }
 .price-down { color: var(--jd-red); }
 </style>
