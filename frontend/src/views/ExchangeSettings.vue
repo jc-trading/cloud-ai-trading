@@ -28,7 +28,8 @@
           <!-- API Key -->
           <div class="jd-form-group">
             <label class="jd-label">API Key</label>
-            <InputText
+            <input
+              class="jd-input"
               v-model="binance.apiKey"
               placeholder="Paste your Binance API key"
               :disabled="binance.connected"
@@ -38,12 +39,11 @@
           <!-- API Secret -->
           <div class="jd-form-group">
             <label class="jd-label">API Secret</label>
-            <Password
+            <input
+              type="password"
+              class="jd-input"
               v-model="binance.apiSecret"
               placeholder="Paste your Binance API secret"
-              :feedback="false"
-              toggleMask
-              inputClass="w-full"
               :disabled="binance.connected"
             />
           </div>
@@ -54,11 +54,11 @@
           <label style="display: block; font-size: 13px; font-weight: 500; color: var(--jd-text-muted); margin-bottom: 10px;">Trading Mode</label>
           <div style="display: flex; gap: 20px;">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <RadioButton v-model="binance.tradingMode" name="binance-mode" value="live" inputId="b-live" />
+              <input type="radio" value="live" v-model="binance.tradingMode" name="binance-mode" id="b-live" />
               <label for="b-live" style="cursor: pointer; color: var(--jd-text); font-size: 13px;">Live Trading</label>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <RadioButton v-model="binance.tradingMode" name="binance-mode" value="simulate" inputId="b-sim" />
+              <input type="radio" value="simulate" v-model="binance.tradingMode" name="binance-mode" id="b-sim" />
               <label for="b-sim" style="cursor: pointer; color: var(--jd-text); font-size: 13px;">Simulate</label>
             </div>
           </div>
@@ -66,36 +66,41 @@
 
         <!-- Action Buttons -->
         <div style="display: flex; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--jd-border); flex-wrap: wrap;">
-          <Button
-            label="Test Connection"
+          <button
             class="jd-btn jd-btn-ghost jd-btn-sm"
-            :loading="testing"
-            :disabled="!binance.apiKey || !binance.apiSecret || saving"
+            :disabled="!binance.apiKey || !binance.apiSecret || saving || testing"
             @click="testConnection"
-          />
-          <Button
+          >
+            <i v-if="testing" class="pi pi-spin pi-spinner"></i>
+            Test Connection
+          </button>
+          <button
             v-if="!binance.connected"
-            label="Connect"
             class="jd-btn jd-btn-primary jd-btn-sm"
-            :loading="saving"
-            :disabled="!binance.apiKey || !binance.apiSecret || testing"
+            :disabled="!binance.apiKey || !binance.apiSecret || testing || saving"
             @click="connectExchange"
-          />
-          <Button
+          >
+            <i v-if="saving" class="pi pi-spin pi-spinner"></i>
+            Connect
+          </button>
+          <button
             v-if="binance.connected"
-            label="Update"
             class="jd-btn jd-btn-primary jd-btn-sm"
-            :loading="saving"
-            :disabled="testing"
+            :disabled="testing || saving"
             @click="updateExchange"
-          />
-          <Button
+          >
+            <i v-if="saving" class="pi pi-spin pi-spinner"></i>
+            Update
+          </button>
+          <button
             v-if="binance.connected"
-            label="Disconnect"
             class="jd-btn jd-btn-danger jd-btn-sm"
-            :loading="disconnecting"
+            :disabled="disconnecting"
             @click="disconnectExchange"
-          />
+          >
+            <i v-if="disconnecting" class="pi pi-spin pi-spinner"></i>
+            Disconnect
+          </button>
         </div>
 
         <!-- Connected info -->
@@ -137,7 +142,8 @@
         <div class="form-grid">
           <div class="jd-form-group">
             <label class="jd-label">API Key ID</label>
-            <InputText
+            <input
+              class="jd-input"
               v-model="alpaca.apiKey"
               placeholder="PKXXXXXXXXXXXXXXXX"
               :disabled="alpaca.connected"
@@ -146,12 +152,11 @@
 
           <div class="jd-form-group">
             <label class="jd-label">API Secret Key</label>
-            <Password
+            <input
+              type="password"
+              class="jd-input"
               v-model="alpaca.apiSecret"
               placeholder="Paste your Alpaca secret key"
-              :feedback="false"
-              toggleMask
-              inputClass="w-full"
               :disabled="alpaca.connected"
             />
           </div>
@@ -162,11 +167,11 @@
           <label style="display: block; font-size: 13px; font-weight: 500; color: var(--jd-text-muted); margin-bottom: 10px;">Trading Mode</label>
           <div style="display: flex; gap: 20px;">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <RadioButton v-model="alpaca.tradingMode" name="alpaca-mode" value="simulate" inputId="a-sim" />
+              <input type="radio" value="simulate" v-model="alpaca.tradingMode" name="alpaca-mode" id="a-sim" />
               <label for="a-sim" style="cursor: pointer; color: var(--jd-text); font-size: 13px;">Paper Trading (Simulate)</label>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <RadioButton v-model="alpaca.tradingMode" name="alpaca-mode" value="live" inputId="a-live" />
+              <input type="radio" value="live" v-model="alpaca.tradingMode" name="alpaca-mode" id="a-live" />
               <label for="a-live" style="cursor: pointer; color: var(--jd-text); font-size: 13px;">Live Trading (Real Money)</label>
             </div>
           </div>
@@ -174,34 +179,39 @@
 
         <!-- Action Buttons -->
         <div style="display: flex; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--jd-border); flex-wrap: wrap;">
-          <Button
-            label="Test Connection"
+          <button
             class="jd-btn jd-btn-ghost jd-btn-sm"
-            :loading="alpacaTesting"
-            :disabled="!alpaca.apiKey || !alpaca.apiSecret || alpacaSaving"
+            :disabled="!alpaca.apiKey || !alpaca.apiSecret || alpacaSaving || alpacaTesting"
             @click="testAlpacaConnection"
-          />
-          <Button
+          >
+            <i v-if="alpacaTesting" class="pi pi-spin pi-spinner"></i>
+            Test Connection
+          </button>
+          <button
             v-if="!alpaca.connected"
-            label="Connect"
             class="jd-btn jd-btn-primary jd-btn-sm"
-            :loading="alpacaSaving"
-            :disabled="!alpaca.apiKey || !alpaca.apiSecret || alpacaTesting"
+            :disabled="!alpaca.apiKey || !alpaca.apiSecret || alpacaTesting || alpacaSaving"
             @click="connectAlpaca"
-          />
-          <Button
+          >
+            <i v-if="alpacaSaving" class="pi pi-spin pi-spinner"></i>
+            Connect
+          </button>
+          <button
             v-if="alpaca.connected"
-            label="Update Mode"
             class="jd-btn jd-btn-primary jd-btn-sm"
-            :loading="alpacaSaving"
+            :disabled="alpacaSaving"
             @click="updateAlpaca"
-          />
-          <Button
+          >
+            <i v-if="alpacaSaving" class="pi pi-spin pi-spinner"></i>
+            Update Mode
+          </button>
+          <button
             v-if="alpaca.connected"
-            label="Disconnect"
             class="jd-btn jd-btn-danger jd-btn-sm"
             @click="disconnectAlpaca"
-          />
+          >
+            Disconnect
+          </button>
         </div>
 
         <div v-if="alpaca.connected" class="jd-alert success" style="margin-top: 12px;">
@@ -256,29 +266,19 @@
         <h2 class="jd-card-title">Connected Exchanges</h2>
       </div>
       <div class="jd-card-body">
-        <DataTable :value="connectedList" stripedRows responsiveLayout="scroll" class="p-datatable-sm">
-          <Column field="exchange_type" header="Exchange">
-            <template #body="{ data }">
-              <span style="text-transform: capitalize; font-weight: 500; color: var(--jd-text);">{{ data.exchange_type }}</span>
-            </template>
-          </Column>
-          <Column field="trading_mode" header="Mode">
-            <template #body="{ data }">
-              <span class="jd-badge" :class="data.trading_mode === 'live' ? 'red' : 'blue'">
-                {{ data.trading_mode }}
-              </span>
-            </template>
-          </Column>
-          <Column field="last_synced_at" header="Last Sync">
-            <template #body="{ data }">
-              {{ data.last_synced_at ? new Date(data.last_synced_at).toLocaleString() : 'Never' }}
-            </template>
-          </Column>
-          <Column header="Actions">
-            <template #body="{ data }">
-              <Button label="Get Balance" class="jd-btn jd-btn-ghost jd-btn-sm" @click="fetchBalance(data.id)" />
-            </template>
-          </Column>
+        <DataTable :columns="connectedColumns" :data="connectedList" :pagination="false" empty-text="No connected exchanges">
+          <template #cell:exchange_type="{ value }">
+            <span style="text-transform: capitalize; font-weight: 500; color: var(--jd-text);">{{ value }}</span>
+          </template>
+          <template #cell:trading_mode="{ value }">
+            <span class="jd-badge" :class="value === 'live' ? 'red' : 'blue'">{{ value }}</span>
+          </template>
+          <template #cell:last_synced_at="{ value }">
+            {{ value ? new Date(value).toLocaleString() : 'Never' }}
+          </template>
+          <template #row-actions="{ row }">
+            <button class="jd-btn jd-btn-ghost jd-btn-sm" @click="fetchBalance(row.id)">Get Balance</button>
+          </template>
         </DataTable>
       </div>
     </div>
@@ -296,24 +296,22 @@
       </div>
     </div>
   </div>
-
-  <Toast />
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useToast } from 'primevue/usetoast'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import Password from 'primevue/password'
-import RadioButton from 'primevue/radiobutton'
-import Tag from 'primevue/tag'
-import Toast from 'primevue/toast'
+import { useToast } from '@/composables/useToast'
+import DataTable from '@/components/common/DataTable.vue'
 import { exchangeApi } from '@/api/exchange'
 
 const toast = useToast()
+
+// ── Connected Exchanges table columns ────────────────────────────
+const connectedColumns = [
+  { key: 'exchange_type', header: 'Exchange' },
+  { key: 'trading_mode', header: 'Mode' },
+  { key: 'last_synced_at', header: 'Last Sync' },
+]
 
 // ── State ────────────────────────────────────────────────────────
 const binance = ref({
@@ -673,50 +671,6 @@ async function fetchBalance(id) {
   background-color: rgba(59, 130, 246, 0.1);
   color: var(--jd-text);
   border: 1px solid rgba(59, 130, 246, 0.3);
-}
-
-:deep(.p-inputtext),
-:deep(.p-password-input) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  width: 100%;
-  padding: 8px 12px;
-  border-radius: 4px;
-  font-size: 13px;
-}
-
-:deep(.p-inputtext:focus),
-:deep(.p-password-input:focus) {
-  border-color: var(--jd-blue);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-:deep(.p-inputtext:disabled) {
-  background-color: rgba(75, 85, 99, 0.3);
-  color: var(--jd-text-muted);
-  cursor: not-allowed;
-}
-
-:deep(.p-password) {
-  width: 100%;
-}
-
-:deep(.p-radiobutton .p-radiobutton-box) {
-  border: 2px solid var(--jd-border);
-  background-color: var(--jd-card);
-}
-
-:deep(.p-radiobutton .p-radiobutton-box.p-highlight) {
-  background-color: var(--jd-blue);
-  border-color: var(--jd-blue);
-}
-
-:deep(.p-button) {
-  padding: 8px 16px;
-  font-size: 13px;
-  border-radius: 4px;
-  font-weight: 500;
 }
 
 .jd-btn-primary {

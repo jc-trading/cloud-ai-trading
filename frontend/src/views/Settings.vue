@@ -16,69 +16,57 @@
           <!-- Name -->
           <div class="jd-form-group">
             <label class="jd-label">Full Name</label>
-            <InputText v-model="settings.name" placeholder="Enter your name" />
+            <input class="jd-input" v-model="settings.name" placeholder="Enter your name" />
           </div>
 
           <!-- Email -->
           <div class="jd-form-group">
             <label class="jd-label">Email Address</label>
-            <InputText v-model="settings.email" placeholder="your@email.com" disabled />
+            <input class="jd-input" v-model="settings.email" placeholder="your@email.com" disabled />
             <p style="color: var(--jd-text-muted); font-size: 12px; margin-top: 4px;">Email cannot be changed</p>
           </div>
 
           <!-- Phone -->
           <div class="jd-form-group">
             <label class="jd-label">Phone Number</label>
-            <InputText v-model="settings.phone" placeholder="+1 (555) 000-0000" />
+            <input class="jd-input" v-model="settings.phone" placeholder="+1 (555) 000-0000" />
           </div>
 
           <!-- Timezone -->
           <div class="jd-form-group">
             <label class="jd-label">Timezone</label>
-            <Dropdown
-              v-model="settings.timezone"
-              :options="timezones"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Select timezone"
-            />
+            <select class="jd-input jd-select" v-model="settings.timezone">
+              <option v-for="o in timezones" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
           </div>
 
           <!-- Country -->
           <div class="jd-form-group">
             <label class="jd-label">Country</label>
-            <InputText v-model="settings.country" placeholder="United States" />
+            <input class="jd-input" v-model="settings.country" placeholder="United States" />
           </div>
 
           <!-- Language -->
           <div class="jd-form-group">
             <label class="jd-label">Language</label>
-            <Dropdown
-              v-model="settings.language"
-              :options="languages"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Select language"
-            />
+            <select class="jd-input jd-select" v-model="settings.language">
+              <option v-for="o in languages" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
           </div>
 
           <!-- Currency -->
           <div class="jd-form-group">
             <label class="jd-label">Default Currency</label>
-            <Dropdown
-              v-model="settings.currency"
-              :options="currencies"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Select currency"
-            />
+            <select class="jd-input jd-select" v-model="settings.currency">
+              <option v-for="o in currencies" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
           </div>
         </div>
 
         <!-- Actions -->
         <div style="display: flex; gap: 8px; margin-top: 24px; border-top: 1px solid var(--jd-border); padding-top: 16px;">
-          <Button label="Save Changes" class="jd-btn jd-btn-primary"></Button>
-          <Button label="Cancel" class="jd-btn jd-btn-ghost"></Button>
+          <button class="jd-btn jd-btn-primary">Save Changes</button>
+          <button class="jd-btn jd-btn-ghost">Cancel</button>
         </div>
       </div>
     </div>
@@ -94,11 +82,11 @@
           <h3 style="font-weight: 600; margin-bottom: 12px; color: var(--jd-text);">Theme</h3>
           <div style="display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <RadioButton v-model="preferences.theme" name="theme" value="dark" inputId="dark"></RadioButton>
+              <input type="radio" v-model="preferences.theme" name="theme" value="dark" id="dark" />
               <label for="dark" style="cursor: pointer; color: var(--jd-text);">Dark (Current)</label>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <RadioButton v-model="preferences.theme" name="theme" value="light" inputId="light"></RadioButton>
+              <input type="radio" v-model="preferences.theme" name="theme" value="light" id="light" />
               <label for="light" style="cursor: pointer; color: var(--jd-text);">Light</label>
             </div>
           </div>
@@ -109,15 +97,15 @@
           <h3 style="font-weight: 600; margin-bottom: 12px; color: var(--jd-text);">Notifications</h3>
           <div style="display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <Checkbox v-model="preferences.emailNotifications" binary inputId="email-notif"></Checkbox>
+              <input type="checkbox" v-model="preferences.emailNotifications" id="email-notif" />
               <label for="email-notif" style="cursor: pointer; color: var(--jd-text);">Email Notifications</label>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <Checkbox v-model="preferences.pushNotifications" binary inputId="push-notif"></Checkbox>
+              <input type="checkbox" v-model="preferences.pushNotifications" id="push-notif" />
               <label for="push-notif" style="cursor: pointer; color: var(--jd-text);">Push Notifications</label>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <Checkbox v-model="preferences.tradeAlerts" binary inputId="trade-alerts"></Checkbox>
+              <input type="checkbox" v-model="preferences.tradeAlerts" id="trade-alerts" />
               <label for="trade-alerts" style="cursor: pointer; color: var(--jd-text);">Trade Alerts</label>
             </div>
           </div>
@@ -146,8 +134,8 @@
 
         <!-- Actions -->
         <div style="display: flex; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--jd-border);">
-          <Button label="Save Preferences" class="jd-btn jd-btn-primary"></Button>
-          <Button label="Reset to Default" class="jd-btn jd-btn-ghost"></Button>
+          <button class="jd-btn jd-btn-primary">Save Preferences</button>
+          <button class="jd-btn jd-btn-ghost">Reset to Default</button>
         </div>
       </div>
     </div>
@@ -167,20 +155,20 @@
             </div>
             <span class="jd-badge yellow">Disabled</span>
           </div>
-          <Button label="Enable 2FA" class="jd-btn jd-btn-primary jd-btn-sm"></Button>
+          <button class="jd-btn jd-btn-primary jd-btn-sm">Enable 2FA</button>
         </div>
 
         <!-- API Keys -->
         <div style="margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--jd-border);">
           <h3 style="font-weight: 600; margin-bottom: 12px; color: var(--jd-text);">API Keys</h3>
-          <Button label="Manage API Keys" class="jd-btn jd-btn-primary jd-btn-sm"></Button>
+          <button class="jd-btn jd-btn-primary jd-btn-sm">Manage API Keys</button>
         </div>
 
         <!-- Active Sessions -->
         <div style="margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--jd-border);">
           <h3 style="font-weight: 600; margin-bottom: 12px; color: var(--jd-text);">Active Sessions</h3>
           <p style="font-size: 12px; color: var(--jd-text-muted); margin-bottom: 12px;">You are currently signed in on 1 device</p>
-          <Button label="View All Sessions" class="jd-btn jd-btn-primary jd-btn-sm"></Button>
+          <button class="jd-btn jd-btn-primary jd-btn-sm">View All Sessions</button>
         </div>
 
         <!-- Change Password -->
@@ -189,18 +177,18 @@
           <div style="display: flex; flex-direction: column; gap: 12px;">
             <div class="jd-form-group">
               <label class="jd-label">Current Password</label>
-              <Password placeholder="••••••••" :feedback="false"></Password>
+              <input type="password" class="jd-input" placeholder="••••••••" />
             </div>
             <div class="jd-form-group">
               <label class="jd-label">New Password</label>
-              <Password placeholder="••••••••"></Password>
+              <input type="password" class="jd-input" placeholder="••••••••" />
             </div>
             <div class="jd-form-group">
               <label class="jd-label">Confirm Password</label>
-              <Password placeholder="••••••••" :feedback="false"></Password>
+              <input type="password" class="jd-input" placeholder="••••••••" />
             </div>
             <div style="display: flex; gap: 8px; margin-top: 12px; padding-top: 12px;">
-              <Button label="Update Password" class="jd-btn jd-btn-primary"></Button>
+              <button class="jd-btn jd-btn-primary">Update Password</button>
             </div>
           </div>
         </div>
@@ -211,16 +199,6 @@
 
 <script setup>
 import { ref } from 'vue'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import Dropdown from 'primevue/dropdown'
-import TabView from 'primevue/tabview'
-import TabPanel from 'primevue/tabpanel'
-import RadioButton from 'primevue/radiobutton'
-import Checkbox from 'primevue/checkbox'
-import ToggleButton from 'primevue/togglebutton'
-import Tag from 'primevue/tag'
-import Password from 'primevue/password'
 
 const settings = ref({
   name: '',
@@ -344,8 +322,7 @@ const currencies = ref([
   transform: translateX(20px);
 }
 
-:deep(.p-inputtext),
-:deep(.p-password-input) {
+.jd-input {
   background-color: var(--jd-card);
   border: 1px solid var(--jd-border);
   color: var(--jd-text);
@@ -355,53 +332,29 @@ const currencies = ref([
   font-size: 13px;
 }
 
-:deep(.p-inputtext:focus),
-:deep(.p-password-input:focus) {
+.jd-input:focus {
+  outline: none;
   border-color: var(--jd-blue);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-:deep(.p-inputtext:disabled) {
+.jd-input:disabled {
   background-color: rgba(75, 85, 99, 0.3);
   color: var(--jd-text-muted);
   cursor: not-allowed;
 }
 
-:deep(.p-password) {
-  width: 100%;
+.jd-select {
+  appearance: none;
+  cursor: pointer;
 }
 
-:deep(.p-dropdown) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  width: 100%;
-  border-radius: 4px;
-}
-
-:deep(.p-dropdown:focus) {
-  border-color: var(--jd-blue);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-:deep(.p-dropdown-trigger) {
-  color: var(--jd-text-muted);
-}
-
-:deep(.p-dropdown-panel .p-dropdown-items .p-dropdown-item) {
-  color: var(--jd-text);
-}
-
-:deep(.p-dropdown-panel .p-dropdown-items .p-dropdown-item:hover) {
-  background-color: var(--jd-blue);
-  color: white;
-}
-
-:deep(.p-button) {
+.jd-btn {
   padding: 8px 16px;
   font-size: 13px;
   border-radius: 4px;
   font-weight: 500;
+  cursor: pointer;
 }
 
 .jd-btn-primary {
@@ -429,26 +382,6 @@ const currencies = ref([
 .jd-btn-sm {
   padding: 6px 12px;
   font-size: 12px;
-}
-
-:deep(.p-radiobutton .p-radiobutton-box) {
-  border: 2px solid var(--jd-border);
-  background-color: var(--jd-card);
-}
-
-:deep(.p-radiobutton .p-radiobutton-box.p-highlight) {
-  background-color: var(--jd-blue);
-  border-color: var(--jd-blue);
-}
-
-:deep(.p-checkbox .p-checkbox-box) {
-  border: 2px solid var(--jd-border);
-  background-color: var(--jd-card);
-}
-
-:deep(.p-checkbox .p-checkbox-box.p-highlight) {
-  background-color: var(--jd-blue);
-  border-color: var(--jd-blue);
 }
 
 .jd-badge {

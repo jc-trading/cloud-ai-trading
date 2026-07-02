@@ -1,9 +1,5 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import Antd from 'ant-design-vue'
-import PrimeVue from 'primevue/config'
-import ToastService from 'primevue/toastservice'
-import 'ant-design-vue/dist/reset.css'
 import './assets/main.css'
 
 import App from './App.vue'
@@ -30,8 +26,5 @@ const app = createApp(App)
 
 app.use(createPinia())
 app.use(router)
-app.use(Antd)
-app.use(PrimeVue)
-app.use(ToastService)
 
 app.mount('#app')

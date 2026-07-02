@@ -10,179 +10,171 @@
 
     <!-- Strategy Tabs -->
     <div class="jd-card">
-      <TabView class="strategy-tabs">
-        <TabPanel header="Create New Strategy">
-          <!-- Strategy Creation -->
-          <div class="jd-card-body" style="display: flex; flex-direction: column; gap: 24px;">
-            <!-- Strategy Name -->
-            <div class="jd-form-group">
-              <label class="jd-label">Strategy Name</label>
-              <InputText v-model="strategyName" placeholder="e.g., MA Crossover Strategy" class="w-full jd-input" />
-            </div>
+      <div class="jd-tabs">
+        <button class="jd-tab" :class="{ active: tab === 'create' }" @click="tab = 'create'">Create New Strategy</button>
+        <button class="jd-tab" :class="{ active: tab === 'strategies' }" @click="tab = 'strategies'">My Strategies</button>
+        <button class="jd-tab" :class="{ active: tab === 'backtest' }" @click="tab = 'backtest'">Backtest Results</button>
+      </div>
 
-            <!-- Entry Conditions -->
-            <div>
-              <h3 style="font-size: 18px; font-weight: bold; color: var(--jd-text); margin-bottom: 16px;">Entry Conditions</h3>
-              <div style="display: flex; flex-direction: column; gap: 12px; background: var(--jd-card); border: 1px solid var(--jd-border); border-radius: 8px; padding: 16px;">
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
-                  <div class="jd-form-group">
-                    <label class="jd-label">Indicator 1</label>
-                    <Dropdown
-                      :options="indicators"
-                      optionLabel="label"
-                      optionValue="value"
-                      placeholder="Select indicator"
-                      class="w-full jd-select"
-                    />
-                  </div>
-                  <div class="jd-form-group">
-                    <label class="jd-label">Condition</label>
-                    <Dropdown
-                      :options="conditions"
-                      optionLabel="label"
-                      optionValue="value"
-                      placeholder="Select condition"
-                      class="w-full jd-select"
-                    />
-                  </div>
-                  <div class="jd-form-group">
-                    <label class="jd-label">Value</label>
-                    <InputText placeholder="Enter value" class="w-full jd-input" />
-                  </div>
-                </div>
-              </div>
-            </div>
+      <!-- Create New Strategy -->
+      <div v-show="tab === 'create'" class="jd-card-body" style="display: flex; flex-direction: column; gap: 24px;">
+        <!-- Strategy Name -->
+        <div class="jd-form-group">
+          <label class="jd-label">Strategy Name</label>
+          <input v-model="strategyName" placeholder="e.g., MA Crossover Strategy" class="w-full jd-input" />
+        </div>
 
-            <!-- Exit Conditions -->
-            <div>
-              <h3 style="font-size: 18px; font-weight: bold; color: var(--jd-text); margin-bottom: 16px;">Exit Conditions</h3>
-              <div style="display: flex; flex-direction: column; gap: 12px; background: var(--jd-card); border: 1px solid var(--jd-border); border-radius: 8px; padding: 16px;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                  <div class="jd-form-group">
-                    <label class="jd-label">Take Profit (%)</label>
-                    <InputNumber placeholder="2.0" class="w-full jd-input" />
-                  </div>
-                  <div class="jd-form-group">
-                    <label class="jd-label">Stop Loss (%)</label>
-                    <InputNumber placeholder="1.0" class="w-full jd-input" />
-                  </div>
-                </div>
-              </div>
-            </div>
+        <p v-if="formError" style="color: var(--jd-red); font-size: 13px; margin: -12px 0 0;">{{ formError }}</p>
 
-            <!-- Risk Management -->
-            <div>
-              <h3 style="font-size: 18px; font-weight: bold; color: var(--jd-text); margin-bottom: 16px;">Risk Management</h3>
-              <div style="display: flex; flex-direction: column; gap: 12px; background: var(--jd-card); border: 1px solid var(--jd-border); border-radius: 8px; padding: 16px;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                  <div class="jd-form-group">
-                    <label class="jd-label">Position Size (%)</label>
-                    <InputNumber placeholder="5" class="w-full jd-input" />
-                  </div>
-                  <div class="jd-form-group">
-                    <label class="jd-label">Max Drawdown (%)</label>
-                    <InputNumber placeholder="10" class="w-full jd-input" />
-                  </div>
-                </div>
+        <!-- Entry Conditions -->
+        <div>
+          <h3 style="font-size: 18px; font-weight: bold; color: var(--jd-text); margin-bottom: 16px;">Entry Conditions</h3>
+          <div style="display: flex; flex-direction: column; gap: 12px; background: var(--jd-card); border: 1px solid var(--jd-border); border-radius: 8px; padding: 16px;">
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+              <div class="jd-form-group">
+                <label class="jd-label">Indicator 1</label>
+                <select v-model="entryIndicator" class="w-full jd-input jd-select">
+                  <option value="" disabled selected>Select indicator</option>
+                  <option v-for="o in indicators" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
               </div>
-            </div>
-
-            <!-- Action Buttons -->
-            <div style="display: flex; gap: 16px; padding-top: 16px;">
-              <Button label="Save Strategy" icon="pi pi-save" class="jd-btn jd-btn-primary"></Button>
-              <Button label="Backtest" icon="pi pi-play" class="jd-btn jd-btn-ghost"></Button>
-            </div>
-          </div>
-        </TabPanel>
-
-        <TabPanel header="My Strategies">
-          <!-- Strategies List -->
-          <div class="jd-card-body">
-            <DataTable :value="strategies" stripedRows responsiveLayout="scroll" class="jd-table p-datatable-sm">
-              <Column field="name" header="Strategy Name" :sortable="true"></Column>
-              <Column field="status" header="Status">
-                <template #body="slotProps">
-                  <span class="jd-badge" :class="slotProps.data.status === 'Active' ? 'green' : 'yellow'">
-                    {{ slotProps.data.status }}
-                  </span>
-                </template>
-              </Column>
-              <Column field="winRate" header="Win Rate">
-                <template #body="slotProps">
-                  <span>{{ slotProps.data.winRate }}%</span>
-                </template>
-              </Column>
-              <Column field="totalTrades" header="Total Trades"></Column>
-              <Column header="Actions">
-                <template #body="slotProps">
-                  <div style="display: flex; gap: 8px;">
-                    <Button label="Edit" icon="pi pi-pencil" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
-                    <Button label="Backtest" icon="pi pi-chart-bar" class="jd-btn jd-btn-ghost jd-btn-sm"></Button>
-                    <Button label="Delete" icon="pi pi-trash" class="jd-btn jd-btn-danger jd-btn-sm"></Button>
-                  </div>
-                </template>
-              </Column>
-            </DataTable>
-            <div v-if="strategies.length === 0" class="jd-empty">
-              <p>No strategies created yet. Create one to get started.</p>
-            </div>
-          </div>
-        </TabPanel>
-
-        <TabPanel header="Backtest Results">
-          <!-- Backtest Results -->
-          <div class="jd-card-body">
-            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;">
-              <div class="jd-stat-card blue">
-                <div class="jd-stat-icon blue"></div>
-                <p class="jd-stat-label">Total Return</p>
-                <p class="jd-stat-value" style="color: var(--jd-green);">--</p>
+              <div class="jd-form-group">
+                <label class="jd-label">Condition</label>
+                <select v-model="entryCondition" class="w-full jd-input jd-select">
+                  <option value="" disabled selected>Select condition</option>
+                  <option v-for="o in conditions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
               </div>
-              <div class="jd-stat-card purple">
-                <div class="jd-stat-icon purple"></div>
-                <p class="jd-stat-label">Sharpe Ratio</p>
-                <p class="jd-stat-value">--</p>
-              </div>
-              <div class="jd-stat-card red">
-                <div class="jd-stat-icon red"></div>
-                <p class="jd-stat-label">Max Drawdown</p>
-                <p class="jd-stat-value">--</p>
-              </div>
-              <div class="jd-stat-card cyan">
-                <div class="jd-stat-icon cyan"></div>
-                <p class="jd-stat-label">Win Rate</p>
-                <p class="jd-stat-value">--</p>
-              </div>
-            </div>
-
-            <div class="jd-card">
-              <div class="jd-card-header">
-                <h3 class="jd-card-title">Performance Chart</h3>
-              </div>
-              <div style="width: 100%; height: 384px; display: flex; align-items: center; justify-content: center; background: var(--jd-card); border-radius: 8px;">
-                <p style="color: var(--jd-text-muted);">Backtest results will be displayed here</p>
+              <div class="jd-form-group">
+                <label class="jd-label">Value</label>
+                <input v-model="entryValue" placeholder="Enter value" class="w-full jd-input" />
               </div>
             </div>
           </div>
-        </TabPanel>
-      </TabView>
+        </div>
+
+        <!-- Exit Conditions -->
+        <div>
+          <h3 style="font-size: 18px; font-weight: bold; color: var(--jd-text); margin-bottom: 16px;">Exit Conditions</h3>
+          <div style="display: flex; flex-direction: column; gap: 12px; background: var(--jd-card); border: 1px solid var(--jd-border); border-radius: 8px; padding: 16px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+              <div class="jd-form-group">
+                <label class="jd-label">Take Profit (%)</label>
+                <input v-model.number="takeProfit" type="number" placeholder="2.0" class="w-full jd-input" />
+              </div>
+              <div class="jd-form-group">
+                <label class="jd-label">Stop Loss (%)</label>
+                <input v-model.number="stopLoss" type="number" placeholder="1.0" class="w-full jd-input" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Risk Management -->
+        <div>
+          <h3 style="font-size: 18px; font-weight: bold; color: var(--jd-text); margin-bottom: 16px;">Risk Management</h3>
+          <div style="display: flex; flex-direction: column; gap: 12px; background: var(--jd-card); border: 1px solid var(--jd-border); border-radius: 8px; padding: 16px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+              <div class="jd-form-group">
+                <label class="jd-label">Position Size (%)</label>
+                <input v-model.number="positionSize" type="number" placeholder="5" class="w-full jd-input" />
+              </div>
+              <div class="jd-form-group">
+                <label class="jd-label">Max Drawdown (%)</label>
+                <input v-model.number="maxDrawdown" type="number" placeholder="10" class="w-full jd-input" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div style="display: flex; gap: 16px; padding-top: 16px;">
+          <button class="jd-btn jd-btn-primary" :disabled="saving" @click="saveStrategy">
+            <i class="pi pi-save"></i> {{ saving ? 'Saving…' : 'Save Strategy' }}
+          </button>
+          <button class="jd-btn jd-btn-ghost" :disabled="true" title="Backtesting isn't available yet">
+            <i class="pi pi-play"></i> Backtest
+          </button>
+        </div>
+      </div>
+
+      <!-- My Strategies -->
+      <div v-show="tab === 'strategies'" class="jd-card-body">
+        <DataTable
+          :columns="strategyColumns"
+          :data="strategies"
+          row-key="id"
+          :searchable="['name']"
+          search-placeholder="Search strategies…"
+          :page-size="10"
+          :loading="loading"
+          :error="listError"
+          empty-text="No strategies created yet. Create one to get started."
+        >
+          <template #cell:status="{ row }">
+            <span class="jd-badge" :class="row.is_active ? 'green' : 'gray'">
+              {{ row.is_active ? 'Active' : 'Inactive' }}
+            </span>
+          </template>
+          <template #cell:symbols="{ value }">{{ (value || []).join(', ') }}</template>
+          <template #row-actions="{ row }">
+            <div style="display: flex; gap: 8px;">
+              <button
+                class="jd-btn jd-btn-ghost jd-btn-sm"
+                :disabled="busyId === row.id"
+                @click="toggle(row)"
+              >
+                <i :class="row.is_active ? 'pi pi-pause' : 'pi pi-play'"></i>
+                {{ row.is_active ? 'Deactivate' : 'Activate' }}
+              </button>
+              <button class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="true" title="Backtesting isn't available yet">
+                <i class="pi pi-chart-bar"></i> Backtest
+              </button>
+              <button
+                class="jd-btn jd-btn-danger jd-btn-sm"
+                :disabled="busyId === row.id"
+                @click="remove(row)"
+              >
+                <i class="pi pi-trash"></i> Delete
+              </button>
+            </div>
+          </template>
+        </DataTable>
+      </div>
+
+      <!-- Backtest Results -->
+      <div v-show="tab === 'backtest'" class="jd-card-body">
+        <div style="width: 100%; min-height: 240px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center;">
+          <i class="pi pi-chart-bar" style="font-size: 32px; color: var(--jd-text-muted);"></i>
+          <p style="color: var(--jd-text); font-weight: bold;">Backtesting is not available yet.</p>
+          <p style="color: var(--jd-text-muted); font-size: 13px;">There is no backtest endpoint on the server. This tab will show results once backtesting is supported.</p>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import InputNumber from 'primevue/inputnumber'
-import Dropdown from 'primevue/dropdown'
-import Tag from 'primevue/tag'
-import TabView from 'primevue/tabview'
-import TabPanel from 'primevue/tabpanel'
+import { ref, watch, onMounted } from 'vue'
+import DataTable from '@/components/common/DataTable.vue'
+import { listStrategies, createStrategy, deleteStrategy, toggleStrategy } from '@/api/strategy'
+import { useToast } from '@/composables/useToast'
 
+const toast = useToast()
+
+const tab = ref('create')
+
+// --- Create form state ---
 const strategyName = ref('')
+const entryIndicator = ref('')
+const entryCondition = ref('')
+const entryValue = ref('')
+const takeProfit = ref(null)
+const stopLoss = ref(null)
+const positionSize = ref(null)
+const maxDrawdown = ref(null)
+const formError = ref('')
+const saving = ref(false)
 
 const indicators = ref([
   { label: 'Moving Average', value: 'ma' },
@@ -199,127 +191,124 @@ const conditions = ref([
   { label: 'Crosses Below', value: 'crossunder' }
 ])
 
+// --- My Strategies state ---
 const strategies = ref([])
+const loading = ref(false)
+const listError = ref(null)
+const busyId = ref(null)
+
+const strategyColumns = [
+  { key: 'name', header: 'Strategy Name', sortable: true },
+  { key: 'status', header: 'Status', accessor: (r) => (r.is_active ? 'Active' : 'Inactive'), filterable: true, filterLabel: 'Status' },
+  { key: 'timeframe', header: 'Timeframe', sortable: true },
+  { key: 'symbols', header: 'Symbols' },
+]
+
+const resetForm = () => {
+  strategyName.value = ''
+  entryIndicator.value = ''
+  entryCondition.value = ''
+  entryValue.value = ''
+  takeProfit.value = null
+  stopLoss.value = null
+  positionSize.value = null
+  maxDrawdown.value = null
+  formError.value = ''
+}
+
+async function loadStrategies() {
+  loading.value = true
+  listError.value = null
+  try {
+    const res = await listStrategies()
+    strategies.value = Array.isArray(res.data) ? res.data : []
+  } catch (err) {
+    listError.value = err.response?.data?.detail || 'Failed to load strategies. Check that the API is up.'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function saveStrategy() {
+  const name = strategyName.value.trim()
+  formError.value = ''
+  if (!name) {
+    formError.value = 'Strategy name is required.'
+    return
+  }
+
+  // Entry conditions — include only the fields the user actually set.
+  const entry_conditions = {}
+  if (entryIndicator.value) entry_conditions.indicator = entryIndicator.value
+  if (entryCondition.value) entry_conditions.condition = entryCondition.value
+  if (entryValue.value !== '' && entryValue.value != null) entry_conditions.value = entryValue.value
+
+  // Exit + risk knobs persisted under indicators_config.risk (no dedicated server field).
+  const risk = {}
+  if (takeProfit.value != null && takeProfit.value !== '') risk.take_profit = takeProfit.value
+  if (stopLoss.value != null && stopLoss.value !== '') risk.stop_loss = stopLoss.value
+  if (positionSize.value != null && positionSize.value !== '') risk.position_size = positionSize.value
+  if (maxDrawdown.value != null && maxDrawdown.value !== '') risk.max_drawdown = maxDrawdown.value
+
+  const payload = {
+    name,
+    symbols: ['BTC/USDT'],
+    timeframe: '1h',
+    entry_conditions,
+    indicators_config: Object.keys(risk).length ? { risk } : {},
+  }
+
+  saving.value = true
+  try {
+    await createStrategy(payload)
+    toast.add({ severity: 'success', summary: 'Saved', detail: name })
+    resetForm()
+    tab.value = 'strategies'
+    await loadStrategies()
+  } catch (err) {
+    formError.value = err.response?.data?.detail || 'Failed to save strategy.'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function remove(row) {
+  busyId.value = row.id
+  try {
+    await deleteStrategy(row.id)
+    toast.add({ severity: 'success', summary: 'Deleted', detail: row.name })
+    await loadStrategies()
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Delete failed', detail: err.response?.data?.detail || 'Request failed' })
+  } finally {
+    busyId.value = null
+  }
+}
+
+async function toggle(row) {
+  busyId.value = row.id
+  try {
+    await toggleStrategy(row.id)
+    toast.add({
+      severity: 'success',
+      summary: row.is_active ? 'Deactivated' : 'Activated',
+      detail: row.name,
+    })
+    await loadStrategies()
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Toggle failed', detail: err.response?.data?.detail || 'Request failed' })
+  } finally {
+    busyId.value = null
+  }
+}
+
+// Load on mount and whenever the user switches to My Strategies.
+onMounted(loadStrategies)
+watch(tab, (t) => { if (t === 'strategies') loadStrategies() })
 </script>
 
 <style scoped>
 .w-full {
   width: 100%;
-}
-
-.strategy-tabs {
-  background-color: transparent;
-}
-
-:deep(.p-datatable) {
-  background-color: transparent;
-  color: var(--jd-text);
-}
-
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: transparent;
-  color: var(--jd-text);
-  border-color: var(--jd-border);
-  font-weight: 600;
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr) {
-  border-color: var(--jd-border);
-}
-
-:deep(.p-datatable .p-datatable-tbody > tr > td) {
-  border-color: var(--jd-border);
-  color: var(--jd-text);
-}
-
-:deep(.p-inputtext.jd-input),
-:deep(.p-inputnumber.jd-input) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  padding: 8px 12px;
-  border-radius: 6px;
-}
-
-:deep(.p-inputtext.jd-input:focus),
-:deep(.p-inputnumber.jd-input:focus) {
-  border-color: var(--jd-blue);
-  outline: none;
-}
-
-:deep(.p-dropdown.jd-select) {
-  background-color: var(--jd-card);
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-  border-radius: 6px;
-}
-
-:deep(.p-dropdown.jd-select:focus) {
-  border-color: var(--jd-blue);
-  outline: none;
-}
-
-:deep(.p-dropdown.jd-select .p-dropdown-trigger) {
-  color: var(--jd-text-muted);
-}
-
-:deep(.p-button.jd-btn) {
-  background-color: var(--jd-blue);
-  border-color: var(--jd-blue);
-  color: white;
-  padding: 8px 16px;
-  border-radius: 6px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-:deep(.p-button.jd-btn:hover) {
-  opacity: 0.8;
-}
-
-:deep(.p-button.jd-btn-ghost) {
-  background-color: transparent;
-  border: 1px solid var(--jd-border);
-  color: var(--jd-text);
-}
-
-:deep(.p-button.jd-btn-ghost:hover) {
-  background-color: var(--jd-card);
-}
-
-:deep(.p-button.jd-btn-danger) {
-  background-color: var(--jd-red);
-  border-color: var(--jd-red);
-}
-
-:deep(.p-button.jd-btn-sm) {
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-:deep(.p-tabview) {
-  background-color: transparent;
-}
-
-:deep(.p-tabview .p-tabview-nav) {
-  background-color: transparent;
-  border-color: var(--jd-border);
-}
-
-:deep(.p-tabview .p-tabview-nav button) {
-  color: var(--jd-text-muted);
-  border-radius: 4px;
-  padding: 8px 16px;
-}
-
-:deep(.p-tabview .p-tabview-nav button.p-highlight) {
-  color: var(--jd-text);
-  border-color: var(--jd-blue);
-  background-color: transparent;
-}
-
-:deep(.p-tabview .p-tabview-panels) {
-  padding: 0;
 }
 </style>

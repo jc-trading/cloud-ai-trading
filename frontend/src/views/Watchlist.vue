@@ -12,199 +12,171 @@
         <h2 class="jd-card-title">Add Symbol</h2>
       </div>
       <div class="jd-card-body">
-        <AutoComplete
-          v-model="selectedSuggestion"
-          :suggestions="suggestions"
-          :loading="searching"
-          optionLabel="symbol"
-          placeholder="Search stocks or crypto... (AAPL, AMZN, BTC, Ethereum)"
-          @complete="onSearch"
-          @item-select="onSuggestionSelect"
-          :disabled="adding"
-          :delay="300"
-          class="w-full"
-          :panelClass="'watchlist-ac-panel'"
-          scrollHeight="400px"
-        >
-          <template #option="{ option }">
-            <div class="flex items-center gap-3 w-full min-w-0 py-0.5">
-              <!-- Letter avatar -->
-              <div
-                class="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 text-sm font-bold text-white select-none"
-                :style="{ background: tickerGradient(option.symbol) }"
-              >
-                {{ option.symbol.replace('/USDT','').charAt(0) }}
-              </div>
-
-              <!-- Symbol + company name (clickable → detail) -->
-              <div class="flex-1 min-w-0">
-                <div class="font-bold text-white text-sm leading-tight">
-                  {{ option.symbol.replace('/USDT','') }}
-                  <span class="text-xs font-normal" style="color: var(--jd-text-muted); margin-left: 0.25rem;">
-                    {{ option.market_type === 'stock' ? 'Stock' : 'Crypto' }}
-                  </span>
-                </div>
-                <div style="color: var(--jd-text-muted);" class="text-xs truncate leading-tight mt-0.5">{{ option.name }}</div>
-              </div>
-
-              <!-- Change + Price -->
-              <div class="text-right shrink-0 leading-tight mr-2">
+        <div class="ac">
+          <input
+            class="jd-input w-full"
+            v-model="q"
+            @input="onSearch"
+            :disabled="adding"
+            placeholder="Search stocks or crypto... (AAPL, AMZN, BTC, Ethereum)"
+          />
+          <ul v-if="suggestions.length" class="ac-menu">
+            <li v-for="option in suggestions" :key="option.symbol" @click="pick(option)">
+              <div class="flex items-center gap-3 w-full min-w-0 py-0.5">
+                <!-- Letter avatar -->
                 <div
-                  v-if="option.change_24h !== null && option.change_24h !== undefined"
-                  class="text-xs font-semibold"
-                  :class="option.change_24h >= 0 ? 'price-up' : 'price-down'"
+                  class="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 text-sm font-bold text-white select-none"
+                  :style="{ background: tickerGradient(option.symbol) }"
                 >
-                  <span v-if="option.change_dollar !== null && option.change_dollar !== undefined">
-                    {{ option.change_dollar >= 0 ? '+' : '' }}${{ Math.abs(option.change_dollar).toFixed(2) }}
-                  </span>
-                  <span class="ml-1 opacity-80">({{ option.change_24h >= 0 ? '+' : '' }}{{ option.change_24h.toFixed(2) }}%)</span>
+                  {{ option.symbol.replace('/USDT','').charAt(0) }}
                 </div>
-                <div class="font-mono text-white text-sm font-semibold mt-0.5">
-                  {{ option.last ? '$' + formatPrice(option.last) : '--' }}
-                </div>
-              </div>
 
-              <!-- Inline Add button -->
-              <button
-                class="shrink-0 jd-btn jd-btn-primary jd-btn-sm"
-                :class="{ 'opacity-50 cursor-wait': addingSymbol === option.symbol }"
-                @click.stop="addFromDropdown(option)"
-                title="Add to watchlist"
-              >
-                <i v-if="addingSymbol !== option.symbol" class="pi pi-plus text-xs"></i>
-                <i v-else class="pi pi-spin pi-spinner text-xs"></i>
-              </button>
-            </div>
-          </template>
-        </AutoComplete>
+                <!-- Symbol + company name (clickable → detail) -->
+                <div class="flex-1 min-w-0">
+                  <div class="font-bold text-white text-sm leading-tight">
+                    {{ option.symbol.replace('/USDT','') }}
+                    <span class="text-xs font-normal" style="color: var(--jd-text-muted); margin-left: 0.25rem;">
+                      {{ option.market_type === 'stock' ? 'Stock' : 'Crypto' }}
+                    </span>
+                  </div>
+                  <div style="color: var(--jd-text-muted);" class="text-xs truncate leading-tight mt-0.5">{{ option.name }}</div>
+                </div>
+
+                <!-- Change + Price -->
+                <div class="text-right shrink-0 leading-tight mr-2">
+                  <div
+                    v-if="option.change_24h !== null && option.change_24h !== undefined"
+                    class="text-xs font-semibold"
+                    :class="option.change_24h >= 0 ? 'price-up' : 'price-down'"
+                  >
+                    <span v-if="option.change_dollar !== null && option.change_dollar !== undefined">
+                      {{ option.change_dollar >= 0 ? '+' : '' }}${{ Math.abs(option.change_dollar).toFixed(2) }}
+                    </span>
+                    <span class="ml-1 opacity-80">({{ option.change_24h >= 0 ? '+' : '' }}{{ option.change_24h.toFixed(2) }}%)</span>
+                  </div>
+                  <div class="font-mono text-white text-sm font-semibold mt-0.5">
+                    {{ option.last ? '$' + formatPrice(option.last) : '--' }}
+                  </div>
+                </div>
+
+                <!-- Inline Add button -->
+                <button
+                  class="shrink-0 jd-btn jd-btn-primary jd-btn-sm"
+                  :class="{ 'opacity-50 cursor-wait': addingSymbol === option.symbol }"
+                  @click.stop="addFromDropdown(option)"
+                  title="Add to watchlist"
+                >
+                  <i v-if="addingSymbol !== option.symbol" class="pi pi-plus text-xs"></i>
+                  <i v-else class="pi pi-spin pi-spinner text-xs"></i>
+                </button>
+              </div>
+            </li>
+          </ul>
+        </div>
         <p v-if="addError" class="jd-alert error mt-3 mb-0">⚠ {{ addError }}</p>
         <p class="text-xs mt-2" style="color: var(--jd-text-muted);">Click a result to view the chart · click <span style="color: var(--jd-blue);">+</span> to add to watchlist</p>
       </div>
     </div>
 
-    <!-- Watchlist Table Card -->
-    <div class="jd-card">
-      <div class="jd-card-header">
-        <div class="flex items-center justify-between w-full">
-          <h2 class="jd-card-title">
-            Your Watchlist
-            <span style="color: var(--jd-text-muted);" class="text-sm font-normal ml-2">({{ items.length }} symbols)</span>
-          </h2>
-          <div class="flex items-center gap-2">
-            <span v-if="loadingPrices" class="text-sm" style="color: var(--jd-text-muted);">Updating prices...</span>
-            <span v-else-if="items.length" class="text-sm" style="color: var(--jd-text-muted);">Updated {{ lastUpdated }}</span>
-            <Button
-              icon="pi pi-refresh"
-              class="p-button-sm p-button-text p-button-rounded"
-              :loading="loadingPrices"
-              :disabled="items.length === 0"
-              @click="loadPrices"
-            />
-          </div>
-        </div>
-      </div>
-      <div class="jd-card-body">
-        <!-- Loading skeleton -->
-        <div v-if="loading" class="space-y-3">
-          <div v-for="i in 3" :key="i" class="h-14 bg-gray-800 rounded animate-pulse" />
-        </div>
+    <!-- Watchlist Table -->
+    <DataTable
+      :columns="columns"
+      :data="items"
+      :searchable="['symbol']"
+      search-placeholder="Search symbols…"
+      :page-size="10"
+      :loading="loading"
+      empty-text="Your watchlist is empty"
+    >
+      <template #toolbar-left>
+        <h2 class="jd-card-title" style="margin-right: auto;">
+          Your Watchlist
+          <span style="color: var(--jd-text-muted);" class="text-sm font-normal ml-2">({{ items.length }} symbols)</span>
+        </h2>
+      </template>
+      <template #toolbar-right>
+        <span v-if="loadingPrices" class="text-sm" style="color: var(--jd-text-muted);">Updating prices...</span>
+        <span v-else-if="items.length" class="text-sm" style="color: var(--jd-text-muted);">Updated {{ lastUpdated }}</span>
+        <button
+          class="jd-btn jd-btn-ghost jd-btn-sm"
+          title="Refresh prices"
+          :disabled="items.length === 0 || loadingPrices"
+          @click="loadPrices"
+        >
+          <i class="pi pi-refresh" :class="{ 'pi-spin': loadingPrices }"></i>
+        </button>
+      </template>
 
-        <!-- Empty state -->
-        <div v-else-if="items.length === 0" class="jd-empty">
+      <template #cell:symbol="{ row }">
+        <div class="flex items-center gap-2">
+          <span class="font-semibold text-white">{{ row.symbol }}</span>
+          <span :class="['jd-badge', row.market_type === 'stock' ? 'blue' : 'yellow']">
+            {{ row.market_type === 'stock' ? 'US' : 'Crypto' }}
+          </span>
+        </div>
+      </template>
+
+      <template #cell:last="{ row }">
+        <span class="font-mono" :style="{ color: row.last ? 'var(--jd-text)' : 'var(--jd-text-muted)' }">
+          {{ row.last ? '$' + formatPrice(row.last) : '--' }}
+        </span>
+      </template>
+
+      <template #cell:change_24h="{ row }">
+        <span
+          v-if="row.change_24h !== null && row.change_24h !== undefined"
+          class="font-semibold"
+          :class="row.change_24h >= 0 ? 'price-up' : 'price-down'"
+        >
+          {{ row.change_24h >= 0 ? '+' : '' }}{{ row.change_24h.toFixed(2) }}%
+        </span>
+        <span v-else style="color: var(--jd-text-muted);">--</span>
+      </template>
+
+      <template #cell:high="{ row }">
+        <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
+          {{ row.high ? '$' + formatPrice(row.high) : '--' }}
+        </span>
+      </template>
+
+      <template #cell:low="{ row }">
+        <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
+          {{ row.low ? '$' + formatPrice(row.low) : '--' }}
+        </span>
+      </template>
+
+      <template #cell:created_at="{ row }">
+        <span style="color: var(--jd-text-muted);" class="text-sm">
+          {{ new Date(row.created_at).toLocaleDateString() }}
+        </span>
+      </template>
+
+      <template #row-actions="{ row }">
+        <div class="flex gap-2">
+          <router-link :to="`/market/${encodeURIComponent(row.symbol)}`">
+            <button class="jd-btn jd-btn-ghost jd-btn-sm" title="View Chart">
+              <i class="pi pi-chart-bar"></i>
+            </button>
+          </router-link>
+          <button
+            class="jd-btn jd-btn-danger jd-btn-sm"
+            title="Remove"
+            :disabled="removingId === row.id"
+            @click="removeSymbol(row)"
+          >
+            <i class="pi" :class="removingId === row.id ? 'pi-spin pi-spinner' : 'pi-trash'"></i>
+          </button>
+        </div>
+      </template>
+
+      <template #empty>
+        <div class="jd-empty">
           <i class="pi pi-star"></i>
           <p>Your watchlist is empty</p>
           <p>Add crypto or US stocks above to start tracking.</p>
         </div>
-
-        <!-- Data Table -->
-        <DataTable
-          v-else
-          :value="items"
-          stripedRows
-          responsiveLayout="scroll"
-          class="jd-table p-datatable-sm"
-        >
-          <Column header="Symbol" field="symbol" :sortable="true">
-            <template #body="{ data }">
-              <div class="flex items-center gap-2">
-                <span class="font-semibold text-white">{{ data.symbol }}</span>
-                <span
-                  :class="['jd-badge', data.market_type === 'stock' ? 'blue' : 'yellow']"
-                >
-                  {{ data.market_type === 'stock' ? 'US' : 'Crypto' }}
-                </span>
-              </div>
-            </template>
-          </Column>
-
-          <Column header="Price" field="last" :sortable="true">
-            <template #body="{ data }">
-              <span class="font-mono" :style="{ color: data.last ? 'var(--jd-text)' : 'var(--jd-text-muted)' }">
-                {{ data.last ? '$' + formatPrice(data.last) : '--' }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="24h Change" field="change_24h" :sortable="true">
-            <template #body="{ data }">
-              <span
-                v-if="data.change_24h !== null && data.change_24h !== undefined"
-                class="font-semibold"
-                :class="data.change_24h >= 0 ? 'price-up' : 'price-down'"
-              >
-                {{ data.change_24h >= 0 ? '+' : '' }}{{ data.change_24h.toFixed(2) }}%
-              </span>
-              <span v-else style="color: var(--jd-text-muted);">--</span>
-            </template>
-          </Column>
-
-          <Column header="Day High" field="high" :sortable="true">
-            <template #body="{ data }">
-              <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
-                {{ data.high ? '$' + formatPrice(data.high) : '--' }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="Day Low" field="low" :sortable="true">
-            <template #body="{ data }">
-              <span style="color: var(--jd-text-muted);" class="font-mono text-sm">
-                {{ data.low ? '$' + formatPrice(data.low) : '--' }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="Added" field="created_at" :sortable="true">
-            <template #body="{ data }">
-              <span style="color: var(--jd-text-muted);" class="text-sm">
-                {{ new Date(data.created_at).toLocaleDateString() }}
-              </span>
-            </template>
-          </Column>
-
-          <Column header="Actions">
-            <template #body="{ data }">
-              <div class="flex gap-2">
-                <router-link :to="`/market/${encodeURIComponent(data.symbol)}`">
-                  <Button
-                    icon="pi pi-chart-bar"
-                    class="p-button-sm p-button-text p-button-rounded"
-                    v-tooltip="'View Chart'"
-                  />
-                </router-link>
-                <Button
-                  icon="pi pi-trash"
-                  class="jd-btn jd-btn-danger jd-btn-sm"
-                  v-tooltip="'Remove'"
-                  :loading="removingId === data.id"
-                  @click="removeSymbol(data)"
-                />
-              </div>
-            </template>
-          </Column>
-        </DataTable>
-      </div>
-    </div>
+      </template>
+    </DataTable>
 
     <!-- Alpaca prices missing warning -->
     <div
@@ -214,7 +186,7 @@
       <span class="mr-2">⚠</span>
       <span>
         US stock prices not loading — Alpaca API key may not be active in Docker.
-        Run <code class="bg-gray-800 px-1.5 py-0.5 rounded text-xs font-mono">docker compose up --build -d</code> to reload environment variables.
+        Run <code class="px-1.5 py-0.5 rounded text-xs" style="background:var(--jd-input);font-family:var(--jd-mono)">docker compose up --build -d</code> to reload environment variables.
       </span>
     </div>
 
@@ -223,19 +195,13 @@
       ⚠ {{ globalError }}
     </div>
   </div>
-
-  <Toast />
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
-import Button from 'primevue/button'
-import AutoComplete from 'primevue/autocomplete'
-import Toast from 'primevue/toast'
-import { useToast } from 'primevue/usetoast'
+import DataTable from '@/components/common/DataTable.vue'
+import { useToast } from '@/composables/useToast'
 import { watchlistApi, marketApi } from '@/api/market'
 
 const router = useRouter()
@@ -254,12 +220,22 @@ const addError = ref(null)
 const globalError = ref(null)
 const lastUpdated = ref('--')
 
-// AutoComplete state
-const selectedSuggestion = ref(null)   // string or suggestion object
+// Symbol-search state
+const q = ref('')                      // search input text
 const suggestions = ref([])
 
 // market_type is auto-detected from selected suggestion; default crypto for crypto /USDT normalisation
 const detectedMarketType = ref('crypto')
+
+// ── Table columns (reusable DataTable) ──────────────────────────
+const columns = [
+  { key: 'symbol', header: 'Symbol', sortable: true },
+  { key: 'last', header: 'Price', sortable: true, align: 'right' },
+  { key: 'change_24h', header: '24h Change', sortable: true, align: 'right' },
+  { key: 'high', header: 'Day High', sortable: true, align: 'right' },
+  { key: 'low', header: 'Day Low', sortable: true, align: 'right' },
+  { key: 'created_at', header: 'Added', sortable: true, align: 'right' },
+]
 
 // Show warning banner when stock items exist but have no prices
 const hasMissingStockPrices = computed(() =>
@@ -322,11 +298,10 @@ async function loadPrices() {
   }
 }
 
-// ── AutoComplete ────────────────────────────────────────────────
-// Note: debouncing is handled by :delay="300" on the component — no setTimeout needed here.
-async function onSearch(event) {
-  const q = event.query?.trim()
-  if (!q || q.length < 1) {
+// ── Symbol search ───────────────────────────────────────────────
+async function onSearch() {
+  const query = q.value?.trim()
+  if (!query || query.length < 1) {
     suggestions.value = []
     return
   }
@@ -334,8 +309,8 @@ async function onSearch(event) {
   try {
     // Always search BOTH stocks + crypto simultaneously
     const [stocksRes, cryptoRes] = await Promise.allSettled([
-      marketApi.searchStocks(q),
-      marketApi.searchCrypto(q),
+      marketApi.searchStocks(query),
+      marketApi.searchCrypto(query),
     ])
     const stocks  = stocksRes.status  === 'fulfilled' ? (stocksRes.value.data  || []) : []
     const cryptos = cryptoRes.status  === 'fulfilled' ? (cryptoRes.value.data  || []) : []
@@ -349,14 +324,13 @@ async function onSearch(event) {
   }
 }
 
-function onSuggestionSelect(event) {
-  const option = event.value
+// Clicking a suggestion row navigates to the market detail page
+function pick(option) {
   if (!option) return
-  // Clicking the row navigates to the market detail page
   const sym = option.symbol
   router.push(`/market/${encodeURIComponent(sym)}`)
   // Clear the input after navigation
-  selectedSuggestion.value = null
+  q.value = ''
   suggestions.value = []
 }
 
@@ -601,25 +575,30 @@ onMounted(() => {
   color: #fcd34d;
 }
 
-/* ── AutoComplete input ────────────────────────────────────────── */
-:deep(.p-autocomplete) {
-  width: 100%;
+/* ── Symbol search (inline autocomplete) ───────────────────────── */
+.ac {
+  position: relative;
 }
-:deep(.p-autocomplete .p-inputtext) {
-  width: 100%;
-  background-color: rgba(55, 65, 81, 0.6);
-  border-color: var(--jd-border);
-  color: var(--jd-text);
+.ac-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--jd-card);
+  border: 1px solid var(--jd-border);
+  border-radius: 10px;
+  max-height: 240px;
+  overflow: auto;
+  box-shadow: var(--jd-shadow-modal);
 }
-:deep(.p-autocomplete .p-inputtext:focus) {
-  border-color: var(--jd-blue);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+.ac-menu li {
+  padding: 9px 13px;
+  cursor: pointer;
+  font-size: 13px;
 }
-:deep(.p-autocomplete .p-inputtext::placeholder) {
-  color: var(--jd-text-muted);
-}
-:deep(.p-autocomplete-loader) {
-  color: var(--jd-blue);
+.ac-menu li:hover {
+  background: rgba(63, 224, 255, 0.06);
 }
 
 /* ── Price Changes ─────────────────────────────────────────────── */
@@ -628,30 +607,5 @@ onMounted(() => {
 }
 .price-down {
   color: var(--jd-red);
-}
-</style>
-
-<!-- Global styles for PrimeVue teleported overlays (AutoComplete panel) -->
-<style>
-.watchlist-ac-panel.p-autocomplete-overlay {
-  background-color: rgba(17, 24, 39, 0.95) !important;
-  border: 1px solid #1f2937 !important;
-  border-radius: 0.5rem !important;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7) !important;
-}
-.watchlist-ac-panel .p-autocomplete-list {
-  padding: 4px !important;
-  gap: 1px;
-}
-.watchlist-ac-panel .p-autocomplete-option {
-  color: #f3f4f6 !important;
-  border-radius: 6px !important;
-  padding: 0.55rem 0.75rem !important;
-  transition: background 0.1s;
-}
-.watchlist-ac-panel .p-autocomplete-option:hover,
-.watchlist-ac-panel .p-autocomplete-option.p-focus {
-  background-color: rgba(59, 130, 246, 0.18) !important;
-  color: #fff !important;
 }
 </style>

@@ -1,17 +1,5 @@
 <template>
   <div class="jd-page">
-    <!-- Toolbar -->
-    <div class="flex justify-end">
-      <button
-        @click="refreshSignals"
-        :disabled="loading"
-        class="jd-btn jd-btn-primary jd-btn-sm flex items-center gap-2"
-      >
-        <i :class="['pi', 'pi-refresh', { 'animate-spin': loading }]"></i>
-        {{ loading ? 'Loading...' : 'Refresh' }}
-      </button>
-    </div>
-
     <!-- Stats Cards -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
       <div class="jd-stat-card blue">
@@ -51,114 +39,68 @@
       </div>
     </div>
 
-    <!-- Filters -->
-    <div class="jd-card">
-      <div class="jd-card-body">
-        <div class="flex items-center gap-4 flex-wrap">
-          <div class="flex-1 min-w-64">
-            <input
-              v-model="filters.symbol"
-              type="text"
-              placeholder="Filter by symbol (e.g., BTCUSDT)"
-              style="width: 100%; padding: 8px 12px; background: rgba(75, 85, 99, 0.5); border: 1px solid var(--jd-border); border-radius: 4px; color: var(--jd-text); outline: none"
-            />
-          </div>
-          <div>
-            <select
-              v-model="filters.type"
-              style="padding: 8px 12px; background: rgba(75, 85, 99, 0.5); border: 1px solid var(--jd-border); border-radius: 4px; color: var(--jd-text); outline: none"
-            >
-              <option value="">All Types</option>
-              <option value="buy">Buy</option>
-              <option value="sell">Sell</option>
-              <option value="momentum">Momentum</option>
-              <option value="contrarian">Contrarian</option>
-            </select>
-          </div>
-          <div>
-            <select
-              v-model="filters.strength"
-              style="padding: 8px 12px; background: rgba(75, 85, 99, 0.5); border: 1px solid var(--jd-border); border-radius: 4px; color: var(--jd-text); outline: none"
-            >
-              <option value="">All Strengths</option>
-              <option value="strong">Strong (>0.7)</option>
-              <option value="medium">Medium (0.5-0.7)</option>
-              <option value="weak">Weak (<0.5)</option>
-            </select>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- Signals Table -->
-    <div class="jd-card">
-      <div class="overflow-x-auto">
-        <table class="jd-table">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Type</th>
-              <th>Signal</th>
-              <th style="text-align: right">Strength</th>
-              <th>Strategy</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="signal in filteredSignals"
-              :key="signal.id"
-              @click="selectedSignal = signal"
-              class="signal-row"
-            >
-              <td>{{ signal.symbol }}</td>
-              <td>
-                <span :class="['jd-badge', normalizedSignalType(signal) === 'buy' ? 'green' : 'red']">
-                  {{ displaySignalType(signal) }}
-                </span>
-              </td>
-              <td>{{ signal.recommendation || displaySignalType(signal) }}</td>
-              <td style="text-align: right">
-                <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px">
-                  <div style="width: 96px; background: rgba(75, 85, 99, 0.5); border-radius: 9999px; height: 8px">
-                    <div
-                      :style="{ width: signalStrengthPercent(signal) + '%' }"
-                      :class="getStrengthColor(signal)"
-                      style="height: 100%; border-radius: 9999px"
-                    ></div>
-                  </div>
-                  <span style="font-weight: 600; color: var(--jd-text); width: 48px; text-align: right">
-                    {{ signalStrengthPercent(signal).toFixed(0) }}%
-                  </span>
-                </div>
-              </td>
-              <td>
-                <span style="color: var(--jd-text-muted); display: flex; align-items: center; gap: 4px">
-                  <i
-                    :class="{
-                      'pi pi-arrow-up': normalizedStrategy(signal) === 'momentum',
-                      'pi pi-arrow-down': normalizedStrategy(signal) === 'contrarian',
-                    }"
-                    :style="{
-                      color: normalizedStrategy(signal) === 'momentum' ? 'var(--jd-green)' : normalizedStrategy(signal) === 'contrarian' ? 'var(--jd-red)' : 'inherit'
-                    }"
-                  ></i>
-                  {{ signal.strategy || '-' }}
-                </span>
-              </td>
-              <td style="color: var(--jd-text-muted); font-size: 0.875rem">
-                {{ formatTime(signal.created_at) }}
-              </td>
-            </tr>
-            <tr v-if="filteredSignals.length === 0">
-              <td colspan="6" style="text-align: center; padding: 32px 16px">
-                <span style="color: var(--jd-text-muted)">No signals found</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <DataTable
+      :columns="signalColumns"
+      :data="signals"
+      :searchable="['symbol']"
+      search-placeholder="Filter by symbol (e.g., BTCUSDT)"
+      :page-size="10"
+      clickable-rows
+      empty-text="No signals found"
+      @row-click="selectedSignal = $event"
+    >
+      <template #toolbar-right>
+        <button
+          @click="refreshSignals"
+          :disabled="loading"
+          class="jd-btn jd-btn-primary jd-btn-sm flex items-center gap-2"
+        >
+          <i :class="['pi', 'pi-refresh', { 'animate-spin': loading }]"></i>
+          {{ loading ? 'Loading...' : 'Refresh' }}
+        </button>
+      </template>
+
+      <template #cell:type="{ row }">
+        <span :class="['jd-badge', normalizedSignalType(row) === 'buy' ? 'green' : 'red']">
+          {{ displaySignalType(row) }}
+        </span>
+      </template>
+
+      <template #cell:strength="{ row }">
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px">
+          <div style="width: 96px; background: rgba(75, 85, 99, 0.5); border-radius: 9999px; height: 8px">
+            <div
+              :style="{ width: signalStrengthPercent(row) + '%' }"
+              :class="getStrengthColor(row)"
+              style="height: 100%; border-radius: 9999px"
+            ></div>
+          </div>
+          <span style="font-weight: 600; color: var(--jd-text); width: 48px; text-align: right">
+            {{ signalStrengthPercent(row).toFixed(0) }}%
+          </span>
+        </div>
+      </template>
+
+      <template #cell:strategy="{ row }">
+        <span style="color: var(--jd-text-muted); display: flex; align-items: center; gap: 4px">
+          <i
+            :class="{
+              'pi pi-arrow-up': normalizedStrategy(row) === 'momentum',
+              'pi pi-arrow-down': normalizedStrategy(row) === 'contrarian',
+            }"
+            :style="{
+              color: normalizedStrategy(row) === 'momentum' ? 'var(--jd-green)' : normalizedStrategy(row) === 'contrarian' ? 'var(--jd-red)' : 'inherit'
+            }"
+          ></i>
+          {{ row.strategy || '-' }}
+        </span>
+      </template>
+
+      <template #cell:time="{ value }">
+        <span style="color: var(--jd-text-muted); font-size: 0.875rem">{{ formatTime(value) }}</span>
+      </template>
+    </DataTable>
 
     <!-- Signal Details (Optional) -->
     <div v-if="selectedSignal" class="jd-card">
@@ -224,6 +166,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { getSignals } from '@/api/trading'
+import DataTable from '@/components/common/DataTable.vue'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 
@@ -235,11 +178,42 @@ const error = ref(null)
 const selectedSignal = ref(null)
 let refreshInterval = null
 
-const filters = ref({
-  symbol: '',
-  type: '',
-  strength: '',
-})
+const signalColumns = [
+  { key: 'symbol', header: 'Symbol', sortable: true },
+  {
+    key: 'type',
+    header: 'Type',
+    accessor: (r) => normalizedSignalType(r),
+    filterable: true,
+    filterLabel: 'Type',
+    filterOptions: [
+      { label: 'Buy', value: 'buy' },
+      { label: 'Sell', value: 'sell' },
+    ],
+  },
+  { key: 'signal', header: 'Signal', accessor: (r) => r.recommendation || displaySignalType(r) },
+  {
+    key: 'strength',
+    header: 'Strength',
+    align: 'right',
+    accessor: (r) => strengthBucket(r),
+    filterable: true,
+    filterLabel: 'Strength',
+    filterOptions: [
+      { label: 'Strong (>0.7)', value: 'strong' },
+      { label: 'Medium (0.5-0.7)', value: 'medium' },
+      { label: 'Weak (<0.5)', value: 'weak' },
+    ],
+  },
+  {
+    key: 'strategy',
+    header: 'Strategy',
+    accessor: (r) => r.strategy || '',
+    filterable: true,
+    filterLabel: 'Strategy',
+  },
+  { key: 'time', header: 'Time', accessor: (r) => r.created_at },
+]
 
 const stats = computed(() => {
   const total = signals.value.length
@@ -265,24 +239,6 @@ const sellPercentage = computed(() => {
   return Math.round((stats.value.sellSignals / stats.value.totalSignals) * 100)
 })
 
-const filteredSignals = computed(() => {
-  return signals.value.filter((signal) => {
-    if (filters.value.symbol && !signal.symbol.includes(filters.value.symbol.toUpperCase())) {
-      return false
-    }
-    if (filters.value.type && normalizedSignalType(signal) !== filters.value.type) {
-      return false
-    }
-    if (filters.value.strength) {
-      const strength = signalStrengthPercent(signal)
-      if (filters.value.strength === 'strong' && strength <= 70) return false
-      if (filters.value.strength === 'medium' && (strength <= 50 || strength > 70)) return false
-      if (filters.value.strength === 'weak' && strength > 50) return false
-    }
-    return true
-  })
-})
-
 const formatTime = (timestamp) => {
   return dayjs(timestamp).fromNow()
 }
@@ -305,6 +261,13 @@ const normalizedStrategy = (signal) => {
 const signalStrengthPercent = (signal) => {
   const raw = Number(signal?.signal_strength ?? signal?.confidence ?? 0)
   return raw <= 1 ? raw * 100 : raw
+}
+
+const strengthBucket = (signal) => {
+  const strength = signalStrengthPercent(signal)
+  if (strength > 70) return 'strong'
+  if (strength > 50) return 'medium'
+  return 'weak'
 }
 
 const getStrengthColor = (signal) => {
@@ -370,15 +333,6 @@ onBeforeUnmount(() => {
 
 .price-down {
   color: var(--jd-red);
-}
-
-.signal-row {
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.signal-row:hover {
-  background-color: rgba(75, 85, 99, 0.3);
 }
 
 .jd-badge {
