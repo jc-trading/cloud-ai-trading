@@ -89,7 +89,7 @@ celery_app.conf.beat_schedule = {
     "run-ai-analysis": {
         "task": "run_scheduled_analysis",
         "schedule": settings.ANALYSIS_INTERVAL_MINUTES * 60,  # default: 180 seconds
-        "options": {"expires": settings.ANALYSIS_INTERVAL_MINUTES * 60 - 10},
+        "options": {"expires": max(settings.ANALYSIS_INTERVAL_MINUTES * 60 - 10, 1)},
     },
     # Sync watchlists every 5 minutes
     "sync-watchlists": {
@@ -114,13 +114,13 @@ celery_app.conf.beat_schedule = {
     "collect-system-metrics": {
         "task": "collect_system_metrics",
         "schedule": float(settings.SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS),
-        "options": {"expires": float(settings.SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS) - 5},
+        "options": {"expires": max(float(settings.SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS) - 5, 1)},
     },
     # Sync task statuses every configured interval
     "sync-task-statuses": {
         "task": "sync_task_statuses",
         "schedule": float(settings.SYSTEM_TASK_HEALTH_CHECK_INTERVAL_SECONDS),
-        "options": {"expires": float(settings.SYSTEM_TASK_HEALTH_CHECK_INTERVAL_SECONDS) - 5},
+        "options": {"expires": max(float(settings.SYSTEM_TASK_HEALTH_CHECK_INTERVAL_SECONDS) - 5, 1)},
     },
     # Cleanup old logs daily
     "cleanup-old-logs": {

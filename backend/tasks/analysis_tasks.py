@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from tasks.celery_app import celery_app
+from celery.exceptions import SoftTimeLimitExceeded
 
 logger = logging.getLogger("cloud_ai_trading.tasks.analysis")
 
@@ -105,13 +106,19 @@ async def _run_scheduled_analysis_async():
                                 )
 
                             await db.commit()
+                        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+                            raise
                         except Exception as e:
                             logger.error(f"Analysis failed for {symbol}: {e}")
                             await db.rollback()
 
+                except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+                    raise
                 except Exception as e:
                     logger.error(f"Analysis failed for user {user_id}: {e}")
 
+        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+            raise
         except Exception as e:
             logger.error(f"Scheduled analysis error: {e}")
 
@@ -142,6 +149,8 @@ async def _run_manual_analysis_async(user_id: str, symbol: str):
                 analysis_type=AnalysisType.MANUAL,
             )
             await db.commit()
+        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+            raise
         except Exception as e:
             logger.error(f"Manual analysis error for {symbol}: {e}")
             await db.rollback()

@@ -64,6 +64,7 @@ from app.modules.analysis.models import (
 )
 from app.modules.equity.research import research_equity
 from app.modules.equity.universe import select_daily_candidates
+from celery.exceptions import SoftTimeLimitExceeded
 
 logger = logging.getLogger("cloud_ai_trading.tasks.equity")
 
@@ -238,6 +239,8 @@ async def _pre_market(session, *, today: Optional[date] = None) -> dict[str, Any
                 decision.confidence,
                 decision.ai_invoked,
             )
+        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+            raise
         except Exception as exc:  # one bad symbol must not abort the run
             logger.error("equity.pre_market: research failed for %s: %s", symbol, exc)
             await session.rollback()
@@ -353,6 +356,8 @@ def _run(core) -> dict[str, Any]:
         async with CeleryAsyncSessionLocal() as session:
             try:
                 return await core(session)
+            except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+                raise
             except Exception as exc:  # last-resort guardrail
                 logger.error("%s failed: %s", core.__name__, exc)
                 await session.rollback()

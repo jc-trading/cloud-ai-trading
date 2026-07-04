@@ -46,6 +46,7 @@ from app.celery_database import CeleryAsyncSessionLocal
 from app.modules.fundamentals.finnhub_client import get_finnhub_client
 from app.modules.fundamentals.models import CompanyFundamentals, EarningsCalendar
 from app.modules.watchlist.models import WatchlistItem
+from celery.exceptions import SoftTimeLimitExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +250,8 @@ async def _refresh_company_profiles(session, client) -> int:
                 "uq_company_fundamentals_symbol",
             )
             written += 1
+        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+            raise
         except Exception as exc:  # defensive: one bad symbol must not kill the run
             logger.error(
                 "refresh_company_profiles: error for %s: %s", symbol, exc
@@ -292,6 +295,8 @@ async def _refresh_earnings_calendar(session, client) -> int:
                     "uq_earnings_calendar_symbol_report_date",
                 )
                 written += 1
+        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+            raise
         except Exception as exc:
             logger.error(
                 "refresh_earnings_calendar: error for %s: %s", symbol, exc
@@ -367,6 +372,8 @@ async def _refresh_financials_on_earnings(session, client) -> int:
 
             if wrote:
                 written += 1
+        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+            raise
         except Exception as exc:
             logger.error(
                 "refresh_financials_on_earnings: error for %s: %s", symbol, exc
@@ -389,6 +396,8 @@ def _run(core) -> None:
             client = get_finnhub_client()
             try:
                 await core(session, client)
+            except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+                raise
             except Exception as exc:  # last-resort guardrail
                 logger.error("%s failed: %s", core.__name__, exc)
                 await session.rollback()

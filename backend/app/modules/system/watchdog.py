@@ -79,14 +79,25 @@ async def _check_queue_depth() -> None:
 async def _check_decision_freshness() -> None:
     from app.database import AsyncSessionLocal
     from app.modules.analysis.models import AIAnalysisResult
+    from app.modules.strategy.models import QuantStrategy
     from app.modules.watchlist.models import WatchlistItem
 
     async with AsyncSessionLocal() as db:
         watched = (
             await db.execute(select(func.count()).select_from(WatchlistItem))
         ).scalar() or 0
-        if not watched:
-            return  # nothing watched → no decisions is the expected state
+        # The analysis task only writes decisions for users with an ACTIVE
+        # strategy (tasks/analysis_tasks.py), so "watchlist but no active
+        # strategy" is a legitimately quiet state, not a stall.
+        active_strategies = (
+            await db.execute(
+                select(func.count())
+                .select_from(QuantStrategy)
+                .where(QuantStrategy.is_active == True)  # noqa: E712
+            )
+        ).scalar() or 0
+        if not watched or not active_strategies:
+            return  # nothing scheduled to produce decisions → silence is expected
 
         latest = (
             await db.execute(select(func.max(AIAnalysisResult.created_at)))

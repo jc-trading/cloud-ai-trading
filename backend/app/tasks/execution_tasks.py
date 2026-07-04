@@ -62,6 +62,7 @@ from app.modules.execution.service import (
     execute_decision,
 )
 from app.tasks.equity_tasks import _resolve_target_user, et_today, is_us_trading_day
+from celery.exceptions import SoftTimeLimitExceeded
 
 logger = logging.getLogger("cloud_ai_trading.tasks.execution")
 
@@ -166,6 +167,8 @@ async def _auto_execute_equity(
             result = await execute_decision(
                 session, decision, adapter=adapter, risk_limit=limit
             )
+        except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+            raise
         except Exception as exc:  # Alpaca / DB hiccup — skip this name, keep going
             errors += 1
             logger.error(
@@ -217,6 +220,8 @@ def _run(core) -> dict[str, Any]:
         async with CeleryAsyncSessionLocal() as session:
             try:
                 return await core(session)
+            except SoftTimeLimitExceeded:  # soft time limit must wind the task down
+                raise
             except Exception as exc:  # last-resort guardrail — never crash the task
                 logger.error("auto_execute_equity failed: %s", exc)
                 await session.rollback()
