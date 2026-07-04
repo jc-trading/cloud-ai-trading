@@ -2,6 +2,7 @@
 Cloud AI Trading - FastAPI Application Entry Point
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -65,7 +66,12 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Debug mode: {settings.DEBUG}")
     _run_migrations()
+    # Pipeline watchdog lives in THIS process because it exists to catch a
+    # wedged Celery worker — it can't run on the thing it monitors.
+    from app.modules.system.watchdog import run_watchdog
+    watchdog_task = asyncio.create_task(run_watchdog())
     yield
+    watchdog_task.cancel()
     # Cleanup: close shared CCXT exchange instance
     import app.modules.market.service as market_svc
     if market_svc._public_exchange:
