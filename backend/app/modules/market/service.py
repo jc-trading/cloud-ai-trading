@@ -220,22 +220,35 @@ ALPACA_INTERVAL_MAP = {
 }
 
 # ── Shared HTTP clients ──────────────────────────────────────────
+# These singletons are bound to the event loop they were created on. In FastAPI
+# that is one long-lived loop, but Celery tasks create a FRESH loop per task
+# (tasks/*.py _run_async). Reusing a client whose connections belong to a closed
+# loop hangs forever — even its timeout timers live on the dead loop — which is
+# exactly how the worker froze on 2026-07-01. So each accessor remembers its
+# owning loop and rebuilds the client when called from a different one. The old
+# client is dropped WITHOUT awaiting close(): closing over a dead loop can hang,
+# and the closed loop's transports are already gone.
 _http_client: Optional[httpx.AsyncClient] = None
+_http_client_loop: Optional[asyncio.AbstractEventLoop] = None
 _alpaca_data_client: Optional[httpx.AsyncClient] = None
+_alpaca_data_client_loop: Optional[asyncio.AbstractEventLoop] = None
 _alpaca_api_key: str = ""
 _alpaca_api_secret: str = ""
 
 
 def _get_http_client() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
+    global _http_client, _http_client_loop
+    loop = asyncio.get_running_loop()
+    if _http_client is None or _http_client.is_closed or _http_client_loop is not loop:
         _http_client = httpx.AsyncClient(timeout=15.0)
+        _http_client_loop = loop
     return _http_client
 
 
 def _get_alpaca_client() -> Optional[httpx.AsyncClient]:
     """Return Alpaca Data API client (data.alpaca.markets)."""
-    global _alpaca_data_client, _alpaca_api_key, _alpaca_api_secret
+    global _alpaca_data_client, _alpaca_data_client_loop
+    global _alpaca_api_key, _alpaca_api_secret
     if not _alpaca_api_key:
         try:
             from app.config import get_settings
@@ -248,7 +261,12 @@ def _get_alpaca_client() -> Optional[httpx.AsyncClient]:
     if not _alpaca_api_key:
         return None
 
-    if _alpaca_data_client is None or _alpaca_data_client.is_closed:
+    loop = asyncio.get_running_loop()
+    if (
+        _alpaca_data_client is None
+        or _alpaca_data_client.is_closed
+        or _alpaca_data_client_loop is not loop
+    ):
         _alpaca_data_client = httpx.AsyncClient(
             timeout=15.0,
             headers={
@@ -257,17 +275,21 @@ def _get_alpaca_client() -> Optional[httpx.AsyncClient]:
                 "Accept": "application/json",
             },
         )
+        _alpaca_data_client_loop = loop
     return _alpaca_data_client
 
 
 # ── CCXT Binance (public, crypto candles only) ───────────────────
 _public_exchange: Optional[ccxt.binance] = None
+_public_exchange_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 async def _get_ccxt() -> ccxt.binance:
-    global _public_exchange
-    if _public_exchange is None:
+    global _public_exchange, _public_exchange_loop
+    loop = asyncio.get_running_loop()
+    if _public_exchange is None or _public_exchange_loop is not loop:
         _public_exchange = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
+        _public_exchange_loop = loop
     return _public_exchange
 
 
