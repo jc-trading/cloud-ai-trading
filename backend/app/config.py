@@ -3,6 +3,7 @@ Application configuration using Pydantic BaseSettings.
 All settings are loaded from environment variables or .env file.
 """
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -66,6 +67,28 @@ class Settings(BaseSettings):
     # Alpaca (system-level keys for market data — separate from user connections)
     ALPACA_API_KEY: str = ""
     ALPACA_API_SECRET: str = ""
+    # Which Alpaca environment the system-level keys belong to: "paper" | "live".
+    # Sets the default trading endpoint for adapters that aren't given an
+    # explicit mode. NOTE: auto-execution ignores this and stays paper-forced
+    # (modules/execution/service.py) until the go-live gating is decided.
+    ALPACA_MODE: str = "paper"
+
+    @field_validator("ALPACA_MODE")
+    @classmethod
+    def _validate_alpaca_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("paper", "live"):
+            raise ValueError("ALPACA_MODE must be 'paper' or 'live'")
+        return v
+
+    @property
+    def ALPACA_TRADING_URL(self) -> str:
+        # Only the two official endpoints — deliberately NOT free-form via env,
+        # so a config edit can never redirect the paper-forced execution path
+        # to the live endpoint.
+        if self.ALPACA_MODE == "live":
+            return "https://api.alpaca.markets"
+        return "https://paper-api.alpaca.markets"
     BINANCE_API_KEY: str = ""
     BINANCE_API_SECRET: str = ""
 

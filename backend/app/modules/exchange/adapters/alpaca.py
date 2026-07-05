@@ -39,7 +39,13 @@ ALPACA_PAPER_URL = "https://paper-api.alpaca.markets"
 class AlpacaAdapter(ExchangeAdapter):
     """Alpaca Markets integration for US stocks (paper + live)."""
 
-    def __init__(self, api_key: str, api_secret: str, paper: bool = True):
+    def __init__(self, api_key: str, api_secret: str, paper: Optional[bool] = None):
+        # paper=None → follow the system-wide ALPACA_MODE (.env). Callers with
+        # their own mode source still pass it explicitly: the exchange service
+        # from the connection's trading_mode, execution FORCING paper=True.
+        if paper is None:
+            from app.config import settings
+            paper = settings.ALPACA_MODE != "live"
         self.api_key = api_key
         self.api_secret = api_secret
         self.paper = paper

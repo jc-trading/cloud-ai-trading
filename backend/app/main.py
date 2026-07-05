@@ -65,6 +65,11 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Debug mode: {settings.DEBUG}")
+    if settings.ALPACA_MODE == "live":
+        logger.warning(
+            "ALPACA_MODE=live — system-level Alpaca defaults point at the LIVE "
+            "endpoint. Auto-execution remains paper-forced regardless."
+        )
     _run_migrations()
     # Pipeline watchdog lives in THIS process because it exists to catch a
     # wedged Celery worker — it can't run on the thing it monitors.
