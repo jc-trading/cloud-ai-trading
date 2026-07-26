@@ -516,6 +516,16 @@ async def _calculate_portfolio_stats_async():
 
         notifier = TelegramNotifier()
 
+        # Accumulate across all watchlists so we send ONE combined Portfolio
+        # Update to Telegram instead of one message per watchlist (the per-watchlist
+        # messages were indistinguishable and looked like duplicates).
+        agg_invested = 0.0
+        agg_current_value = 0.0
+        agg_pnl = 0.0
+        agg_total_trades = 0
+        agg_winning_trades = 0
+        stats_count = 0
+
         for watchlist in watchlists:
             # Get latest prices for all symbols
             current_prices = {}
@@ -541,19 +551,35 @@ async def _calculate_portfolio_stats_async():
                 current_prices=current_prices,
             )
 
-            # Send Telegram notification
+            # Accumulate into the combined totals (one message sent after the loop).
             if stats:
-                await notifier.send_portfolio_update(
-                    total_invested=float(stats.total_invested),
-                    current_value=float(stats.current_value),
-                    total_pnl=float(
-                        stats.realized_pnl + stats.unrealized_pnl
-                    ),
-                    return_percent=float(stats.total_return_percent),
-                    win_rate=float(stats.win_rate) if stats.win_rate else 0,
-                )
+                agg_invested += float(stats.total_invested)
+                agg_current_value += float(stats.current_value)
+                agg_pnl += float(stats.realized_pnl + stats.unrealized_pnl)
+                agg_total_trades += int(stats.total_trades)
+                agg_winning_trades += int(stats.winning_trades)
+                stats_count += 1
 
             logger.info(f"Stats updated for watchlist {watchlist.id}")
+
+        # Send a SINGLE combined Portfolio Update aggregated across all watchlists.
+        # Return% and win-rate are recomputed from the aggregate base (not averaged).
+        if stats_count:
+            agg_return_percent = (
+                (agg_pnl / agg_invested * 100) if agg_invested > 0 else 0.0
+            )
+            agg_win_rate = (
+                (agg_winning_trades / agg_total_trades * 100)
+                if agg_total_trades > 0
+                else 0.0
+            )
+            await notifier.send_portfolio_update(
+                total_invested=agg_invested,
+                current_value=agg_current_value,
+                total_pnl=agg_pnl,
+                return_percent=agg_return_percent,
+                win_rate=agg_win_rate,
+            )
 
         await session.commit()
 
