@@ -99,6 +99,34 @@ def _fetch(symbol: str, unit: str, start: datetime, end: datetime, client=None) 
     return store.normalize(df)
 
 
+def fetch_daily_multi(symbols: list[str], start: datetime, end: datetime | None = None, *,
+                      client=None, now: datetime | None = None) -> dict[str, pd.DataFrame]:
+    """Fetch daily bars for many symbols in ONE Alpaca request (backfill path).
+    Returns {symbol: closed RAW daily frame}. Symbols with no data are omitted."""
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.enums import Adjustment, DataFeed
+
+    now = now or datetime.now(timezone.utc)
+    end = end or (now - timedelta(minutes=config.SIP_DELAY_MINUTES))
+    client = client or _client()
+    req = StockBarsRequest(
+        symbol_or_symbols=[s.upper() for s in symbols],
+        timeframe=_timeframe("1Day"),
+        start=start, end=end,
+        feed=DataFeed.SIP, adjustment=Adjustment.RAW,
+    )
+    resp = client.get_stock_bars(req)
+    df = resp.df
+    if df is None or len(df) == 0:
+        return {}
+    out: dict[str, pd.DataFrame] = {}
+    for sym, sub in df.groupby(level="symbol"):
+        ndf = drop_unclosed_daily(store.normalize(sub), now)
+        if not ndf.empty:
+            out[str(sym)] = ndf
+    return out
+
+
 def fetch_daily(symbol: str, start: datetime, end: datetime | None = None, *,
                 client=None, now: datetime | None = None) -> pd.DataFrame:
     now = now or datetime.now(timezone.utc)
