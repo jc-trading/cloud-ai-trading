@@ -54,3 +54,4 @@ celerybeat.pid
 
 .history/
 template/
+.gstack/

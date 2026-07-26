@@ -8,15 +8,37 @@
 
 ### 启动系统
 
+**前提**：先启动 Docker Desktop，等它的 daemon 就绪。
+
+所有命令都从项目根目录 `cloud-ai-trading/` 开始。
+
+**① 启动后端栈**（postgres / redis / backend / celery-worker / celery-beat 五个容器）
+
 ```bash
-# 查看所有容器运行状态
-docker compose ps
+cd cloud-ai-trading
+docker compose up -d
+```
 
-# 检查 API 健康
-curl http://localhost:8000/api/health
+**② 启动前端**（另开一个终端窗口 —— 前端 dev server 会占着这个窗口）
 
-# 查看日志
-docker compose logs -f backend
+```bash
+cd cloud-ai-trading/frontend
+npm install        # 仅首次需要
+npm run dev        # 跑在 http://localhost:3000
+```
+
+**③ 打开看板**
+
+浏览器访问 **http://localhost:3000** → 登录（或右下 Sign Up 注册）。落地页就是统一的 Decision Feed（可按 ALL / CRYPTO / EQUITY 切换）。
+
+**验证 / 排查**
+
+```bash
+docker compose ps                      # 五个容器都应是 Up (healthy)
+curl http://localhost:8000/api/health  # 应返回 200
+docker compose logs -f backend         # 后端日志
+docker compose logs -f celery-beat     # 定时任务排程日志
+docker compose down                    # 停掉整套（数据保留）
 ```
 
 详见 [docs/setup/Quick-Start.md](docs/setup/Quick-Start.md)
