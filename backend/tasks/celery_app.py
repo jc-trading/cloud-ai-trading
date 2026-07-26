@@ -207,3 +207,28 @@ celery_app.conf.beat_schedule = {
         "options": {"expires": 900},
     },
 }
+
+# --- R0-0 quiesce (2026-07-27) --------------------------------------------
+# The legacy crypto signal pipeline (retired) and the old equity catalyst
+# auto-execution (parked) are being replaced by the deterministic-quant rebuild
+# (see CAT_merged_plan_v2.0 / CAT_execution_plan_R0-R1). Disable their Beat
+# entries NOW so that during the rebuild nothing spends Claude quota (the 3-min
+# run_scheduled_analysis was the main cost) and nothing places orders. The task
+# *code* is untouched here — crypto is deleted in R1-8, and the whole schedule
+# is rewritten into the three-tier cadence in R1-2. Fully reversible: remove
+# this block to restore the original cadence.
+_R0_0_QUIESCED = [
+    # crypto signal pipeline
+    "collect-market-data",
+    "update-indicators",
+    "pull-market-data",
+    "run-ai-analysis",           # 3-min Claude fusion — the main $ cost
+    "generate-trading-signals",  # 15-min crypto signals
+    # old equity catalyst (parked) + its auto-execution
+    "equity-pre-market",
+    "equity-market-open",
+    "equity-eod",
+    "execution-auto-execute-equity",
+]
+for _quiesced_key in _R0_0_QUIESCED:
+    celery_app.conf.beat_schedule.pop(_quiesced_key, None)
