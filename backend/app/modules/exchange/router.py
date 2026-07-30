@@ -92,6 +92,15 @@ async def get_balance(
     current_user: CurrentUser,
     db: DB,
 ):
-    """Get balance from exchange account."""
-    result = await ExchangeService.get_balance(db, current_user.id, connection_id)
+    """Get balance from exchange account. Adapter failures surface as a clean
+    422, never a bare 500 (review #22: a legacy non-Alpaca row must not break
+    the settings page)."""
+    try:
+        result = await ExchangeService.get_balance(db, current_user.id, connection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"balance fetch failed: {e}")
     return BalanceResponse(**result)

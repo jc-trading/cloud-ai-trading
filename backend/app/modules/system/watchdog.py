@@ -8,12 +8,11 @@ process is alive, not that work is being consumed — so this watchdog runs in
 the BACKEND process (which survives a wedged worker) and checks the two
 signals that cannot lie:
 
-  1. Broker queue depth — Beat publishes ~145 tasks/hour, so a stalled worker
-     pushes the `celery` list past QUEUE_DEPTH_ALERT within ~1.5h.
-  2. Decision freshness — crypto analysis writes an ai_analysis_results row
-     every cycle for every watched symbol, 24/7. If watchlist items exist but
-     no row has appeared for DECISION_STALE_SECONDS, the pipeline is dead even
-     if the queue looks empty (e.g. tasks consumed but all failing).
+  1. Broker queue depth — a stalled worker piles up Beat's publishes past
+     QUEUE_DEPTH_ALERT within ~1.5h.
+  2. Quant heartbeats — worker liveness, RTH stop monitoring, and the nightly
+     signal cycle measured against its last EXPECTED session run.
+  3. Sim-ledger invariants — every open lot must carry a usable stop.
 
 Alerts go to Telegram (already wired for signals/orders) with a per-check
 cooldown, and are always logged at ERROR for the container logs.
@@ -32,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 300  # every 5 minutes
 QUEUE_DEPTH_ALERT = 200  # ~1.5h of Beat publishing with nothing consuming
-DECISION_STALE_SECONDS = 2 * 3600  # crypto decisions normally land every 3 min
 ALERT_COOLDOWN_SECONDS = 6 * 3600  # per-check re-alert throttle
 
 _last_alert_at: dict[str, float] = {}
@@ -76,45 +74,10 @@ async def _check_queue_depth() -> None:
         logger.debug("Watchdog queue depth OK: %s", depth)
 
 
-async def _check_decision_freshness() -> None:
-    from app.database import AsyncSessionLocal
-    from app.modules.analysis.models import AIAnalysisResult
-    from app.modules.strategy.models import QuantStrategy
-    from app.modules.watchlist.models import WatchlistItem
-
-    async with AsyncSessionLocal() as db:
-        watched = (
-            await db.execute(select(func.count()).select_from(WatchlistItem))
-        ).scalar() or 0
-        # The analysis task only writes decisions for users with an ACTIVE
-        # strategy (tasks/analysis_tasks.py), so "watchlist but no active
-        # strategy" is a legitimately quiet state, not a stall.
-        active_strategies = (
-            await db.execute(
-                select(func.count())
-                .select_from(QuantStrategy)
-                .where(QuantStrategy.is_active == True)  # noqa: E712
-            )
-        ).scalar() or 0
-        if not watched or not active_strategies:
-            return  # nothing scheduled to produce decisions → silence is expected
-
-        latest = (
-            await db.execute(select(func.max(AIAnalysisResult.created_at)))
-        ).scalar()
-
-    if latest is None:
-        return  # fresh install, nothing written yet — queue check covers a stall
-
-    now = time.time()
-    age = now - latest.timestamp()
-    if age > DECISION_STALE_SECONDS:
-        await _alert(
-            "stale decisions",
-            f"No new decision for {age / 3600:.1f}h ({watched} watched symbols; "
-            f"latest row {latest:%Y-%m-%d %H:%M} UTC). The analysis pipeline "
-            f"has stopped producing — check worker/beat logs.",
-        )
+# _check_decision_freshness was deleted in the R1 review fix round (#21): it
+# monitored the retired crypto analysis pipeline — its producers no longer
+# exist, so it could only false-alert (legacy rows) or stay silently dead.
+# v3 liveness lives in _check_quant_heartbeats below.
 
 
 # --- R1-5 quant-era checks (2026-07-30) -------------------------------------
@@ -124,7 +87,7 @@ async def _check_decision_freshness() -> None:
 
 WORKER_HEARTBEAT_STALE = 5 * 60          # quant.heartbeat runs every 60s
 POSITION_CYCLE_STALE_RTH = 20 * 60       # runs every 5 min during RTH
-SIGNAL_CYCLE_STALE = 26 * 3600           # daily; >26h on trading days = missed
+SIGNAL_CYCLE_GRACE = 2 * 3600            # slack after the scheduled 21:30 UTC run
 
 
 def _now_et_minutes() -> tuple[object, int]:
@@ -170,15 +133,30 @@ async def _check_quant_heartbeats() -> None:
                 f"positions have NO stop monitoring right now.",
             )
 
+    # review #28: measure against the last EXPECTED run (previous session's
+    # 21:30 UTC + grace), not a fixed wall-clock age — a fixed 26h false-alerts
+    # every Monday and post-holiday morning.
     sc = rows.get("signal_cycle")
-    if sc is not None and now - sc.last_beat_at.timestamp() > SIGNAL_CYCLE_STALE \
-            and trading_day:
-        await _alert(
-            "signal cycle missed",
-            f"quant.signal_cycle last completed "
-            f"{(now - sc.last_beat_at.timestamp()) / 3600:.0f}h ago — no fresh "
-            f"recommendations/exit management. Check beat + worker logs.",
-        )
+    if sc is not None:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        probe = now_et.date()
+        expected = None
+        for _ in range(10):     # walk back to the newest session whose run is due
+            if qcal.is_trading_day(probe):
+                run_at = _dt(probe.year, probe.month, probe.day, 21, 30,
+                             tzinfo=_tz.utc).timestamp() + SIGNAL_CYCLE_GRACE
+                if run_at <= now:
+                    expected = run_at
+                    break
+            probe = probe - _td(days=1)
+        if expected is not None and sc.last_beat_at.timestamp() < expected - SIGNAL_CYCLE_GRACE:
+            await _alert(
+                "signal cycle missed",
+                f"quant.signal_cycle last completed "
+                f"{(now - sc.last_beat_at.timestamp()) / 3600:.0f}h ago and the "
+                f"latest scheduled run is overdue — no fresh recommendations/"
+                f"exit management. Check beat + worker logs.",
+            )
 
 
 async def _check_sim_stops() -> None:
@@ -205,15 +183,13 @@ async def _check_sim_stops() -> None:
 async def run_watchdog() -> None:
     """Background loop; started from the FastAPI lifespan, cancelled on shutdown."""
     logger.info(
-        "Pipeline watchdog started (every %ss: queue depth > %s, decisions stale > %ss, "
-        "quant heartbeats, sim stops)",
+        "Pipeline watchdog started (every %ss: queue depth > %s, quant "
+        "heartbeats, sim stops)",
         CHECK_INTERVAL_SECONDS,
         QUEUE_DEPTH_ALERT,
-        DECISION_STALE_SECONDS,
     )
     checks = (
         ("queue", _check_queue_depth),
-        ("freshness", _check_decision_freshness),
         ("quant heartbeats", _check_quant_heartbeats),
         ("sim stops", _check_sim_stops),
     )

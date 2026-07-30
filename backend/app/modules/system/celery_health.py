@@ -45,6 +45,33 @@ class CeleryHealthCheck:
             "schedule_interval": "86400",
             "schedule_type": "periodic",
         },
+        # v3 quant pipeline (R1-2 three-tier schedule) — review #23: the health
+        # view must cover the tasks that actually run this platform
+        "quant.heartbeat": {
+            "description": "Quant worker liveness beat",
+            "schedule_interval": "60",
+            "schedule_type": "periodic",
+        },
+        "quant.position_cycle": {
+            "description": "Intraday stop checks (RTH, 5 min)",
+            "schedule_interval": "300",
+            "schedule_type": "periodic",
+        },
+        "quant.entry_cycle": {
+            "description": "Post-open entry booking (both DST slots)",
+            "schedule_interval": "86400",
+            "schedule_type": "periodic",
+        },
+        "quant.signal_cycle": {
+            "description": "Post-close recommendations + exits + snapshot",
+            "schedule_interval": "86400",
+            "schedule_type": "periodic",
+        },
+        "quant.telegram_poll": {
+            "description": "Telegram command loop",
+            "schedule_interval": "60",
+            "schedule_type": "periodic",
+        },
     }
 
     @staticmethod
@@ -245,6 +272,13 @@ class CeleryHealthCheck:
         """
         worker_status = CeleryHealthCheck.get_celery_worker_status()
         beat_status = CeleryHealthCheck.get_celery_beat_status()
+
+        # review #23: purge status rows for tasks that no longer exist —
+        # zombie rows from retired pipelines pinned /system/health at critical
+        from sqlalchemy import delete as sa_delete
+        from app.modules.system.models import TaskStatus as _TS
+        await db.execute(sa_delete(_TS).where(
+            _TS.task_name.notin_(list(CeleryHealthCheck.EXPECTED_TASKS))))
 
         task_statuses = {}
 

@@ -54,7 +54,7 @@ celery_app.conf.update(
 
 # NOTE: no autodiscover_tasks() — every task module is registered explicitly via
 # the `include=[...]` list above. autodiscover was redundant (it re-scanned the same
-# packages) and masked missing includes; risk_tasks is now in `include` instead.
+# packages) and masked missing includes — every task module must be listed explicitly above.
 
 # Periodic task schedule (Celery Beat)
 # Every entry sets options.expires (frequent tasks: just under their interval;
