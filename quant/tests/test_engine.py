@@ -182,6 +182,26 @@ def test_funnel_chain_and_sector_cap():
     assert short == ["A", "B", "D"]   # C dropped by sector cap; E/F/G/H filtered
 
 
+def test_min_confidence_knob():
+    # [C1]/review B4: threshold filters BELOW-threshold names even with slots free
+    rows = [
+        dict(symbol="A", price=50, adv=3e7, atr_pct=0.03, above_rising_ma20=True, sector="tech", confidence=90, direction="up"),
+        dict(symbol="B", price=50, adv=3e7, atr_pct=0.03, above_rising_ma20=True, sector="fin", confidence=40, direction="up"),
+    ]
+    assert funnel.build_shortlist(_feat(rows), funnel.FunnelParams()) == ["A", "B"]
+    short = funnel.build_shortlist(_feat(rows), funnel.FunnelParams(min_confidence=50))
+    assert short == ["A"]
+
+
+def test_stock_pool_excludes_whitelisted_etfs():
+    # A4-Extra: SPY/QQQ must never be scored in the stock funnel
+    rows = [
+        dict(symbol="SPY", price=500, adv=1e9, atr_pct=0.02, above_rising_ma20=True, sector="etf", confidence=99, direction="up"),
+        dict(symbol="A", price=50, adv=3e7, atr_pct=0.03, above_rising_ma20=True, sector="tech", confidence=60, direction="up"),
+    ]
+    assert funnel.build_shortlist(_feat(rows), funnel.FunnelParams()) == ["A"]
+
+
 def test_etf_quota_separate():
     rows = [
         dict(symbol="SPY", price=500, adv=1e9, atr_pct=0.02, above_rising_ma20=True, sector="etf", confidence=70, direction="up"),

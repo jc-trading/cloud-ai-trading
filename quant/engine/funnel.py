@@ -27,6 +27,9 @@ class FunnelParams:
     atr_pct_max: float = 0.08      # [A8/C] too wild = stops get swept
     max_per_sector: int = config.MAX_PER_SECTOR
     shortlist_max: int = config.SHORTLIST_MAX
+    min_confidence: float = config.MIN_CONFIDENCE  # [C1] entry threshold knob
+                                                   # (review B4: rank-only had
+                                                   # nothing to calibrate)
 
 
 def filter_liquidity(df: pd.DataFrame, p: FunnelParams) -> pd.DataFrame:
@@ -49,12 +52,16 @@ def apply_sector_cap(df: pd.DataFrame, max_per_sector: int) -> pd.DataFrame:
 
 
 def build_shortlist(features: pd.DataFrame, params: FunnelParams = FunnelParams()) -> list[str]:
-    """Full chain -> ordered list of <= shortlist_max symbols."""
+    """Full chain -> ordered list of <= shortlist_max symbols. STOCKS only —
+    whitelisted ETFs are excluded up front (A4-Extra: they have their own quota
+    via select_etfs and must never be scored in the stock pool)."""
     if features.empty:
         return []
-    df = filter_liquidity(features, params)
+    df = features[~features["symbol"].isin(config.ETF_WHITELIST)]
+    df = filter_liquidity(df, params)
     df = filter_volatility(df, params)
     df = filter_trend_alignment(df)
+    df = df[df["confidence"] >= params.min_confidence]   # [C1]
     if df.empty:
         return []
     df = df.sort_values("confidence", ascending=False)

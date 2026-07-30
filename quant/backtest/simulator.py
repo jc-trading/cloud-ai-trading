@@ -189,7 +189,12 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
             # sizing sees D-1 CLOSE equity (review F5) — never today's closes
             equity_ref = equity_curve[prev]
             slots = sizing.concurrent_slots(equity_ref)
-            entries_today = 0
+            # A4-Extra (拍板 2026-07-30): the ETF slot is an EXTRA N+1 slot —
+            # ETFs neither consume nor are gated by the stock ladder
+            etf_set = set(config.ETF_WHITELIST)
+            stock_held = sum(1 for s in held_at_open if s not in etf_set)
+            etf_held = sum(1 for s in held_at_open if s in etf_set)
+            stock_entries = etf_entries = 0
             touched_today: list[str] = []
             cand = by_date[prev]
             shortlist = fn.build_shortlist(cand, cfg.funnel)
@@ -228,9 +233,15 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                     cash -= cost
                     cash_at_open -= cost
                     touched_today.append(sym)
-                elif len(held_at_open) + entries_today < slots:
+                else:
                     # slot gate counts positions held at the open plus today's
-                    # opens — a later intraday exit can't free a slot for 09:30
+                    # opens — a later intraday exit can't free a slot for 09:30.
+                    # Stocks use the ladder pool; ETFs their own extra slot(s).
+                    if sym in etf_set:
+                        if etf_held + etf_entries >= config.ETF_MAX_SLOTS:
+                            continue
+                    elif stock_held + stock_entries >= slots:
+                        continue
                     sh = sizing.position_size(equity_ref, entry, stop, risk_pct=cfg.risk_pct,
                                               slots=slots, settled_cash=avail, adv=float(d1["adv"]))
                     cost = sh * entry + cfg.costs.commission(sh)
@@ -241,7 +252,10 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                         r_unit=(entry - stop), entry_date=d, high_water=entry)
                     cash -= cost
                     cash_at_open -= cost
-                    entries_today += 1
+                    if sym in etf_set:
+                        etf_entries += 1
+                    else:
+                        stock_entries += 1
                     touched_today.append(sym)
 
             # entry-day stop check (review F4): a stop set this morning can be

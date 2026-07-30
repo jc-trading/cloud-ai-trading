@@ -59,6 +59,9 @@ MIN_AVG_DOLLAR_VOLUME: float = 20_000_000.0  # [A8] $20M ADV
 MIN_PRICE: float = 5.0                        # [design §7] no penny stocks
 MAX_PER_SECTOR: int = 2                       # [A8] sector diversification cap
 SHORTLIST_MAX: int = 10                       # [design §7] top-N into veto
+MIN_CONFIDENCE: float = 0.0                   # [C1] entry threshold — 0 = pure
+                                              # rank-based; the real value comes
+                                              # out of R0-9 calibration
 
 # --------------------------------------------------------------------------
 # Master Settings (design §8.6) — tighten-only at runtime; these are the

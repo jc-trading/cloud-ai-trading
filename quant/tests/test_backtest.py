@@ -228,6 +228,48 @@ def test_drawdown_halt_blocks_entries(monkeypatch, small_params):
         "entry filled while portfolio drawdown exceeded the halt threshold"
 
 
+def test_etf_slot_is_extra_not_ladder(monkeypatch, small_params):
+    # A4-Extra (拍板 2026-07-30): an ETF held early must NOT consume one of the
+    # stock ladder slots. SPY enters first; three stocks break out later — all
+    # three must still fit the 3-slot ladder (cash-capped sizes are fine).
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=20)]
+
+    def crashing(base, rise_from, rise_until, step, rng):
+        closes = [base if i < rise_from else
+                  base + (min(i, rise_until) - rise_from + 1) * step
+                  for i in range(16)] + [base * 0.55] * 4
+        opens = list(closes); highs = [c * (1 + rng) for c in closes]
+        lows = [c * (1 - rng) for c in closes]
+        opens[16] = base * 0.6; lows[16] = base * 0.5     # gap-crash day 16
+        return _ohlc_bars(sessions, opens, highs, lows, closes, vol=50_000_000)
+
+    # SPY trends days 0-8 (enters ~day 7-9), then drifts just below cost so it
+    # neither pyramids nor exits; wide-range stocks break out day 10 — the risk
+    # cap (not the ladder cash cap) sizes them, so three positions fit the
+    # remaining cash iff the slot gate lets them in
+    spy_closes = ([400 + 2 * i for i in range(9)]          # 400..416
+                  + [416 - 0.2 * i for i in range(1, 8)]   # gentle drift down
+                  + [240.0] * 4)                           # crash
+    spy_opens = list(spy_closes)
+    spy_highs = [c * 1.001 for c in spy_closes]; spy_lows = [c * 0.999 for c in spy_closes]
+    spy_opens[16] = 250.0; spy_lows[16] = 238.0
+    frames = {"SPY": _ohlc_bars(sessions, spy_opens, spy_highs, spy_lows, spy_closes,
+                                vol=50_000_000)}
+    for s in ("S1", "S2", "S3"):
+        frames[s] = crashing(10.0, 10, 15, 0.7, 0.05)
+    _patch_bars(monkeypatch, frames)
+    cfg = simulator.SimConfig(start="2024-01-01", end="2024-02-01",
+                              starting_capital=3000, adv_window=2,
+                              strategy=sp, funnel=fp, exits=ep)
+    res = simulator.run(["S1", "S2", "S3", "SPY"],
+                        {"S1": "tech", "S2": "fin", "S3": "ind"}, cfg)
+    traded = {t.symbol for t in res.trades}
+    assert "SPY" in traded, "whitelisted ETF never entered its extra slot"
+    assert {"S1", "S2", "S3"} <= traded, \
+        "an ETF holding consumed a stock ladder slot (A4-Extra violated)"
+
+
 def test_simulator_entry_and_stop_exit(monkeypatch, small_params):
     sp, fp, ep = small_params
     sessions = [d.date().isoformat() for d in
