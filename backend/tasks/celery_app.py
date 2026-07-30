@@ -108,6 +108,9 @@ celery_app.conf.beat_schedule.update({
         "schedule": 300.0,          # gated to RTH inside the task
         "options": {"expires": 290},
     },
+    # The two entry slots below must fire inside cycles.ENTRY_WINDOW_ET
+    # (app/modules/simledger/cycles.py) — THE authoritative entry window; the
+    # task re-gates itself on it, so a slot outside the window silently no-ops.
     "quant-entry-cycle-edt": {
         "task": "quant.entry_cycle",
         "schedule": crontab(hour=13, minute=36),   # 09:36 ET during EDT

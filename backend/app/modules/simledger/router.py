@@ -27,9 +27,29 @@ from app.modules.simledger import cycles
 
 router = APIRouter(prefix="/sim", tags=["Sim ledger"])
 
-# the honest OOS scoreboard badge (R0-9 G1 report §3.1) shown with every feed
-OOS_BADGE = {"profit_factor": 1.34, "win_rate": 0.457, "avg_r": 0.16,
-             "source": "R0-9 walk-forward OOS aggregate 2016-2026 (269 trades)"}
+# The honest scoreboard badge = the FIXED deployed config's stitched
+# walk-forward OOS, produced by `python -m quant.research.r09 --fixed-oos`
+# (review #10 + assessment A1: the per-window-calibrated aggregate PF 1.34 is
+# NOT the deployed config's performance and must not be shown as such).
+_BADGE_FILE = "/app/cat-data/r09/fixed_oos.json"
+_badge_cache: dict = {"mtime": None, "value": None}
+
+
+def oos_badge() -> dict:
+    import json
+    import os
+    try:
+        mtime = os.path.getmtime(_BADGE_FILE)
+        if _badge_cache["mtime"] != mtime:
+            data = json.loads(open(_BADGE_FILE).read())
+            _badge_cache.update(mtime=mtime, value=data.get("badge"))
+        if _badge_cache["value"]:
+            return _badge_cache["value"]
+    except (OSError, ValueError):
+        pass
+    return {"profit_factor": None, "win_rate": None, "avg_r": None,
+            "source": "no fixed-param OOS result on file — run "
+                      "quant.research.r09 --fixed-oos"}
 
 
 class TradeRequest(BaseModel):
@@ -52,14 +72,14 @@ async def recommendations(user: CurrentUser, db: DB = None,
             .order_by(Recommendation.trade_date.desc()).limit(1)
         )).scalar_one_or_none()
     if td is None:
-        return {"trade_date": None, "oos_badge": OOS_BADGE, "items": []}
+        return {"trade_date": None, "oos_badge": oos_badge(), "items": []}
     rows = list((await db.execute(
         select(Recommendation).where(Recommendation.trade_date == td)
         .order_by(Recommendation.shortlist_rank.nulls_last(),
                   Recommendation.confidence.desc())
     )).scalars().all())
     return {
-        "trade_date": td, "oos_badge": OOS_BADGE,
+        "trade_date": td, "oos_badge": oos_badge(),
         "items": [{
             "symbol": r.symbol, "rank": r.shortlist_rank,
             "direction": r.direction, "confidence": float(r.confidence),

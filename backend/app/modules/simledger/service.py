@@ -215,10 +215,17 @@ class SimLedgerService:
 
     @staticmethod
     async def snapshot(db: AsyncSession, account: SimAccount, snapshot_date: date,
-                       quotes: dict[str, float]) -> AccountSnapshot:
-        """Upsert the daily equity point for the dashboard curve."""
-        positions = await SimLedgerService.get_open_positions(db, account.id)
-        eq = SimLedgerService.equity(account, positions, quotes)
+                       quotes: dict[str, float], *,
+                       positions: list[SimPosition] | None = None,
+                       equity: float | None = None) -> AccountSnapshot:
+        """Upsert the daily equity point for the dashboard curve. Callers that
+        already hold the open positions / computed equity may pass them
+        (review #5: signal_cycle re-queried both right after computing them);
+        omitted -> queried/computed here as before."""
+        if positions is None:
+            positions = await SimLedgerService.get_open_positions(db, account.id)
+        eq = SimLedgerService.equity(account, positions, quotes) \
+            if equity is None else float(equity)
         row = (await db.execute(
             select(AccountSnapshot).where(
                 AccountSnapshot.account_id == account.id,

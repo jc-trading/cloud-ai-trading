@@ -895,6 +895,21 @@ body {
 .jd-decision.watch { box-shadow: 0 0 0 1px rgba(255,194,75,0.2), 0 10px 34px -14px rgba(255,194,75,0.35); }
 .jd-decision.nogo  { box-shadow: 0 0 0 1px rgba(255,84,112,0.2), 0 10px 34px -14px rgba(255,84,112,0.35); }
 
+/* shared page chrome + decision-card internals (used by Recommendations, SimAccount) */
+.jd-page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+.jd-h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #fff; margin: 0; }
+.jd-h2 { font-family: var(--jd-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--jd-text-muted); margin: 0 0 10px; }
+.jd-sub { font-family: var(--jd-mono); font-size: 12px; color: var(--jd-text-muted); margin: 4px 0 0; }
+.d-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; }
+.d-sym { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: #fff; }
+.d-body { display: flex; gap: 16px; padding: 4px 16px 12px; align-items: center; }
+.d-right { min-width: 0; }
+.d-nodata { font-family: var(--jd-mono); font-size: 12px; color: var(--jd-text-faint); }
+.d-foot { border-top: 1px solid var(--jd-line-2); }
+.d-reason { padding: 9px 16px 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.d-reason .jd-src { margin-left: auto; white-space: nowrap; }
+.jd-table-wrap { overflow-x: auto; border: 1px solid var(--jd-line-2); border-radius: 10px; }
+
 /* verdict badge */
 .jd-verdict {
   font-family: var(--jd-mono);

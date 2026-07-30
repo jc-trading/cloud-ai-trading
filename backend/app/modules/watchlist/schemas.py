@@ -3,7 +3,7 @@ Pydantic schemas for watchlist management.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 from pydantic import BaseModel, Field
 
@@ -22,20 +22,17 @@ class WatchlistResponse(BaseModel):
 
 class WatchlistItemCreate(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
-    # "crypto" for BTC/USDT-style symbols, "stock" for AAPL-style
-    market_type: str = Field(default="crypto")
+    # Stocks only (Direction v3) — any non-"stock" value is rejected with 422
+    # so no new crypto rows can appear.
+    market_type: Literal["stock"] = "stock"
     notes: Optional[str] = None
-
-    @property
-    def exchange_type(self) -> str:
-        return "alpaca" if self.market_type == "stock" else "binance"
 
 
 class WatchlistItemResponse(BaseModel):
     id: UUID
     symbol: str
     exchange_type: str
-    market_type: str = "crypto"
+    market_type: str = "stock"
     notes: Optional[str]
     synced_with_exchange: bool
     created_at: datetime

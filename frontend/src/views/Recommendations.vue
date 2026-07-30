@@ -122,20 +122,8 @@ onMounted(load)
 </script>
 
 <style scoped>
-.jd-page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
-.jd-h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #fff; margin: 0; }
-.jd-h2 { font-family: var(--jd-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--jd-text-muted); margin: 0 0 10px; }
-.jd-sub { font-family: var(--jd-mono); font-size: 12px; color: var(--jd-text-muted); margin: 4px 0 0; }
+/* Shared page chrome (.jd-page-head, .d-head, …) lives in assets/main.css. */
 .scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 14px; }
-.d-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; }
-.d-sym { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: #fff; }
-.d-body { display: flex; gap: 16px; padding: 4px 16px 12px; align-items: center; }
-.d-right { min-width: 0; }
-.d-nodata { font-family: var(--jd-mono); font-size: 12px; color: var(--jd-text-faint); }
-.d-foot { border-top: 1px solid var(--jd-line-2); }
-.d-reason { padding: 9px 16px 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.d-reason .jd-src { margin-left: auto; white-space: nowrap; }
-.jd-table-wrap { overflow-x: auto; border: 1px solid var(--jd-line-2); border-radius: 10px; }
 .jd-decision.skeleton { padding: 20px; display: flex; flex-direction: column; gap: 12px; cursor: default; animation: sk 1.6s ease-in-out infinite; }
 .sk { border-radius: 6px; background: var(--jd-card-hover); }
 .sk-lg { width: 38%; height: 22px; } .sk-md { width: 62%; height: 14px; } .sk-block { height: 96px; }

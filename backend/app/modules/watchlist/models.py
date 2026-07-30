@@ -62,9 +62,9 @@ class WatchlistItem(Base):
     watchlist_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("watchlists.id", ondelete="CASCADE"), index=True
     )
-    symbol: Mapped[str] = mapped_column(String(20))   # e.g., "BTC/USDT" or "AAPL"
-    exchange_type: Mapped[str] = mapped_column(String(20), default="binance")
-    market_type: Mapped[str] = mapped_column(String(10), default="crypto")  # "crypto" or "stock"
+    symbol: Mapped[str] = mapped_column(String(20))   # e.g., "AAPL"
+    exchange_type: Mapped[str] = mapped_column(String(20), default="alpaca")
+    market_type: Mapped[str] = mapped_column(String(10), default="stock")  # stocks only (Direction v3)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     synced_with_exchange: Mapped[bool] = mapped_column(Boolean, default=False)
 

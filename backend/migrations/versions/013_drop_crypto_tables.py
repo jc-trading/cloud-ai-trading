@@ -26,6 +26,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # historical crypto tables are not recreated — restore from a DB backup if
-    # ever needed (they were empty/dead at drop time)
-    raise NotImplementedError("crypto tables are gone for good (R1-8)")
+    """Destructive migration — dropped crypto tables are not recreated."""
+    # Historical crypto tables are gone for good (R1-8); restore from a DB
+    # backup if ever needed (they were empty/dead at drop time). Documented
+    # pass stub kept per repo convention (see migration 006) so a downgrade
+    # walk past 013 doesn't break.
+    pass

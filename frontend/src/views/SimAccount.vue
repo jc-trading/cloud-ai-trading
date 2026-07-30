@@ -167,19 +167,9 @@ onMounted(load)
 </script>
 
 <style scoped>
+/* Shared page chrome (.jd-page-head, .d-head, …) lives in assets/main.css. */
 .acct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }
-.trade-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-</style>
-
-<style scoped>
-.jd-page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
-.jd-h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #fff; margin: 0; }
-.jd-sub { font-family: var(--jd-mono); font-size: 12px; color: var(--jd-text-muted); margin: 4px 0 0; }
-.d-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; }
-.d-sym { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: #fff; }
-.d-body { display: flex; gap: 16px; padding: 4px 16px 12px; }
-.d-right { min-width: 0; }
-.d-nodata { font-family: var(--jd-mono); font-size: 12px; color: var(--jd-text-faint); }
-.d-foot { border-top: 1px solid var(--jd-line-2); padding: 12px 16px; }
-.jd-table-wrap { overflow-x: auto; border: 1px solid var(--jd-line-2); border-radius: 10px; }
+/* Padding lives here (not on the global .d-foot) — Recommendations' .d-foot
+   gets its padding from the inner .d-reason instead. */
+.trade-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 16px; }
 </style>

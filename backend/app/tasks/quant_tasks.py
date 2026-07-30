@@ -26,7 +26,7 @@ from app.celery_database import CeleryAsyncSessionLocal
 from app.modules.fundamentals.finnhub_client import FinnhubClient
 from app.modules.notifications import TelegramNotifier
 from app.modules.simledger import cycles
-from app.modules.simledger.models import HeartbeatRecord
+from app.modules.simledger.models import HeartbeatRecord, Recommendation
 from app.modules.simledger.service import SimLedgerService
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,8 @@ def entry_cycle():
     if not _in_rth(now_et):
         return "skipped: outside RTH"
     minutes = now_et.hour * 60 + now_et.minute
-    if not ((9 * 60 + 30) <= minutes < (10 * 60 + 10)):
+    (_wsh, _wsm), (_weh, _wem) = cycles.ENTRY_WINDOW_ET   # review #8: one source
+    if not ((_wsh * 60 + _wsm) <= minutes < (_weh * 60 + _wem)):
         return "skipped: not the open window"
 
     async def _do():
@@ -132,6 +133,19 @@ def entry_cycle():
             if blocked:
                 logger.warning("entry_cycle blocked: %s", blocked)
                 return f"blocked: {blocked}"
+            # A2 fail-closed: ZERO Recommendation rows for today (ranked or
+            # not) means last night's signal cycle failed or was gated —
+            # book NOTHING and alert instead of silently trading on nothing.
+            any_rec = (await db.execute(
+                select(Recommendation.id)
+                .where(Recommendation.trade_date == now_et.date()).limit(1)
+            )).scalar_one_or_none()
+            if any_rec is None:
+                await _beat(db, "entry_cycle", fail_closed="no recommendations")
+                await db.commit()
+                await _notify("⛔ entry_cycle fail-closed: no recommendations "
+                              f"for {now_et.date()} — nothing booked")
+                return "fail-closed: no recommendations"
             client = FinnhubClient()
             booked = await cycles.run_entries(db, account, now_et.date(),
                                              quote_fn=_quote_fn(client))
@@ -181,43 +195,65 @@ def signal_cycle():
         logger.warning("signal_cycle: held-symbol lookup failed", exc_info=True)
     symbols = sorted(set(quniverse.constituents_on(today))
                      | set(qconfig.ETF_WHITELIST) | held_syms)
-    synced = failed = 0
-    for sym in symbols:
-        try:
-            qfetch.sync_daily(sym)
-            synced += 1
-        except Exception:
-            failed += 1
+    # review #1: batched sync — one Alpaca request per chunk; a failed chunk
+    # falls back to per-symbol sync inside sync_daily_many
+    synced, failed_syms = qfetch.sync_daily_many(symbols)
+    failed = len(failed_syms)
     logger.info("signal_cycle: bars synced for %d symbols (%d failed)", synced, failed)
+
+    # A2 fail-closed: too many sync failures -> publish NOTHING (tomorrow's
+    # entry cycle then fails closed on the empty Recommendation table). Exits,
+    # protections and snapshots still run on whatever data is fresh — the
+    # stale-bar guard in daily_exit_management protects positions.
+    sync_fail_closed = bool(symbols) and failed > 0.2 * len(symbols)
 
     sectors = qsectors.load_sectors()
 
     async def _do():
         async with CeleryAsyncSessionLocal() as db:
-            recs = cycles.build_recommendations(symbols, today)
-            for r in recs:
-                r["features"]["sector"] = sectors.get(r["symbol"], "unknown")
-            n = await cycles.store_recommendations(db, recs)
+            # review #2: one bar read per symbol across recommendations + exits
+            bars_fn = cycles.memoized_bars_fn(today)
+            if sync_fail_closed:
+                recs, n = [], 0
+                logger.error("signal_cycle fail-closed: %d/%d symbols failed "
+                             "bar sync — recommendations NOT published",
+                             failed, len(symbols))
+            else:
+                recs = cycles.build_recommendations(symbols, today,
+                                                    bars_fn=bars_fn)
+                for r in recs:
+                    r["features"]["sector"] = sectors.get(r["symbol"], "unknown")
+                n = await cycles.store_recommendations(db, recs)
 
             account = await _system_account(db)
             closed: list[str] = []
             if account is not None:
-                closed = await cycles.daily_exit_management(db, account, today)
-                # snapshot + protections on end-of-day marks
+                closed = await cycles.daily_exit_management(db, account, today,
+                                                            bars_fn=bars_fn)
+                # snapshot + protections on end-of-day marks (review #3/#5:
+                # concurrent quotes; positions/equity passed to snapshot).
+                # Post-close quotes are >15min old by design, so this keeps the
+                # price>0 check instead of the intraday staleness guard.
                 positions = await SimLedgerService.get_open_positions(db, account.id)
                 client = FinnhubClient()
-                qfn = _quote_fn(client)
-                quotes = {}
-                for p in positions:
-                    q = qfn(p.symbol)
-                    if q is not None and q.price > 0:
-                        quotes[p.symbol] = q.price
+                quote_map = await cycles.fetch_quotes(
+                    client, [p.symbol for p in positions])
+                quotes = {s: q.price for s, q in quote_map.items() if q.price > 0}
                 equity = SimLedgerService.equity(account, positions, quotes)
                 await cycles.update_protections(db, account, equity, today)
-                await SimLedgerService.snapshot(db, account, today, quotes)
-            await _beat(db, "signal_cycle", recs=n, closed=closed,
-                        synced=synced, failed=failed)
+                await SimLedgerService.snapshot(db, account, today, quotes,
+                                                positions=positions,
+                                                equity=equity)
+            meta = {"recs": n, "closed": closed,
+                    "synced": synced, "failed": failed}
+            if sync_fail_closed:
+                meta["fail_closed"] = "bar sync failures"
+            await _beat(db, "signal_cycle", **meta)
             await db.commit()
+            if sync_fail_closed:
+                await _notify("⛔ signal_cycle fail-closed: bar sync failed for "
+                              f"{failed}/{len(symbols)} symbols — no "
+                              "recommendations published for the next session")
             if closed:
                 await _notify(f"📤 对照账户 daily exits: {', '.join(closed)}")
             shortlist = [r["symbol"] for r in recs if r.get("shortlist_rank")]

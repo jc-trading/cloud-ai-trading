@@ -22,6 +22,7 @@ from the R0-9 G1 baseline consensus (only C1 moved off the design defaults).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -76,6 +77,29 @@ def finnhub_quote(client, symbol: str) -> QuoteReading | None:
                                                   tz=timezone.utc))
 
 
+async def _gather_quotes(quote_fn, symbols) -> dict[str, QuoteReading]:
+    """Concurrent quote prefetch (review #3/#4/#5: serial blocking quote calls
+    inside async fns blocked the event loop; gather pattern from
+    market/service.py). Each distinct symbol is quoted exactly once; failed or
+    None quotes are silently omitted — a missing entry reads as unusable
+    through quote_is_usable."""
+    async def _one(sym: str):
+        try:
+            return sym, await asyncio.to_thread(quote_fn, sym)
+        except Exception:
+            logger.warning("quote failed for %s — omitted", sym, exc_info=True)
+            return sym, None
+
+    pairs = await asyncio.gather(*[_one(s) for s in dict.fromkeys(symbols)])
+    return {s: q for s, q in pairs if q is not None}
+
+
+async def fetch_quotes(client, symbols) -> dict[str, QuoteReading]:
+    """Concurrent Finnhub quotes for many symbols in ~one round-trip.
+    Failed symbols are silently omitted from the result."""
+    return await _gather_quotes(lambda s: finnhub_quote(client, s), symbols)
+
+
 async def get_safety_state(db: AsyncSession, account: SimAccount, *,
                            create: bool = False) -> SafetyState | None:
     """Single owner of the SafetyState scope-key convention (review #17: four
@@ -93,6 +117,12 @@ async def get_safety_state(db: AsyncSession, account: SimAccount, *,
 def now_et() -> datetime:
     from zoneinfo import ZoneInfo
     return datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+
+
+# THE entry window, ET (review #8): entry_cycle books only inside
+# [09:30, 10:10). Single source of truth — the two celery beat slots
+# (celery_app.py "quant-entry-cycle-*") must fire inside this window.
+ENTRY_WINDOW_ET = ((9, 30), (10, 10))
 
 
 def in_rth(now: datetime | None = None, *, open_grace_min: int = 0) -> bool:
@@ -132,6 +162,25 @@ def entries_blocked_reason(state: SafetyState | None, *, today: date,
 
 
 # --- signal cycle ----------------------------------------------------------
+
+def memoized_bars_fn(end: date, *, get_bars=qbars.get_bars):
+    """Per-cycle bar memo (review #2): build_recommendations and
+    daily_exit_management read the same daily parquets within one signal
+    cycle — cache by symbol so each frame is read (and adjusted) once.
+    A plain dict-backed closure, not functools.lru_cache: the call pattern is
+    fixed per cycle ((symbol, "1d", end=session_date)) and date kwargs would
+    defeat lru_cache's positional hashing anyway. A failed read is NOT cached,
+    so per-symbol error handling in the callers keeps its retry semantics."""
+    cache: dict[str, pd.DataFrame] = {}
+    default_end = end
+
+    def bars_fn(symbol: str, timeframe: str = "1d", *, end: date | None = None):
+        if symbol not in cache:
+            cache[symbol] = get_bars(symbol, timeframe, end=end or default_end)
+        return cache[symbol]
+
+    return bars_fn
+
 
 def build_recommendations(symbols: list[str], session_date: date, *,
                           funnel_params: qfunnel.FunnelParams = RECOMMENDED_FUNNEL,
@@ -294,9 +343,14 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
     stock_count = sum(1 for s in held if s not in etf_set)
     etf_count = len(held) - stock_count
 
+    # review #3: prefetch the union of held + shortlist concurrently — each
+    # symbol is quoted exactly once (held names used to be quoted twice)
+    quote_map = await _gather_quotes(quote_fn,
+                                     [p.symbol for p in open_positions]
+                                     + [r.symbol for r in recs])
     quotes: dict[str, float] = {}
     for p in open_positions:
-        q = quote_fn(p.symbol)
+        q = quote_map.get(p.symbol)
         if quote_is_usable(q, now=now):
             quotes[p.symbol] = q.price
     equity = SimLedgerService.equity(account, open_positions, quotes)
@@ -305,7 +359,7 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
     booked: list[str] = []
     for rec in recs:
         sym = rec.symbol
-        q = quote_fn(sym)
+        q = quote_map.get(sym)
         if not quote_is_usable(q, now=now):
             logger.warning("entry_cycle: stale/no quote for %s — skipped", sym)
             continue
@@ -424,8 +478,11 @@ async def check_stops(db: AsyncSession, account: SimAccount, *, quote_fn,
     the trailing stop here — end-of-day information only (backtest F2 rule)."""
     now = now or datetime.now(timezone.utc)
     closed = []
-    for sp in await SimLedgerService.get_open_positions(db, account.id):
-        q = quote_fn(sp.symbol)
+    positions = await SimLedgerService.get_open_positions(db, account.id)
+    # review #4: gather all open-position quotes concurrently up front
+    quote_map = await _gather_quotes(quote_fn, [p.symbol for p in positions])
+    for sp in positions:
+        q = quote_map.get(sp.symbol)
         if not quote_is_usable(q, now=now):
             logger.warning("position_cycle: stale/no quote for %s — skipped",
                            sp.symbol)

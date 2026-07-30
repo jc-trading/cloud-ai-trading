@@ -2,7 +2,6 @@
 Watchlist service: CRUD operations for watchlists and items.
 """
 
-import asyncio
 from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,14 +84,12 @@ class WatchlistService:
             from fastapi import HTTPException
             raise HTTPException(status_code=409, detail=f"{data.symbol} is already in your watchlist")
 
-        # Infer exchange_type from market_type
-        exchange_type = "alpaca" if data.market_type == "stock" else "binance"
-
+        # Stocks only (Direction v3) — schema constrains market_type to "stock".
         item = WatchlistItem(
             watchlist_id=watchlist_id,
             symbol=data.symbol,
-            exchange_type=exchange_type,
-            market_type=data.market_type,
+            exchange_type="alpaca",
+            market_type="stock",
             notes=data.notes,
         )
         db.add(item)
@@ -135,34 +132,19 @@ class WatchlistService:
         from app.modules.market.service import MarketService
 
         wl = await WatchlistService.get_or_create_default(db, user_id)
-        items = wl.items
+        # Stocks only (Direction v3): the crypto price plane is deleted, so any
+        # legacy non-stock row is filtered out of the priced view.
+        items = [i for i in wl.items if i.market_type == "stock"]
         if not items:
             return []
 
-        # Separate crypto and stock symbols
-        crypto_items = [i for i in items if i.market_type != "stock"]
-        stock_items  = [i for i in items if i.market_type == "stock"]
-
-        # Fetch prices concurrently
         price_map: dict[str, dict] = {}
-
-        if crypto_items:
-            try:
-                crypto_syms = [i.symbol for i in crypto_items]
-                tickers = await MarketService.get_tickers(crypto_syms)
-                for t in tickers:
-                    price_map[t["symbol"]] = t
-            except Exception:
-                pass
-
-        if stock_items:
-            try:
-                stock_syms = [i.symbol for i in stock_items]
-                tickers = await MarketService.get_stock_tickers(stock_syms)
-                for t in tickers:
-                    price_map[t["symbol"]] = t
-            except Exception:
-                pass
+        try:
+            tickers = await MarketService.get_stock_tickers([i.symbol for i in items])
+            for t in tickers:
+                price_map[t["symbol"]] = t
+        except Exception:
+            pass
 
         result = []
         for item in items:

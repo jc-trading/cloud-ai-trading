@@ -236,6 +236,95 @@ def main(quick: bool = False, regime_ma: int | None = None) -> None:
     log(f"done in {results['wall_clock_seconds']}s -> {out_dir}/results.json")
 
 
+def _experiment_stamp() -> dict:
+    """Immutable experiment record (assessment P0.5): code SHA + data
+    fingerprints, so a result can always be tied to what produced it."""
+    import hashlib
+    import subprocess
+    stamp = {}
+    try:
+        stamp["code_sha"] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(config.REPO_ROOT),
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        stamp["code_dirty"] = bool(subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(config.REPO_ROOT),
+            capture_output=True, text=True, timeout=10).stdout.strip())
+    except Exception:
+        stamp["code_sha"] = "unknown"
+    try:
+        csv = config.UNIVERSE_DIR / "sp500_changes.csv"
+        stamp["universe_md5"] = hashlib.md5(csv.read_bytes()).hexdigest()
+    except Exception:
+        stamp["universe_md5"] = "unknown"
+    return stamp
+
+
+def fixed_oos() -> None:
+    """A1 (assessment P0.1/P0.2): the honest number for the DEPLOYED config —
+    run the consensus params FIXED across every walk-forward OOS window (no
+    per-window calibration) and stitch the windows into one curve. This is
+    what the dashboard badge must show; the per-window-calibrated aggregate
+    (PF 1.34) is a different, more flattering quantity."""
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    base = json.loads((OUT_DIR / "results.json").read_text())
+    params = base["recommended_params"]
+    log(f"fixed-OOS with deployed params: {params}")
+
+    syms = sorted(set(universe.all_symbols_in_range(START, END)) | set(config.ETF_WHITELIST))
+    sectors = sectorsmod.load_sectors()
+    base_cfg = simulator.SimConfig(
+        start=START, end=END,
+        membership_on=lambda d: universe.constituents_set_on(d))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        feats = simulator.prepare_features(syms, sectors, base_cfg, progress=log)
+
+    windows = walk_forward_windows(START, END, is_years=3, oos_years=1, step_years=1)
+    all_trades, window_rows, stitched_rets = [], [], []
+    for wi, win in enumerate(windows, 1):
+        oos_feats = slice_features(feats, win.oos_start, win.oos_end)
+        cfg = with_knobs(base_cfg, params, win.oos_start.date(), win.oos_end.date())
+        res = simulator.run(list(oos_feats), sectors, cfg, features=oos_feats)
+        s = metrics.summary(res.equity, res.trades, res.benchmark)
+        window_rows.append({"window": wi, "oos": f"{win.oos_start.date()}..{win.oos_end.date()}",
+                            "summary": s})
+        all_trades += res.trades
+        stitched_rets.append(res.equity.pct_change().dropna())
+        log(f"fixed-OOS window {wi}: PF {s['profit_factor']:.2f}, "
+            f"sharpe {s['sharpe']:.2f}, final ${s['final_equity']:.0f}")
+
+    rets = pd.concat(stitched_rets, ignore_index=True)
+    stitched = 2000.0 * (1.0 + rets).cumprod()
+    stitched = pd.concat([pd.Series([2000.0]), stitched], ignore_index=True)
+    summary = metrics.summary(stitched, all_trades)
+    out = {
+        "generated_for": {"start": START, "end": END, "mode": "fixed_oos_stitched",
+                          "params": params, **_experiment_stamp()},
+        "per_window": window_rows,
+        "stitched": summary,
+        "badge": {
+            "profit_factor": round(summary["profit_factor"], 2),
+            "win_rate": round(summary["win_rate"], 3),
+            "avg_r": round(summary["avg_r"], 2),
+            "num_trades": summary["num_trades"],
+            "cagr": round(summary["cagr"], 4),
+            "max_drawdown": round(summary["max_drawdown"], 4),
+            "source": (f"Fixed deployed params, stitched walk-forward OOS "
+                       f"{START[:4]}-{END[:4]} ({summary['num_trades']} trades) — "
+                       f"NOT the per-window-calibrated aggregate"),
+        },
+        "wall_clock_seconds": round(time.time() - t0, 1),
+    }
+    (OUT_DIR / "fixed_oos.json").write_text(json.dumps(out, indent=2, default=str))
+    log(f"fixed-OOS done in {out['wall_clock_seconds']}s: stitched PF "
+        f"{summary['profit_factor']:.2f}, sharpe {summary['sharpe']:.2f}, "
+        f"maxDD {summary['max_drawdown']:.1%} -> {OUT_DIR}/fixed_oos.json")
+
+
 if __name__ == "__main__":
-    _regime = 200 if "--regime200" in sys.argv else None
-    main(quick="--quick" in sys.argv, regime_ma=_regime)
+    if "--fixed-oos" in sys.argv:
+        fixed_oos()
+    else:
+        _regime = 200 if "--regime200" in sys.argv else None
+        main(quick="--quick" in sys.argv, regime_ma=_regime)

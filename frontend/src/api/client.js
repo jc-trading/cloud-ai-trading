@@ -28,13 +28,13 @@ client.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config
 
-    // A 401 from the auth endpoints themselves (bad password, expired refresh)
-    // must surface to the caller — routing it into the refresh flow ends in
+    // Requests that opt out of the refresh flow (auth endpoints pass
+    // { skipAuthRefresh: true } in their axios config): a 401 from login /
+    // register / refresh itself (bad password, expired refresh) must surface
+    // to the caller — routing it into the refresh flow ends in a
     // window.location redirect that reloads the page and eats the error
     // message (QA finding #2).
-    const authPath = /\/auth\/(login|register|refresh)/.test(originalRequest?.url || '')
-
-    if (error.response?.status === 401 && !originalRequest._retry && !authPath) {
+    if (error.response?.status === 401 && !originalRequest._retry && !originalRequest?.skipAuthRefresh) {
       originalRequest._retry = true
 
       try {

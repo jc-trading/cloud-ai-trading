@@ -1,20 +1,17 @@
 """
-Market data service.
+Market data service — US stocks only (Direction v3; crypto plane deleted).
 
-Crypto  → CoinGecko API (globally accessible, no VPN needed)
 US Stocks → Alpaca Data API v2 (requires ALPACA_API_KEY in .env)
-Candles  → Binance CCXT for crypto, Alpaca for stocks
-Search   → CoinGecko search (crypto) + curated stock list (stocks)
+Quotes    → Finnhub real-time /quote overrides Alpaca's delayed IEX prices
+Search    → Finnhub /search (full US universe) + curated stock list fallback
 """
 
 import asyncio
 import logging
-import time
 from datetime import datetime
 from typing import Optional
 
 import httpx
-import ccxt.async_support as ccxt
 
 from app.modules.fundamentals.finnhub_client import get_finnhub_client
 
@@ -55,24 +52,6 @@ async def _override_stock_prices_with_finnhub(rows: list[dict]) -> None:
         row["ask"] = None
         if q.get("t"):
             row["timestamp"] = int(q["t"]) * 1000
-
-# ── CoinGecko coin mapping ──────────────────────────────────────
-SYMBOL_TO_CG: dict[str, str] = {
-    "BTC/USDT":   "bitcoin",
-    "ETH/USDT":   "ethereum",
-    "BNB/USDT":   "binancecoin",
-    "SOL/USDT":   "solana",
-    "XRP/USDT":   "ripple",
-    "ADA/USDT":   "cardano",
-    "DOGE/USDT":  "dogecoin",
-    "DOT/USDT":   "polkadot",
-    "AVAX/USDT":  "avalanche-2",
-    "LINK/USDT":  "chainlink",
-    "UNI/USDT":   "uniswap",
-    "MATIC/USDT": "matic-network",
-}
-CG_TO_SYMBOL: dict[str, str] = {v: k for k, v in SYMBOL_TO_CG.items()}
-DEFAULT_CRYPTO_SYMBOLS = list(SYMBOL_TO_CG.keys())
 
 # ── Default US stocks shown on market overview ──────────────────
 DEFAULT_STOCK_SYMBOLS = [
@@ -211,7 +190,6 @@ POPULAR_STOCKS: list[tuple[str, str]] = [
     ("SHOP", "Shopify Inc."),
 ]
 
-COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 ALPACA_DATA_URL = "https://data.alpaca.markets"
 ALPACA_TRADING_URL = "https://api.alpaca.markets"
 ALPACA_INTERVAL_MAP = {
@@ -228,21 +206,10 @@ ALPACA_INTERVAL_MAP = {
 # owning loop and rebuilds the client when called from a different one. The old
 # client is dropped WITHOUT awaiting close(): closing over a dead loop can hang,
 # and the closed loop's transports are already gone.
-_http_client: Optional[httpx.AsyncClient] = None
-_http_client_loop: Optional[asyncio.AbstractEventLoop] = None
 _alpaca_data_client: Optional[httpx.AsyncClient] = None
 _alpaca_data_client_loop: Optional[asyncio.AbstractEventLoop] = None
 _alpaca_api_key: str = ""
 _alpaca_api_secret: str = ""
-
-
-def _get_http_client() -> httpx.AsyncClient:
-    global _http_client, _http_client_loop
-    loop = asyncio.get_running_loop()
-    if _http_client is None or _http_client.is_closed or _http_client_loop is not loop:
-        _http_client = httpx.AsyncClient(timeout=15.0)
-        _http_client_loop = loop
-    return _http_client
 
 
 def _get_alpaca_client() -> Optional[httpx.AsyncClient]:
@@ -279,20 +246,6 @@ def _get_alpaca_client() -> Optional[httpx.AsyncClient]:
     return _alpaca_data_client
 
 
-# ── CCXT Binance (public, crypto candles only) ───────────────────
-_public_exchange: Optional[ccxt.binance] = None
-_public_exchange_loop: Optional[asyncio.AbstractEventLoop] = None
-
-
-async def _get_ccxt() -> ccxt.binance:
-    global _public_exchange, _public_exchange_loop
-    loop = asyncio.get_running_loop()
-    if _public_exchange is None or _public_exchange_loop is not loop:
-        _public_exchange = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
-        _public_exchange_loop = loop
-    return _public_exchange
-
-
 # ── Popular stocks index for fast search (deduped by symbol) ─────
 _seen: set = set()
 _STOCKS_INDEX: list[dict] = []
@@ -305,59 +258,17 @@ del _seen, _s, _n
 
 class MarketService:
 
-    # ── Crypto (CoinGecko) ────────────────────────────────────────
-
-    @staticmethod
-    async def get_tickers(symbols: Optional[list[str]] = None) -> list[dict]:
-        target = symbols if symbols else DEFAULT_CRYPTO_SYMBOLS
-        cg_ids = [SYMBOL_TO_CG[s] for s in target if s in SYMBOL_TO_CG]
-        if not cg_ids:
-            return []
-        client = _get_http_client()
-        try:
-            resp = await client.get(
-                f"{COINGECKO_BASE}/coins/markets",
-                params={
-                    "vs_currency": "usd", "ids": ",".join(cg_ids),
-                    "order": "market_cap_desc", "per_page": 50, "page": 1,
-                    "sparkline": "false", "price_change_percentage": "24h",
-                },
-            )
-            resp.raise_for_status()
-            coins: list[dict] = resp.json()
-            by_id = {c["id"]: c for c in coins}
-            return [
-                _format_cg_ticker(by_id[SYMBOL_TO_CG[sym]])
-                for sym in target
-                if SYMBOL_TO_CG.get(sym) in by_id
-            ]
-        except Exception as e:
-            logger.error(f"CoinGecko tickers failed: {e}")
-            return []
-
     @staticmethod
     async def get_ticker(symbol: str) -> dict:
-        if "/" not in symbol:
-            tickers = await MarketService.get_stock_tickers([symbol])
-            if tickers:
-                return tickers[0]
-            raise ValueError(f"Stock not found: {symbol}")
-        tickers = await MarketService.get_tickers([symbol])
+        tickers = await MarketService.get_stock_tickers([symbol])
         if tickers:
             return tickers[0]
-        raise ValueError(f"Crypto not found: {symbol}")
+        raise ValueError(f"Stock not found: {symbol}")
 
     @staticmethod
     async def get_candles(symbol: str, interval: str = "1h", limit: int = 100) -> list[dict]:
-        if "/" not in symbol:
-            return await MarketService.get_stock_candles(symbol, interval, limit)
-        exchange = await _get_ccxt()
-        try:
-            ohlcv = await exchange.fetch_ohlcv(symbol, interval, limit=limit)
-            return [{"timestamp": c[0], "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5]} for c in ohlcv]
-        except Exception as e:
-            logger.error(f"Candle fetch failed for {symbol}: {e}")
-            return []
+        """Stocks-only alias kept for parked modules (analysis) that still call it."""
+        return await MarketService.get_stock_candles(symbol, interval, limit)
 
     # ── US Stocks (Alpaca) ────────────────────────────────────────
 
@@ -497,101 +408,8 @@ class MarketService:
             })
         return results
 
-    @staticmethod
-    async def search_crypto_suggestions(query: str, limit: int = 8) -> list[dict]:
-        """Search CoinGecko for crypto symbols with live prices."""
-        q = query.strip()
-        if not q:
-            return []
-
-        client = _get_http_client()
-        matched_coins: list[dict] = []
-
-        try:
-            resp = await client.get(f"{COINGECKO_BASE}/search", params={"query": q})
-            resp.raise_for_status()
-            data = resp.json()
-            matched_coins = data.get("coins", [])[:limit]
-        except Exception:
-            # Fallback: search known symbols
-            qup = q.upper()
-            for sym, cg_id in SYMBOL_TO_CG.items():
-                if qup in sym:
-                    matched_coins.append({"id": cg_id, "symbol": sym.replace("/USDT", ""), "name": sym})
-
-        if not matched_coins:
-            return []
-
-        # Get prices for matched coins
-        cg_ids = [c["id"] for c in matched_coins if "id" in c]
-        price_map: dict[str, dict] = {}
-        if cg_ids:
-            try:
-                resp2 = await client.get(
-                    f"{COINGECKO_BASE}/coins/markets",
-                    params={"vs_currency": "usd", "ids": ",".join(cg_ids[:limit]), "per_page": limit},
-                )
-                if resp2.status_code == 200:
-                    for coin in resp2.json():
-                        price_map[coin["id"]] = coin
-            except Exception:
-                pass
-
-        results = []
-        seen = set()
-        for c in matched_coins[:limit]:
-            sym = f"{c.get('symbol', '').upper()}/USDT"
-            if sym in seen:
-                continue
-            seen.add(sym)
-            price = price_map.get(c.get("id", ""), {})
-            last = price.get("current_price")
-            change_24h = price.get("price_change_percentage_24h")
-            change_dollar = price.get("price_change_24h")  # CoinGecko provides this directly
-            results.append({
-                "symbol": sym,
-                "name": c.get("name", ""),
-                "last": last,
-                "change_24h": change_24h,
-                "change_dollar": change_dollar,
-                "market_type": "crypto",
-            })
-        return results
-
-    @staticmethod
-    async def search_symbols(query: str) -> list[str]:
-        """Legacy search — returns symbol strings only."""
-        q = query.upper()
-        results: list[str] = []
-        client = _get_http_client()
-        try:
-            resp = await client.get(f"{COINGECKO_BASE}/search", params={"query": query})
-            resp.raise_for_status()
-            coins = resp.json().get("coins", [])[:10]
-            results.extend([f"{c['symbol'].upper()}/USDT" for c in coins])
-        except Exception:
-            results.extend([s for s in DEFAULT_CRYPTO_SYMBOLS if q in s])
-        results.extend([s["symbol"] for s in _STOCKS_INDEX if q in s["symbol"]][:5])
-        return results
-
 
 # ── Formatters ────────────────────────────────────────────────────
-
-def _format_cg_ticker(c: dict) -> dict:
-    symbol = CG_TO_SYMBOL.get(c["id"], f"{c['symbol'].upper()}/USDT")
-    return {
-        "symbol":       symbol,
-        "last":         c.get("current_price") or 0,
-        "bid":          None, "ask": None,
-        "high":         c.get("high_24h") or 0,
-        "low":          c.get("low_24h") or 0,
-        "volume":       c.get("total_volume") or 0,
-        "quote_volume": c.get("total_volume"),
-        "change_24h":   c.get("price_change_percentage_24h"),
-        "timestamp":    None,
-        "market_type":  "crypto",
-    }
-
 
 def _format_alpaca_snapshot(symbol: str, snap: dict) -> dict:
     """
