@@ -82,13 +82,18 @@ def maybe_raise_trailing(pos: Position, atr: float, params: ExitParams) -> None:
 def evaluate_exit(pos: Position, bar_low: float, bar_close: float, *,
                   signal_direction: Direction, expected_move: float,
                   params: ExitParams = ExitParams(),
-                  benchmark_return_since_entry: float | None = None) -> ExitDecision | None:
+                  benchmark_return_since_entry: float | None = None,
+                  bar_open: float | None = None) -> ExitDecision | None:
     """Return the first exit that fires in priority order, else None."""
     # 1 hard stop / trailing stop (both are the resting stop being breached)
     if bar_low <= pos.stop:
         # distinguish label: if stop is above avg_cost it's a protective/trailing exit
         action = "trailing" if pos.stop >= pos.avg_cost else "hard_stop"
-        return ExitDecision(action, pos.stop, f"low {bar_low:.2f} <= stop {pos.stop:.2f}")
+        # a gap through the stop fills at the OPEN, not the stop price — a stop
+        # order cannot fill above where the market opened (review F3; this was
+        # capping every loss at ~1R)
+        fill = pos.stop if bar_open is None else min(pos.stop, bar_open)
+        return ExitDecision(action, fill, f"low {bar_low:.2f} <= stop {pos.stop:.2f}")
 
     # 3 reversal: confirmed Down persistence, OR predicted drop below cost
     if pos.reversal_count >= params.reversal_bars:

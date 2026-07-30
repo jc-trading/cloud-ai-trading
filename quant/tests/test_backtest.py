@@ -75,6 +75,116 @@ def small_params():
     return sp, fp, ep
 
 
+def _ohlc_bars(dates, opens, highs, lows, closes, *, vol=5_000_000):
+    ts = pd.DatetimeIndex([pd.Timestamp(f"{d} 00:00", tz="America/New_York")
+                           for d in dates]).tz_convert("UTC")
+    return pd.DataFrame({
+        "ts": ts, "open": opens, "high": highs, "low": lows, "close": closes,
+        "volume": [vol] * len(dates), "vwap": closes,
+        "trade_count": [1000] * len(dates),
+    })
+
+
+def _patch_bars(monkeypatch, frames):
+    def fake_get_bars(symbol, timeframe="1d", start=None, end=None, **kw):
+        df = frames.get(symbol)
+        if df is None:
+            return next(iter(frames.values())).iloc[0:0].copy()
+        df = df.copy()
+        if start is not None:
+            df = df[df["ts"] >= pd.Timestamp(start, tz="UTC")]
+        return df
+    monkeypatch.setattr(simulator.barsmod, "get_bars", fake_get_bars)
+
+
+def test_gap_through_stop_fills_at_open(monkeypatch, small_params):
+    # Review F3: a gap far below the stop must fill at the OPEN, not the stop —
+    # the old model capped every loss at ~1R.
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=20)]
+    closes = [10 + i for i in range(15)] + [12.0, 11.5, 11.0, 10.5, 10.0]
+    opens = list(closes); highs = [c * 1.001 for c in closes]; lows = [c * 0.999 for c in closes]
+    # day 15 gaps from ~24 straight down to 12 at the open
+    opens[15] = 12.0; highs[15] = 12.5; lows[15] = 11.8
+    frames = {"AAA": _ohlc_bars(sessions, opens, highs, lows, closes),
+              "SPY": _synth_bars(sessions, [400] * 20)}
+    _patch_bars(monkeypatch, frames)
+    cfg = simulator.SimConfig(start="2024-01-01", end="2024-02-01",
+                              starting_capital=2000, adv_window=2,
+                              strategy=sp, funnel=fp, exits=ep)
+    res = simulator.run(["AAA"], {"AAA": "tech"}, cfg)
+    stops = [t for t in res.trades if t.exit_reason in ("hard_stop", "trailing")]
+    assert stops, "expected a stop exit on the gap day"
+    t = stops[0]
+    assert t.exit_price < 12.5          # filled around the 12.0 open, not near the stop
+    assert t.r_multiple < -1.5          # the loss is NOT capped at ~1R
+
+
+def test_same_bar_spike_does_not_trail_itself_out(monkeypatch, small_params):
+    # Review F2: today's high must not raise the trailing stop that today's low
+    # is then tested against (impossible intraday order).
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=18)]
+    closes = [10 + i for i in range(15)] + [25.0, 25.5, 26.0]
+    opens = list(closes); highs = [c * 1.001 for c in closes]; lows = [c * 0.999 for c in closes]
+    # day 15: huge intraday spike (high 40) that fully retraces (low = 24.9)
+    opens[15] = 24.5; highs[15] = 40.0; lows[15] = 24.3; closes[15] = 25.0
+    frames = {"AAA": _ohlc_bars(sessions, opens, highs, lows, closes),
+              "SPY": _synth_bars(sessions, [400] * 18)}
+    _patch_bars(monkeypatch, frames)
+    cfg = simulator.SimConfig(start="2024-01-01", end="2024-02-01",
+                              starting_capital=2000, adv_window=2,
+                              strategy=sp, funnel=fp, exits=ep)
+    res = simulator.run(["AAA"], {"AAA": "tech"}, cfg)
+    spike_day = pd.Timestamp(sessions[15]).date()
+    assert not any(t.exit_date == spike_day for t in res.trades), \
+        "spike-day high raised a trailing stop that its own low then hit (lookahead)"
+
+
+def test_entry_day_stop_is_checked(monkeypatch, small_params):
+    # Review F4: a stop can be blown the same day the position opens.
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=17)]
+    # flat until day 13, single-day breakout so the FIRST up-signal lands on
+    # day 14's close -> entry at day 15's open, which then crashes intraday
+    closes = [10.0] * 14 + [11.0, 12.0, 11.5]
+    opens = list(closes); highs = [c * 1.001 for c in closes]; lows = [c * 0.999 for c in closes]
+    opens[15] = 12.0; highs[15] = 12.1; lows[15] = 5.0; closes[15] = 6.0
+    frames = {"AAA": _ohlc_bars(sessions, opens, highs, lows, closes),
+              "SPY": _synth_bars(sessions, [400] * 17)}
+    _patch_bars(monkeypatch, frames)
+    cfg = simulator.SimConfig(start="2024-01-01", end="2024-02-01",
+                              starting_capital=2000, adv_window=2,
+                              strategy=sp, funnel=fp, exits=ep)
+    res = simulator.run(["AAA"], {"AAA": "tech"}, cfg)
+    same_day = [t for t in res.trades if t.entry_date == t.exit_date]
+    assert same_day, "entry-day stop breach was not exited until the next day"
+
+
+def test_data_end_forces_close(monkeypatch, small_params):
+    # Review F6: a symbol whose data ends mid-window must be force-closed at the
+    # last available close, not marked at cost forever (delisting != breakeven).
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=25)]
+    # AAA trends up (entry), then its data STOPS after day 17 while SPY continues
+    aaa_dates = sessions[:18]
+    closes = [10 + i for i in range(15)] + [25.0, 24.0, 20.0]
+    frames = {"AAA": _synth_bars(aaa_dates, closes),
+              "SPY": _synth_bars(sessions, [400] * 25)}
+    # BBB keeps the trading-day calendar alive to the window end
+    frames["BBB"] = _synth_bars(sessions, [50.0] * 25)
+    _patch_bars(monkeypatch, frames)
+    cfg = simulator.SimConfig(start="2024-01-01", end="2024-02-15",
+                              starting_capital=2000, adv_window=2,
+                              strategy=sp, funnel=fp, exits=ep)
+    res = simulator.run(["AAA", "BBB"], {"AAA": "tech", "BBB": "fin"}, cfg)
+    ends = [t for t in res.trades if t.exit_reason == "data_end"]
+    stops = [t for t in res.trades if t.symbol == "AAA" and t.exit_reason in ("hard_stop", "trailing")]
+    assert ends or stops, "AAA position neither stopped out nor force-closed at data end"
+    if ends:
+        assert ends[0].exit_price <= 20.0   # last available close, cost-deducted
+
+
 def test_simulator_entry_and_stop_exit(monkeypatch, small_params):
     sp, fp, ep = small_params
     sessions = [d.date().isoformat() for d in

@@ -109,6 +109,8 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
     positions: dict[str, Position] = {}
     trades: list[Trade] = []
     equity_curve: dict = {}
+    last_close: dict[str, float] = {}                 # last SEEN close per symbol (F6)
+    last_seen = {s: f.index.max() for s, f in bars_by_symbol.items()}
 
     def price_on(sym, d, col):
         try:
@@ -116,46 +118,70 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
         except KeyError:
             return None
 
+    def record_exit(sym, pos, day, fill_price, action):
+        nonlocal cash
+        fill = cfg.costs.exit_fill(fill_price)
+        cash += pos.shares * fill - cfg.costs.commission(pos.shares)
+        pnl = pos.shares * (fill - pos.avg_cost) - cfg.costs.commission(pos.shares)
+        trades.append(Trade(sym, pos.entry_date, day, pos.avg_cost, fill,
+                            pos.shares, pos.r_unit, pnl, action))
+        del positions[sym]
+
     for i, d in enumerate(trading_days):
         prev = trading_days[i - 1] if i > 0 else None
+
+        # snapshot at the OPEN: today's exits happen LATER in the day, so they
+        # must not fund or free slots for entries filled at 09:30 (review F4)
+        cash_at_open = cash
+        held_at_open = set(positions)
+        exited_today: set[str] = set()
 
         # --- EXITS (before entries) --------------------------------------
         for sym in list(positions.keys()):
             pos = positions[sym]
-            row = bars_by_symbol[sym].loc[d] if d in bars_by_symbol[sym].index else None
-            if row is None:
+            if d not in bars_by_symbol[sym].index:
+                if d > last_seen[sym]:
+                    # data ended (delisting/soft-delist): force-close at the
+                    # last available close — never mark at cost forever (F6)
+                    record_exit(sym, pos, d, last_close.get(sym, pos.avg_cost), "data_end")
+                    exited_today.add(sym)
                 continue
+            row = bars_by_symbol[sym].loc[d]
+            last_close[sym] = float(row["close"])
             direction = Direction(row["direction"])
             below_ma = row["close"] < row["ma_slow"]
+            # trailing may only ratchet on information through D-1 (review F2):
+            # raise BEFORE folding today's bar into high-water, using D-1 ATR
+            prev_atr = price_on(sym, prev, "atr") if prev is not None else None
+            maybe_raise_trailing(pos, float(prev_atr) if prev_atr is not None
+                                 else float(row["atr"]), cfg.exits)
             update_position_bar(pos, row["close"], row["high"], direction, below_ma)
-            maybe_raise_trailing(pos, float(row["atr"]), cfg.exits)
             bench_ret = None
             if d in spy.index and pos.entry_date in spy.index:
                 bench_ret = spy.loc[d] / spy.loc[pos.entry_date] - 1.0
             decision = evaluate_exit(
                 pos, float(row["low"]), float(row["close"]),
                 signal_direction=direction, expected_move=float(row["expected_move"]),
-                params=cfg.exits, benchmark_return_since_entry=bench_ret)
+                params=cfg.exits, benchmark_return_since_entry=bench_ret,
+                bar_open=float(row["open"]))
             if decision is not None:
-                fill = cfg.costs.exit_fill(decision.price)
-                proceeds = pos.shares * fill - cfg.costs.commission(pos.shares)
-                cash += proceeds
-                pnl = pos.shares * (fill - pos.avg_cost) - cfg.costs.commission(pos.shares)
-                trades.append(Trade(sym, pos.entry_date, d, pos.avg_cost, fill,
-                                    pos.shares, pos.r_unit, pnl, decision.action))
-                del positions[sym]
+                record_exit(sym, pos, d, decision.price, decision.action)
+                exited_today.add(sym)
 
         # --- ENTRIES (signals from D-1, fill at D open) ------------------
         if prev is not None and prev in by_date:
-            equity_now = cash + sum(
-                p.shares * (price_on(s, d, "close") or p.avg_cost)
-                for s, p in positions.items())
-            slots = sizing.concurrent_slots(equity_now)
+            # sizing sees D-1 CLOSE equity (review F5) — never today's closes
+            equity_ref = equity_curve[prev]
+            slots = sizing.concurrent_slots(equity_ref)
+            entries_today = 0
+            touched_today: list[str] = []
             cand = by_date[prev]
             shortlist = fn.build_shortlist(cand, cfg.funnel)
             shortlist += fn.select_etfs(cand)
 
             for sym in shortlist:
+                if sym in exited_today:
+                    continue   # an intraday exit cannot precede a 09:30 entry
                 # pyramid an existing winner, else open if a slot is free
                 d1 = bars_by_symbol[sym].loc[prev] if prev in bars_by_symbol[sym].index else None
                 open_px = price_on(sym, d, "open")
@@ -165,36 +191,58 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 stop = entry - float(d1["stop_distance"])
                 if stop <= 0 or entry <= stop:
                     continue
+                # entries draw on cash as of the open, not on today's exit proceeds
+                avail = min(cash_at_open, cash)
 
                 if sym in positions:
                     pos = positions[sym]
                     if not sizing.pyramid_allowed(pos.avg_cost, open_px, pos.adds_done):
                         continue
-                    add_sh = sizing.position_size(equity_now, entry, stop, risk_pct=cfg.risk_pct,
-                                                  slots=slots, settled_cash=cash, adv=float(d1["adv"]))
+                    add_sh = sizing.position_size(equity_ref, entry, stop, risk_pct=cfg.risk_pct,
+                                                  slots=slots, settled_cash=avail, adv=float(d1["adv"]))
                     cost = add_sh * entry + cfg.costs.commission(add_sh)
-                    if add_sh <= 0 or cost > cash:
+                    if add_sh <= 0 or cost > avail:
                         continue
                     new_total = pos.shares + add_sh
                     pos.avg_cost = sizing.blend_avg_cost(pos.shares, pos.avg_cost, add_sh, entry)
                     pos.shares = new_total
                     pos.stop = sizing.raise_stop_for_combined_risk(new_total, pos.avg_cost,
-                                                                   equity_now, pos.stop, risk_pct=cfg.risk_pct)
+                                                                   equity_ref, pos.stop, risk_pct=cfg.risk_pct)
                     pos.adds_done += 1
                     cash -= cost
-                elif len(positions) < slots:
-                    sh = sizing.position_size(equity_now, entry, stop, risk_pct=cfg.risk_pct,
-                                              slots=slots, settled_cash=cash, adv=float(d1["adv"]))
+                    cash_at_open -= cost
+                    touched_today.append(sym)
+                elif len(held_at_open) + entries_today < slots:
+                    # slot gate counts positions held at the open plus today's
+                    # opens — a later intraday exit can't free a slot for 09:30
+                    sh = sizing.position_size(equity_ref, entry, stop, risk_pct=cfg.risk_pct,
+                                              slots=slots, settled_cash=avail, adv=float(d1["adv"]))
                     cost = sh * entry + cfg.costs.commission(sh)
-                    if sh <= 0 or cost > cash:
+                    if sh <= 0 or cost > avail:
                         continue
                     positions[sym] = Position(
                         symbol=sym, shares=sh, avg_cost=entry, stop=stop,
                         r_unit=(entry - stop), entry_date=d, high_water=entry)
                     cash -= cost
+                    cash_at_open -= cost
+                    entries_today += 1
+                    touched_today.append(sym)
+
+            # entry-day stop check (review F4): a stop set this morning can be
+            # hit this afternoon — intraday breach fills at the stop itself
+            # (we entered above it at the open, so no gap is possible)
+            for sym in touched_today:
+                if sym not in positions:
+                    continue
+                pos = positions[sym]
+                low = price_on(sym, d, "low")
+                if low is not None and low <= pos.stop:
+                    action = "trailing" if pos.stop >= pos.avg_cost else "hard_stop"
+                    record_exit(sym, pos, d, pos.stop, action)
+                    exited_today.add(sym)
 
         # --- mark to market ----------------------------------------------
-        mtm = cash + sum(p.shares * (price_on(s, d, "close") or p.avg_cost)
+        mtm = cash + sum(p.shares * (price_on(s, d, "close") or last_close.get(s) or p.avg_cost)
                          for s, p in positions.items())
         equity_curve[d] = mtm
         if i % 250 == 0:
