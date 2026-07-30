@@ -20,6 +20,17 @@ def test_cost_fills():
     assert c.exit_fill(100.0) == pytest.approx(99.92)
 
 
+def test_cost_spread_tiers_by_adv():
+    # 拍板 2026-07-30: the §7 spread gate is approximated as an ADV-tiered
+    # half-spread — thinner names pay more per side
+    c = CostModel(slippage_bps=5)
+    assert c.entry_fill(100.0, adv=1e9) == pytest.approx(100.07)    # 5+2 bps
+    assert c.entry_fill(100.0, adv=200e6) == pytest.approx(100.09)  # 5+4 bps
+    assert c.entry_fill(100.0, adv=25e6) == pytest.approx(100.13)   # 5+8 bps
+    assert c.exit_fill(100.0, adv=25e6) == pytest.approx(99.87)
+    assert c.entry_fill(100.0) == pytest.approx(100.08)             # None -> fallback
+
+
 # --- metrics (hand-computed) ----------------------------------------------
 
 def test_metrics_hand_values():

@@ -122,9 +122,9 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
         except KeyError:
             return None
 
-    def record_exit(sym, pos, day, fill_price, action):
+    def record_exit(sym, pos, day, fill_price, action, adv=None):
         nonlocal cash
-        fill = cfg.costs.exit_fill(fill_price)
+        fill = cfg.costs.exit_fill(fill_price, adv=adv)
         cash += pos.shares * fill - cfg.costs.commission(pos.shares)
         pnl = pos.shares * (fill - pos.avg_cost) - cfg.costs.commission(pos.shares)
         trades.append(Trade(sym, pos.entry_date, day, pos.avg_cost, fill,
@@ -169,7 +169,8 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 params=cfg.exits, benchmark_return_since_entry=bench_ret,
                 bar_open=float(row["open"]))
             if decision is not None:
-                record_exit(sym, pos, d, decision.price, decision.action)
+                record_exit(sym, pos, d, decision.price, decision.action,
+                            adv=float(row["adv"]))
                 exited_today.add(sym)
 
         # --- protections (B5): block NEW entries, never exits -------------
@@ -208,7 +209,7 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 open_px = price_on(sym, d, "open")
                 if d1 is None or open_px is None:
                     continue
-                entry = cfg.costs.entry_fill(open_px)
+                entry = cfg.costs.entry_fill(open_px, adv=float(d1["adv"]))
                 stop = entry - float(d1["stop_distance"])
                 if stop <= 0 or entry <= stop:
                     continue
@@ -268,7 +269,8 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 low = price_on(sym, d, "low")
                 if low is not None and low <= pos.stop:
                     action = "trailing" if pos.stop >= pos.avg_cost else "hard_stop"
-                    record_exit(sym, pos, d, pos.stop, action)
+                    record_exit(sym, pos, d, pos.stop, action,
+                                adv=price_on(sym, d, "adv"))
                     exited_today.add(sym)
 
         # --- mark to market ----------------------------------------------
