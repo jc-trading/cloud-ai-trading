@@ -10,6 +10,7 @@ intraday timeframes from 5m. Storage can change and nothing above moves.
 
 from __future__ import annotations
 
+import warnings
 from datetime import date
 from zoneinfo import ZoneInfo
 
@@ -33,8 +34,36 @@ def _slice(df: pd.DataFrame, start, end) -> pd.DataFrame:
     if start is not None:
         df = df[df["ts"] >= pd.Timestamp(start, tz="UTC")]
     if end is not None:
-        df = df[df["ts"] <= pd.Timestamp(end, tz="UTC")]
+        end_ts = pd.Timestamp(end, tz="UTC")
+        if end_ts == end_ts.normalize():
+            # date-like end (no time part) means "through that day" — daily bars
+            # are anchored at 04:00/05:00Z, so midnight-UTC <= would silently
+            # exclude the end day itself (review F9)
+            end_ts = end_ts + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+        df = df[df["ts"] <= end_ts]
     return df.reset_index(drop=True)
+
+
+_SUSPICIOUS_JUMP = 0.5   # |1-day close move| beyond this with zero actions -> warn
+
+
+def _warn_if_unadjusted(symbol: str, df: pd.DataFrame, actions: pd.DataFrame) -> None:
+    """Review B1 guard: adjustment requested but this symbol has ZERO cached
+    corporate actions AND its series contains a split-sized single-day jump —
+    almost certainly an unsynced action. Warn instead of silently returning RAW."""
+    if actions is not None and not actions.empty:
+        return
+    closes = df["close"]
+    if len(closes) < 2:
+        return
+    jumps = closes.pct_change().abs()
+    if (jumps > _SUSPICIOUS_JUMP).any():
+        worst = float(jumps.max())
+        warnings.warn(
+            f"{symbol}: adjust requested but no corporate actions are cached and the "
+            f"daily series has a {worst:.0%} single-day jump — actions likely not "
+            f"synced (run python -m quant.data.corporate_actions); prices are RAW",
+            stacklevel=3)
 
 
 def _read_intraday_range(symbol: str, start, end) -> pd.DataFrame:
@@ -114,6 +143,8 @@ def get_bars(symbol: str, timeframe: str = "1d", start: date | str | None = None
     # read-time adjustment (RAW on disk -> adjusted)
     if adjust != "none":
         actions = corporate_actions.load_actions(symbol)
+        if not is_intraday:
+            _warn_if_unadjusted(symbol, raw, actions)
         raw = corporate_actions.adjust(raw, actions, mode=adjust)
 
     # session filter for base intraday (resampled path already filtered pre-resample)

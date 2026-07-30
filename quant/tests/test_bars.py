@@ -72,6 +72,44 @@ def test_resample_5m_to_1h_consistency(synth):
     assert b["volume"] == sum(100 * (i + 1) for i in range(12))
 
 
+def test_end_date_is_inclusive(synth):
+    # daily bars anchor at ET midnight (04/05:00Z); a date-like `end` must
+    # include that day's bar, not silently drop it (review F9)
+    df = pd.DataFrame({
+        "ts": pd.DatetimeIndex([pd.Timestamp(f"2024-03-0{d} 00:00", tz="America/New_York")
+                                for d in (4, 5, 6)]).tz_convert("UTC"),
+        "open": [10.0, 11.0, 12.0], "high": [10, 11, 12], "low": [10, 11, 12],
+        "close": [10.0, 11.0, 12.0], "volume": [1, 1, 1], "vwap": [10, 11, 12],
+        "trade_count": [1, 1, 1],
+    })
+    store.write_daily("INC", df)
+    got = bars.get_bars("INC", "1d", start="2024-03-04", end="2024-03-05", adjust="none")
+    assert len(got) == 2                      # the 03-05 bar is included
+    assert got["close"].tolist() == [10.0, 11.0]
+
+
+def test_unadjusted_series_warns(synth):
+    # split-sized jump + zero cached actions + adjust requested -> loud warning
+    df = pd.DataFrame({
+        "ts": pd.DatetimeIndex([pd.Timestamp(f"2024-01-0{d} 00:00", tz="America/New_York")
+                                for d in (2, 3)]).tz_convert("UTC"),
+        "open": [400.0, 100.0], "high": [401, 101], "low": [399, 99],
+        "close": [400.0, 100.0], "volume": [1, 1], "vwap": [400, 100],
+        "trade_count": [1, 1],
+    })
+    store.write_daily("NOSYNC", df)
+    with pytest.warns(UserWarning, match="actions likely not synced"):
+        bars.get_bars("NOSYNC", "1d", adjust="split_div")
+    # with the action cached, no warning
+    corporate_actions.store_actions([{
+        "symbol": "NOSYNC", "ex_date": date(2024, 1, 3), "action_type": "split",
+        "ratio": 4.0, "cash_amount": None}], db_path=config.MANIFEST_DB)
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("error")
+        bars.get_bars("NOSYNC", "1d", adjust="split_div")
+
+
 def test_session_filter(synth):
     # include a pre-market (09:00) and after-hours (16:30) bar
     hhmm = ["09:00", "09:30", "10:00", "16:30"]

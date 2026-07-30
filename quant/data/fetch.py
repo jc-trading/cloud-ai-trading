@@ -183,7 +183,12 @@ def sync_intraday(symbol: str, *, client=None, now: datetime | None = None,
     start = last if last is not None else (now - timedelta(days=365 * history_years + 7))
     end = now - timedelta(minutes=config.SIP_DELAY_MINUTES)
     df = fetch_intraday(symbol, start, end, client=client, now=now)
-    added = store.write_intraday(symbol, df) if not df.empty else 0
+    # write_intraday returns merged TOTALS per touched month file — count NEW
+    # rows against the prior high-water instead (review F8: row_count inflation)
+    added = 0
+    if not df.empty:
+        store.write_intraday(symbol, df)
+        added = int((df["ts"] > pd.Timestamp(last)).sum()) if last is not None else len(df)
     # recompute manifest high-water from what we just stored this run
     if not df.empty:
         # last_ts is the max ts we stored; first_ts tracked coarsely from this batch

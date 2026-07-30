@@ -30,6 +30,8 @@ def walk_forward_windows(start, end, *, is_years: int = 3, oos_years: int = 1,
         oos_end = is_end + pd.DateOffset(years=oos_years)
         if oos_end > end:
             break
-        windows.append(WFWindow(t, is_end, is_end, oos_end))
+        # OOS starts the day AFTER IS ends — get_bars date bounds are inclusive,
+        # so sharing the boundary day would leak one IS day into OOS (review F9)
+        windows.append(WFWindow(t, is_end, is_end + pd.Timedelta(days=1), oos_end))
         t = t + pd.DateOffset(years=step_years)
     return windows
