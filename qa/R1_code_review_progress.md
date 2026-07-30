@@ -1,9 +1,8 @@
 # /code-review 7440a71..HEAD — IN PROGRESS (paused 2026-07-30, usage reset)
 
 Protocol: 8 finder angles → dedup → 1-vote verify → ≤10 findings. Writer≠reviewer.
-**Status: 2/7 finders returned (12 candidates below, UNVERIFIED). 5 finders
-(A line-scan / B removed-behavior / C cross-file / reuse+simplification /
-conventions) died with the session — re-run them, then dedup + verify ALL.**
+**Status: 4/7 finders returned (12 candidates below, UNVERIFIED). 3 finders
+(A line-scan / B removed-behavior / C cross-file) still to re-run, then dedup + verify ALL.**
 
 ## Efficiency angle (6 candidates)
 1. quant_tasks.py:200 — signal_cycle serial per-symbol sync_daily (~500 HTTP round-trips,
@@ -48,7 +47,27 @@ catch-all redirect = deliberate product choice, not a bandaid.
     → rewrite for v3 stocks-only/simledger architecture in the fix round.
 Clean per this finder: engine purity, RAW-adjust-on-read, no-live-trading, UI_RULES.
 
+## Reuse + Simplification angle (6 candidates)
+15. watchdog.py:130+163 — RTH/ET logic re-implemented (3rd copy vs quant_tasks._in_rth
+    + entry window math) → half-day sessions will drift, false stop-monitoring alerts.
+16. simledger/router.py:115 — /sim/trade hand-builds QuoteReading (dup of
+    quant_tasks._quote_fn) → staleness semantics can diverge between manual/auto trades;
+    move conversion to cycles.finnhub_quote().
+17. telegram_tasks.py:50/81 + quant_tasks.py:159 + cycles.py:303 — SafetyState-by-scope
+    lookup copy-pasted 4x with 2 divergent get-or-create variants → one
+    cycles.get_safety_state(db, account, create=) owner of the scope-key convention.
+18. telegram_tasks.py:139 — offset persistence re-implements _beat() upsert it already
+    imports the module of → drift risk = replayed /kill//resume commands.
+19. market/service.py:501+562 etc — ~250 lines dead crypto plane (search_crypto,
+    search_symbols, get_tickers, ccxt branch, CoinGecko mapping) with zero reachable
+    routes → delete; only legacy market_type=crypto watchlist rows touch it.
+20. SimAccount.vue:190 — two scoped style blocks; ~10 rules duplicated verbatim vs
+    Recommendations.vue (already drifted: .d-sym 19px vs 17px) → promote shared chrome
+    to main.css.
+Not flagged (recorded): zones.py is live; Position<->SimPosition converter below bar
+at 1 call site; parked modules' _run_async variants not worth consolidating.
+
 ## Resume
-1. Re-run finder angles A/B/C + reuse/simplification + conventions on 7440a71..HEAD.
+1. Re-run finder angles A/B/C only on 7440a71..HEAD (others archived above).
 2. Dedup all candidates (12 above + new) → verify each (CONFIRMED/PLAUSIBLE/REFUTED,
    plausible-by-default) → ≤10 findings ranked → then fix round.
