@@ -58,3 +58,4 @@ template/
 
 # CAT quant core — local market-data cache (Parquet + SQLite manifest); never commit
 cat-data/
+runtime/

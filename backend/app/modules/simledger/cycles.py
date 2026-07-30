@@ -52,13 +52,59 @@ logger = logging.getLogger(__name__)
 RECOMMENDED_FUNNEL = qfunnel.FunnelParams(min_confidence=65.0)     # [C1]
 RECOMMENDED_EXITS = ExitParams()                                    # C5/C6/C8 = defaults
 QUOTE_STALE_SECONDS = 15 * 60
-HALT_SENTINEL = "/app/runtime/HALT"          # its EXISTENCE refuses all entries
+try:
+    from app.config import settings as _settings
+    HALT_SENTINEL = _settings.HALT_SENTINEL_PATH   # existence refuses all entries
+except Exception:                                   # quant-only contexts
+    HALT_SENTINEL = "/app/runtime/HALT"
 
 
 @dataclass
 class QuoteReading:
     price: float
     at: datetime
+
+
+def finnhub_quote(client, symbol: str) -> QuoteReading | None:
+    """The ONE Finnhub-quote -> QuoteReading conversion (review #16: the router
+    and the tasks each had a copy; staleness semantics must never diverge)."""
+    q = client.quote(symbol)
+    if not q:
+        return None
+    return QuoteReading(price=float(q["c"]),
+                        at=datetime.fromtimestamp(int(q.get("t") or 0),
+                                                  tz=timezone.utc))
+
+
+async def get_safety_state(db: AsyncSession, account: SimAccount, *,
+                           create: bool = False) -> SafetyState | None:
+    """Single owner of the SafetyState scope-key convention (review #17: four
+    copy-pasted lookups had already grown two divergent create variants)."""
+    state = (await db.execute(
+        select(SafetyState).where(SafetyState.scope == str(account.id))
+    )).scalar_one_or_none()
+    if state is None and create:
+        state = SafetyState(scope=str(account.id), halted=False)
+        db.add(state)
+        await db.flush()
+    return state
+
+
+def now_et() -> datetime:
+    from zoneinfo import ZoneInfo
+    return datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+
+
+def in_rth(now: datetime | None = None, *, open_grace_min: int = 0) -> bool:
+    """Shared ET/RTH gate (review #15: three hand-rolled copies risked drifting
+    when half-day handling lands). open_grace_min shifts the session start for
+    consumers that must wait for the first cycles to run (watchdog)."""
+    from quant.data import calendar as qcal
+    n = now or now_et()
+    if not qcal.is_trading_day(n.date()):
+        return False
+    minutes = n.hour * 60 + n.minute
+    return (9 * 60 + 30 + open_grace_min) <= minutes < (16 * 60)
 
 
 def quote_is_usable(q: QuoteReading | None, *, now: datetime) -> bool:
@@ -330,13 +376,9 @@ async def update_protections(db: AsyncSession, account: SimAccount, equity: floa
     same semantics the backtest simulator uses)."""
     from app.modules.simledger.models import AccountSnapshot
 
-    scope = str(account.id)
-    state = (await db.execute(
-        select(SafetyState).where(SafetyState.scope == scope))).scalar_one_or_none()
-    if state is None:
-        state = SafetyState(scope=scope, halted=False, peak_equity=_dec(equity))
-        db.add(state)
-        await db.flush()
+    state = await get_safety_state(db, account, create=True)
+    if state.peak_equity is None:
+        state.peak_equity = _dec(equity)
 
     prev_snap = (await db.execute(
         select(AccountSnapshot)

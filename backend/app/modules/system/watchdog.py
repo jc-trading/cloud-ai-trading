@@ -90,14 +90,6 @@ POSITION_CYCLE_STALE_RTH = 20 * 60       # runs every 5 min during RTH
 SIGNAL_CYCLE_GRACE = 2 * 3600            # slack after the scheduled 21:30 UTC run
 
 
-def _now_et_minutes() -> tuple[object, int]:
-    from datetime import datetime, timezone
-    from zoneinfo import ZoneInfo
-
-    now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
-    return now_et, now_et.hour * 60 + now_et.minute
-
-
 async def _check_quant_heartbeats() -> None:
     from app.database import AsyncSessionLocal
     from app.modules.simledger.models import HeartbeatRecord
@@ -118,12 +110,14 @@ async def _check_quant_heartbeats() -> None:
 
     try:
         from quant.data import calendar as qcal
-        now_et, minutes = _now_et_minutes()
+        from app.modules.simledger.cycles import in_rth, now_et as _now_et
+        now_et = _now_et()
         trading_day = qcal.is_trading_day(now_et.date())
     except Exception:
         return  # calendar unavailable — heartbeat ages alone still covered above
 
-    if trading_day and (9 * 60 + 40) <= minutes < (16 * 60):
+    # 10-min open grace: the first position_cycle beat lands ~09:35-09:40 ET
+    if in_rth(now_et, open_grace_min=10):
         pc = rows.get("position_cycle")
         if pc is None or now - pc.last_beat_at.timestamp() > POSITION_CYCLE_STALE_RTH:
             age = "never" if pc is None else f"{(now - pc.last_beat_at.timestamp()) / 60:.0f}m ago"

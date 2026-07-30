@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
 
+    # HALT sentinel: its EXISTENCE refuses all sim entries even when the DB is
+    # down. Env-overridable so host-run dev/tests don't need /app (review #11).
+    HALT_SENTINEL_PATH: str = "/app/runtime/HALT"
+
     # System Monitoring
     SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS: int = 60  # Collect metrics every 60 seconds
     SYSTEM_TASK_HEALTH_CHECK_INTERVAL_SECONDS: int = 300  # Check task health every 5 minutes

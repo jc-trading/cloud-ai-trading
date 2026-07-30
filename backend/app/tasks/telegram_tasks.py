@@ -21,7 +21,7 @@ from app.celery_database import CeleryAsyncSessionLocal
 from app.config import settings
 from app.modules.notifications import TelegramNotifier
 from app.modules.simledger import cycles
-from app.modules.simledger.models import HeartbeatRecord, Recommendation, SafetyState
+from app.modules.simledger.models import HeartbeatRecord, Recommendation
 from app.modules.simledger.service import SimLedgerService
 from app.tasks.quant_tasks import _run_async, _system_account
 
@@ -46,9 +46,7 @@ async def _status_text(db) -> str:
     if account is None:
         return "no system account yet"
     positions = await SimLedgerService.get_open_positions(db, account.id)
-    state = (await db.execute(
-        select(SafetyState).where(SafetyState.scope == str(account.id))
-    )).scalar_one_or_none()
+    state = await cycles.get_safety_state(db, account)
     beats = {r.name: r.last_beat_at for r in (
         await db.execute(select(HeartbeatRecord))).scalars().all()}
     recs = list((await db.execute(
@@ -77,13 +75,7 @@ async def _handle_command(db, text: str) -> str:
         return await _status_text(db)
     if account is None:
         return "no system account yet"
-    state = (await db.execute(
-        select(SafetyState).where(SafetyState.scope == str(account.id))
-    )).scalar_one_or_none()
-    if state is None:
-        state = SafetyState(scope=str(account.id), halted=False)
-        db.add(state)
-        await db.flush()
+    state = await cycles.get_safety_state(db, account, create=True)
     if cmd == "/pause":
         state.paused_until = date.today() + timedelta(days=30)
         state.reason = "manual /pause"
@@ -136,16 +128,17 @@ def telegram_poll():
                     continue
                 if not text.startswith("/"):
                     continue
-                reply = await _handle_command(db, text)
+                # review #11: one failing command must never wedge the poll —
+                # report the failure, advance the offset, keep serving
+                try:
+                    reply = await _handle_command(db, text)
+                except Exception as e:
+                    logger.exception("telegram command failed: %s", text)
+                    reply = f"⚠️ command failed: {e}"
                 await notifier.send_message(reply)
                 handled += 1
-            if row is None:
-                db.add(HeartbeatRecord(name=_OFFSET_ROW,
-                                       last_beat_at=datetime.now(timezone.utc),
-                                       meta={"offset": offset}))
-            else:
-                row.last_beat_at = datetime.now(timezone.utc)
-                row.meta = {"offset": offset}
+            from app.tasks.quant_tasks import _beat
+            await _beat(db, _OFFSET_ROW, offset=offset)   # review #18: one upsert impl
             await db.commit()
             return f"handled {handled} command(s)" if handled else "no commands"
     try:

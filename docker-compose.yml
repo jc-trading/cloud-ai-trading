@@ -79,6 +79,7 @@ services:
       - ./backend/tests:/app/tests
       - ./quant:/app/quant
       - ./cat-data:/app/cat-data
+      - ./runtime:/app/runtime
     networks:
       - cat_network
     restart: unless-stopped
@@ -122,6 +123,7 @@ services:
       - ./backend/tests:/app/tests
       - ./quant:/app/quant
       - ./cat-data:/app/cat-data
+      - ./runtime:/app/runtime
     networks:
       - cat_network
     restart: unless-stopped
@@ -165,6 +167,7 @@ services:
       - ./backend/tests:/app/tests
       - ./quant:/app/quant
       - ./cat-data:/app/cat-data
+      - ./runtime:/app/runtime
     networks:
       - cat_network
     restart: unless-stopped

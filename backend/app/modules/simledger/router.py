@@ -109,16 +109,13 @@ async def trade(payload: TradeRequest, user: CurrentUser, db: DB = None):
     Buys REQUIRE a stop — the platform never opens an unprotected lot."""
     account = await SimLedgerService.get_or_create_account(db, user.id, "practice")
     symbol = payload.symbol.upper()
-    q = FinnhubClient().quote(symbol)
-    if not q:
+    reading = cycles.finnhub_quote(FinnhubClient(), symbol)
+    if reading is None:
         raise HTTPException(status_code=422, detail=f"no live quote for {symbol}")
-    price = float(q["c"])
     now = datetime.now(timezone.utc)
-    reading = cycles.QuoteReading(price=price,
-                                  at=datetime.fromtimestamp(int(q.get("t") or 0),
-                                                            tz=timezone.utc))
     if not cycles.quote_is_usable(reading, now=now):
         raise HTTPException(status_code=422, detail=f"stale quote for {symbol}")
+    price = reading.price
 
     try:
         if payload.side == "buy":

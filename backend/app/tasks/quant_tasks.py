@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from celery import shared_task
 from sqlalchemy import select
@@ -27,12 +26,10 @@ from app.celery_database import CeleryAsyncSessionLocal
 from app.modules.fundamentals.finnhub_client import FinnhubClient
 from app.modules.notifications import TelegramNotifier
 from app.modules.simledger import cycles
-from app.modules.simledger.models import HeartbeatRecord, SafetyState
+from app.modules.simledger.models import HeartbeatRecord
 from app.modules.simledger.service import SimLedgerService
 
 logger = logging.getLogger(__name__)
-_ET = ZoneInfo("America/New_York")
-
 async def _notify(message: str) -> None:
     """Event notification — never lets a Telegram failure break the cycle."""
     try:
@@ -49,27 +46,13 @@ def _run_async(coro):
         loop.close()
 
 
-def _now_et() -> datetime:
-    return datetime.now(timezone.utc).astimezone(_ET)
-
-
-def _in_rth(now_et: datetime | None = None) -> bool:
-    from quant.data import calendar as qcal
-
-    now_et = now_et or _now_et()
-    if not qcal.is_trading_day(now_et.date()):
-        return False
-    minutes = now_et.hour * 60 + now_et.minute
-    return (9 * 60 + 30) <= minutes < (16 * 60)
+_now_et = cycles.now_et
+_in_rth = cycles.in_rth
 
 
 def _quote_fn(client: FinnhubClient):
     def quote(symbol: str) -> cycles.QuoteReading | None:
-        q = client.quote(symbol)
-        if not q:
-            return None
-        at = datetime.fromtimestamp(int(q.get("t") or 0), tz=timezone.utc)
-        return cycles.QuoteReading(price=float(q["c"]), at=at)
+        return cycles.finnhub_quote(client, symbol)
     return quote
 
 
@@ -144,9 +127,7 @@ def entry_cycle():
             account = await _system_account(db)
             if account is None:
                 return "no system account"
-            state = (await db.execute(
-                select(SafetyState).where(SafetyState.scope == str(account.id))
-            )).scalar_one_or_none()
+            state = await cycles.get_safety_state(db, account)
             blocked = cycles.entries_blocked_reason(state, today=now_et.date())
             if blocked:
                 logger.warning("entry_cycle blocked: %s", blocked)
