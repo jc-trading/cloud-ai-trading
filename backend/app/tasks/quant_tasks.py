@@ -24,7 +24,7 @@ from celery import shared_task
 from sqlalchemy import select
 
 from app.celery_database import CeleryAsyncSessionLocal
-from app.modules.auth.models import User
+from app.modules.auth.models import User, UserRole
 from app.modules.fundamentals.finnhub_client import FinnhubClient
 from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, SafetyState
@@ -72,12 +72,9 @@ async def _system_account(db):
     """The 对照账户 lives under the first active super-admin (same resolution
     the legacy equity pipeline used)."""
     user = (await db.execute(
-        select(User).where(User.is_active.is_(True), User.is_superuser.is_(True))
-        .order_by(User.created_at).limit(1))).scalar_one_or_none()
-    if user is None:
-        user = (await db.execute(
-            select(User).where(User.is_active.is_(True))
-            .order_by(User.created_at).limit(1))).scalar_one_or_none()
+        select(User).where(User.is_active.is_(True))
+        .order_by((User.role == UserRole.SUPER_ADMIN).desc(), User.created_at)
+        .limit(1))).scalar_one_or_none()
     if user is None:
         return None
     return await SimLedgerService.get_or_create_account(
