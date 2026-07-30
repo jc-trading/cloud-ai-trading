@@ -26,9 +26,18 @@ from app.modules.simledger.models import (
 
 _COSTS = CostModel()
 
+SYSTEM_ACCOUNT_NAME = "system-对照"
+
 
 def _dec(x: float | Decimal) -> Decimal:
     return Decimal(str(round(float(x), 6)))
+
+
+def entry_cost_price(raw_price: float, adv: float | None = None) -> float:
+    """The cost-model buy price — sizing must use THIS, not the raw quote, or a
+    cash-bound size books above available cash (review #26; the backtest sizes
+    on the cost-inclusive price, simulator.py)."""
+    return _COSTS.entry_fill(float(raw_price), adv=adv)
 
 
 class SimLedgerError(Exception):
@@ -59,6 +68,30 @@ class SimLedgerService:
         return acct
 
     @staticmethod
+    async def system_account(db: AsyncSession):
+        """THE 对照账户, by stable identity: the is_system row wins, always
+        (review #31: resolving through a user-ordering heuristic re-created a
+        second system account whenever the super-admin set changed, orphaning
+        the old account's lots). Creation falls back to the first active
+        super-admin (else oldest active user) only when NO system account
+        exists yet."""
+        row = (await db.execute(
+            select(SimAccount).where(SimAccount.is_system.is_(True))
+            .order_by(SimAccount.created_at).limit(1)
+        )).scalar_one_or_none()
+        if row is not None:
+            return row
+        from app.modules.auth.models import User, UserRole
+        user = (await db.execute(
+            select(User).where(User.is_active.is_(True))
+            .order_by((User.role == UserRole.SUPER_ADMIN).desc(), User.created_at)
+            .limit(1))).scalar_one_or_none()
+        if user is None:
+            return None
+        return await SimLedgerService.get_or_create_account(
+            db, user.id, SYSTEM_ACCOUNT_NAME, is_system=True)
+
+    @staticmethod
     async def already_booked(db: AsyncSession, idempotency_key: str) -> bool:
         row = (await db.execute(
             select(SimOrder.id).where(SimOrder.idempotency_key == idempotency_key)
@@ -86,7 +119,9 @@ class SimLedgerService:
                           qty: float, raw_price: float, stop: float, reason: str,
                           idempotency_key: str, trade_date: date,
                           adv: float | None = None,
-                          recommendation_id: UUID | None = None) -> SimOrder | None:
+                          recommendation_id: UUID | None = None,
+                          position: SimPosition | None = None,
+                          equity_for_risk: float | None = None) -> SimOrder | None:
         """BUY: open a new lot, or pyramid into the existing open lot (the lot
         mutates — one open lot per account+symbol by schema). Returns None when
         this idempotency key was already booked (re-run safe)."""
@@ -100,7 +135,8 @@ class SimLedgerService:
             raise InsufficientCash(
                 f"{symbol}: cost {cost:.2f} > cash {float(account.cash):.2f}")
 
-        pos = await SimLedgerService.get_open_position(db, account.id, symbol)
+        pos = position if position is not None \
+            else await SimLedgerService.get_open_position(db, account.id, symbol)
         if pos is None:
             pos = SimPosition(account_id=account.id, symbol=symbol, status="open",
                               shares=_dec(qty), avg_cost=_dec(price), stop=_dec(stop),
@@ -114,7 +150,14 @@ class SimLedgerService:
             pos.avg_cost = _dec(sizing.blend_avg_cost(
                 float(pos.shares), float(pos.avg_cost), qty, price))
             pos.shares = _dec(new_total)
-            pos.stop = _dec(max(float(pos.stop), stop))   # adds never lower the stop
+            new_stop = max(float(pos.stop), stop)         # adds never lower the stop
+            if equity_for_risk is not None and equity_for_risk > 0:
+                # review #34: after an add, combined risk-at-stop must stay
+                # within the per-trade budget — the backtest applies this after
+                # every pyramid (simulator.py); live must match
+                new_stop = sizing.raise_stop_for_combined_risk(
+                    new_total, float(pos.avg_cost), equity_for_risk, new_stop)
+            pos.stop = _dec(new_stop)
             pos.adds_done = int(pos.adds_done) + 1
 
         order = SimOrder(account_id=account.id, position_id=pos.id,

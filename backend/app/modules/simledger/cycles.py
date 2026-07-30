@@ -43,7 +43,8 @@ from quant.engine.exits import (ExitParams, Position, evaluate_exit,
 from quant.engine.signal import Direction
 
 from app.modules.simledger.models import Recommendation, SafetyState, SimAccount
-from app.modules.simledger.service import SimLedgerService, _dec
+from app.modules.simledger.service import (InsufficientCash, SimLedgerService,
+                                           _dec, entry_cost_price)
 
 logger = logging.getLogger(__name__)
 
@@ -170,37 +171,57 @@ async def daily_exit_management(db: AsyncSession, account: SimAccount,
     makes an overlap harmless."""
     closed: list[str] = []
     for sp in await SimLedgerService.get_open_positions(db, account.id):
-        b = bars_fn(sp.symbol, "1d", end=session_date)
+        # review #32: one bad symbol must never abort the whole nightly
+        # transaction (recommendations + other exits + snapshot)
+        try:
+            b = bars_fn(sp.symbol, "1d", end=session_date)
+        except Exception:
+            logger.warning("daily_exit: bars failed for %s — skipped",
+                           sp.symbol, exc_info=True)
+            continue
         if b.empty:
             continue
-        sig = qstrategy.compute_signals(b, qstrategy.StrategyParams())
-        row, last_bar = sig.iloc[-1], b.iloc[-1]
-        prev_atr = float(sig["atr"].iloc[-2]) if len(sig) > 1 else float(row["atr"])
-        p = Position(symbol=sp.symbol, shares=float(sp.shares),
-                     avg_cost=float(sp.avg_cost), stop=float(sp.stop),
-                     r_unit=float(sp.r_unit), entry_date=sp.entry_date,
-                     high_water=float(sp.high_water), adds_done=int(sp.adds_done),
-                     reversal_count=int(sp.reversal_count),
-                     bars_held=int(sp.bars_held))
-        direction = Direction(str(row["direction"]))
-        below_ma = float(last_bar["close"]) < float(row["ma_slow"])
-        maybe_raise_trailing(p, prev_atr, exit_params)
-        update_position_bar(p, float(last_bar["close"]), float(last_bar["high"]),
-                            direction, below_ma)
-        decision = evaluate_exit(
-            p, float(last_bar["low"]), float(last_bar["close"]),
-            signal_direction=direction, expected_move=float(row["expected_move"]),
-            params=exit_params, bar_open=float(last_bar["open"]))
-        if decision is not None:
-            await SimLedgerService.close_position(
-                db, account, sp, raw_price=decision.price, reason=decision.action,
-                idempotency_key=f"exit:{sp.id}")
-            closed.append(sp.symbol)
-        else:
-            sp.stop = _dec(p.stop)
-            sp.high_water = _dec(p.high_water)
-            sp.reversal_count = p.reversal_count
-            sp.bars_held = p.bars_held
+        # review #33/#27: a failed sync leaves yesterday's bar as iloc[-1];
+        # folding it again double-counts bars_held/reversal and re-tests a
+        # cleared low. Only fold a bar for the session under management.
+        last_bar_date = b["ts"].iloc[-1].tz_convert("America/New_York").date()
+        if last_bar_date != session_date:
+            logger.warning("daily_exit: %s last bar %s != session %s — stale "
+                           "bars, skipped (sync failed?)",
+                           sp.symbol, last_bar_date, session_date)
+            continue
+        try:
+            sig = qstrategy.compute_signals(b, qstrategy.StrategyParams())
+            row, last_bar = sig.iloc[-1], b.iloc[-1]
+            prev_atr = float(sig["atr"].iloc[-2]) if len(sig) > 1 else float(row["atr"])
+            p = Position(symbol=sp.symbol, shares=float(sp.shares),
+                         avg_cost=float(sp.avg_cost), stop=float(sp.stop),
+                         r_unit=float(sp.r_unit), entry_date=sp.entry_date,
+                         high_water=float(sp.high_water), adds_done=int(sp.adds_done),
+                         reversal_count=int(sp.reversal_count),
+                         bars_held=int(sp.bars_held))
+            direction = Direction(str(row["direction"]))
+            below_ma = float(last_bar["close"]) < float(row["ma_slow"])
+            maybe_raise_trailing(p, prev_atr, exit_params)
+            update_position_bar(p, float(last_bar["close"]), float(last_bar["high"]),
+                                direction, below_ma)
+            decision = evaluate_exit(
+                p, float(last_bar["low"]), float(last_bar["close"]),
+                signal_direction=direction, expected_move=float(row["expected_move"]),
+                params=exit_params, bar_open=float(last_bar["open"]))
+            if decision is not None:
+                await SimLedgerService.close_position(
+                    db, account, sp, raw_price=decision.price, reason=decision.action,
+                    idempotency_key=f"exit:{sp.id}")
+                closed.append(sp.symbol)
+            else:
+                sp.stop = _dec(p.stop)
+                sp.high_water = _dec(p.high_water)
+                sp.reversal_count = p.reversal_count
+                sp.bars_held = p.bars_held
+        except Exception:
+            logger.warning("daily_exit: %s failed — skipped", sp.symbol,
+                           exc_info=True)
     return closed
 
 
@@ -246,14 +267,19 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
         stop_distance = float(feats.get("stop_distance") or 0)
         if stop_distance <= 0:
             continue
-        entry_ref = q.price
-        stop = entry_ref - stop_distance
+        adv = float(feats.get("adv") or 0) or None
+        # review #26: size against the COST-INCLUSIVE buy price, exactly like
+        # the backtest — sizing on the raw quote guarantees InsufficientCash
+        # whenever the cash cap binds (booked cost = raw*(1+bps) > cash)
+        entry_eff = entry_cost_price(q.price, adv=adv)
+        stop = entry_eff - stop_distance
         if stop <= 0:
             continue
 
+        pos = None
         if sym in held:
             pos = next(p for p in open_positions if p.symbol == sym)
-            if not qsizing.pyramid_allowed(float(pos.avg_cost), entry_ref,
+            if not qsizing.pyramid_allowed(float(pos.avg_cost), entry_eff,
                                            int(pos.adds_done)):
                 continue
         elif sym in etf_set:
@@ -262,17 +288,23 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
         elif stock_count >= slots:
             continue
 
-        qty = qsizing.position_size(equity, entry_ref, stop, risk_pct=risk_pct,
+        qty = qsizing.position_size(equity, entry_eff, stop, risk_pct=risk_pct,
                                     slots=slots, settled_cash=float(account.cash),
-                                    adv=float(feats.get("adv") or 0) or None)
+                                    adv=adv)
         if qty <= 0:
             continue
-        order = await SimLedgerService.open_or_add(
-            db, account, symbol=sym, qty=qty, raw_price=entry_ref, stop=stop,
-            reason="pyramid" if sym in held else "entry",
-            idempotency_key=f"entry:{account.id}:{sym}:{today}",
-            trade_date=today, adv=float(feats.get("adv") or 0) or None,
-            recommendation_id=rec.id)
+        try:
+            order = await SimLedgerService.open_or_add(
+                db, account, symbol=sym, qty=qty, raw_price=q.price, stop=stop,
+                reason="pyramid" if pos is not None else "entry",
+                idempotency_key=f"entry:{account.id}:{sym}:{today}",
+                trade_date=today, adv=adv, recommendation_id=rec.id,
+                position=pos, equity_for_risk=equity)
+        except InsufficientCash as e:
+            # a marginal symbol must never poison the whole cycle (review #26 —
+            # the backtest `continue`s here too)
+            logger.warning("entry_cycle: %s skipped — %s", sym, e)
+            continue
         if order is not None:
             booked.append(sym)
             if sym in held:
@@ -327,8 +359,12 @@ async def update_protections(db: AsyncSession, account: SimAccount, equity: floa
     if prev_snap is not None and float(prev_snap.equity) > 0:
         day_ret = equity / float(prev_snap.equity) - 1.0
         if day_ret <= -pause_pct:
-            state.paused_until = qcal.next_session(today)
-            state.reason = f"daily loss {day_ret:.1%} on {today}"
+            # review #35: EXTEND only, never shorten — a manual /pause (30d)
+            # must not be silently cut to one session by an automatic pause
+            candidate = qcal.next_session(today)
+            if state.paused_until is None or candidate > state.paused_until:
+                state.paused_until = candidate
+                state.reason = f"daily loss {day_ret:.1%} on {today}"
 
     if not state.halted and equity <= peak * (1.0 - halt_pct):
         state.halted = True

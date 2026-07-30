@@ -94,10 +94,8 @@ async def _account_payload(db, account) -> dict:
 async def account(user: CurrentUser, db: DB = None):
     """The caller's own practice account (created on first use) plus the
     system 对照账户 (read-only view) for the '自己 vs 系统' comparison."""
-    from app.tasks.quant_tasks import _system_account
-
     mine = await SimLedgerService.get_or_create_account(db, user.id, "practice")
-    system = await _system_account(db)
+    system = await SimLedgerService.system_account(db)
     await db.commit()
     return {
         "mine": await _account_payload(db, mine),
@@ -135,6 +133,13 @@ async def trade(payload: TradeRequest, user: CurrentUser, db: DB = None):
             pos = await SimLedgerService.get_open_position(db, account.id, symbol)
             if pos is None:
                 raise HTTPException(status_code=422, detail=f"no open lot in {symbol}")
+            # review #30: closes are whole-lot only — a partial qty would be
+            # silently ignored while the receipt echoed it. Be honest instead.
+            if abs(payload.qty - float(pos.shares)) > 1e-6:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"sells close the whole lot: qty must equal "
+                           f"{float(pos.shares)} for {symbol}")
             order = await SimLedgerService.close_position(
                 db, account, pos, raw_price=price, reason="manual",
                 idempotency_key=f"manual:{uuid4()}")

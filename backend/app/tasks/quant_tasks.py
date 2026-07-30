@@ -24,7 +24,6 @@ from celery import shared_task
 from sqlalchemy import select
 
 from app.celery_database import CeleryAsyncSessionLocal
-from app.modules.auth.models import User, UserRole
 from app.modules.fundamentals.finnhub_client import FinnhubClient
 from app.modules.notifications import TelegramNotifier
 from app.modules.simledger import cycles
@@ -33,9 +32,6 @@ from app.modules.simledger.service import SimLedgerService
 
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
-
-SYSTEM_ACCOUNT_NAME = "system-对照"
-
 
 async def _notify(message: str) -> None:
     """Event notification — never lets a Telegram failure break the cycle."""
@@ -78,16 +74,9 @@ def _quote_fn(client: FinnhubClient):
 
 
 async def _system_account(db):
-    """The 对照账户 lives under the first active super-admin (same resolution
-    the legacy equity pipeline used)."""
-    user = (await db.execute(
-        select(User).where(User.is_active.is_(True))
-        .order_by((User.role == UserRole.SUPER_ADMIN).desc(), User.created_at)
-        .limit(1))).scalar_one_or_none()
-    if user is None:
-        return None
-    return await SimLedgerService.get_or_create_account(
-        db, user.id, SYSTEM_ACCOUNT_NAME, is_system=True)
+    """Stable 对照账户 resolution (review #31: the is_system row wins, always —
+    logic owned by SimLedgerService.system_account)."""
+    return await SimLedgerService.system_account(db)
 
 
 async def _beat(db, name: str, **meta) -> None:
@@ -193,9 +182,24 @@ def signal_cycle():
     if not qcal.is_trading_day(today):
         return "skipped: not a session"
 
-    # 1) incremental bar sync (network, bounded per-symbol; failures skip)
+    # 1) incremental bar sync (network, bounded per-symbol; failures skip).
+    # Held symbols are ALWAYS synced even after leaving the index (review #27:
+    # otherwise their bars freeze and the exit pass manages ghosts).
+    held_syms: set[str] = set()
+
+    async def _held():
+        async with CeleryAsyncSessionLocal() as db:
+            account = await _system_account(db)
+            if account is not None:
+                return {p.symbol for p in
+                        await SimLedgerService.get_open_positions(db, account.id)}
+            return set()
+    try:
+        held_syms = _run_async(_held())
+    except Exception:
+        logger.warning("signal_cycle: held-symbol lookup failed", exc_info=True)
     symbols = sorted(set(quniverse.constituents_on(today))
-                     | set(qconfig.ETF_WHITELIST))
+                     | set(qconfig.ETF_WHITELIST) | held_syms)
     synced = failed = 0
     for sym in symbols:
         try:
