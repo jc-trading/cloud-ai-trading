@@ -1,7 +1,7 @@
 # /code-review 7440a71..HEAD — IN PROGRESS (paused 2026-07-30, usage reset)
 
 Protocol: 8 finder angles → dedup → 1-vote verify → ≤10 findings. Writer≠reviewer.
-**Status: 6/7 finders returned (12 candidates below, UNVERIFIED). 1 finder
+**Status: 7/7 finders returned — FINDER PHASE COMPLETE (12 candidates below, UNVERIFIED). 1 finder
 (A line-scan) still to re-run, then dedup + verify ALL.**
 
 ## Efficiency angle (6 candidates)
@@ -113,7 +113,34 @@ Verified clean by this finder: expire_on_commit=False commit-then-read; celery f
 loops (NullPool); bar_open call sites; r09<->simulator API; frontend<->router field
 names; tz-aware heartbeat math; telegram→quant import acyclic.
 
+## Line-scan angle A (6 candidates — 4 new serious)
+32. 🔴 cycles.py:173 — daily_exit_management has NO per-symbol try/except (unlike
+    build_recommendations): one bad symbol's parquet/sync exception aborts the whole
+    nightly _do() transaction → tomorrow's recommendations + all exits + protections +
+    snapshot ALL rolled back until symbol manually removed.
+33. 🔴 cycles.py:177 — exit pass never checks last bar's date == session_date; failed
+    sync → SAME bar re-folded next night (bars_held/reversal_count double-increment,
+    stale low re-tested) → early stagnation/reversal exits, state diverges from backtest.
+34. 🔴 service.py:117 — pyramid path sets stop=max(old,new) but never applies
+    sizing.raise_stop_for_combined_risk (backtest does after every add) → combined
+    risk-at-stop can be ~2x the 3% budget; r_unit/high_water stay stale → R accounting
+    misreports.
+35. 🔴 cycles.py:330 — update_protections unconditionally overwrites paused_until →
+    manual Telegram /pause (30d) silently SHORTENED to one session by any ≥2% down day
+    → system resumes buying against an explicit manual stand-down. → only extend, never
+    shorten: paused_until = max(existing, next_session).
+36. watchdog.py:172 — dup of #28 (Monday/holiday false 'signal cycle missed' alerts),
+    second finder agrees.
+(#26 InsufficientCash re-found by this angle too — three finders converge on it.)
+Angle A verified clean: frontend diffs (client.js/useToast/sim.js/views) above threshold;
+celery includes/tasks __init__ consistent; NullPool covers per-task loops.
+
 ## Resume
-1. Re-run finder angle A (line-by-line scan) only on 7440a71..HEAD.
-2. Dedup all candidates (12 above + new) → verify each (CONFIRMED/PLAUSIBLE/REFUTED,
-   plausible-by-default) → ≤10 findings ranked → then fix round.
+1. (done — all finders in)
+2. Dedup (~37 → ~30: merge #21/#29, #28/#36, #26 triple) → verify each → rank →
+   fix round. Fix priority (correctness first): #26 sizing-vs-cost rollback ·
+   #32 per-symbol guard · #33 bar-date check · #34 pyramid risk re-raise ·
+   #35 pause never-shorten · #31 system-account stable identity · #27 sync held
+   symbols + data-end close · #22 balance-route shield · #21 retire decision-freshness
+   check · #28 Monday-aware staleness. Then cleanup batch (#1-6 efficiency,
+   #15-20 reuse, #7-12 altitude, #14 CLAUDE.md rewrite, #23/24/25/30).
