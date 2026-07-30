@@ -159,3 +159,26 @@ re-decide if real money ever returns): broker paper order lifecycle; factor/beta
    symbols + data-end close · #22 balance-route shield · #21 retire decision-freshness
    check · #28 Monday-aware staleness. Then cleanup batch (#1-6 efficiency,
    #15-20 reuse, #7-12 altitude, #14 CLAUDE.md rewrite, #23/24/25/30).
+
+---
+
+## VERIFY PHASE COMPLETE (2026-07-31): 33/33 CONFIRMED, 0 refuted
+5 thematic verifiers, all candidates confirmed with file:line evidence. Scope notes:
+#21 currently silently dead (0 active strategies) not actively alerting; #22 latent
+(0 binance rows, POST already guarded) → harden balance route only; #23 LIVE NOW
+(health API pinned critical by 4 zombie task_status rows); #11 WORSE than filed
+(host-run /kill wedges telegram offset → infinite replay; sentinel not durable
+across container recreation — no volume); #34 r_unit/high_water clause dropped
+(backtest parity); #9 folds into #31's fix; #19 needs data cleanup (4 legacy crypto
+watchlist rows + schema default still "crypto").
+
+## FIX BATCHES (per-unit commits)
+B1 money-path correctness: #26 #32 #33 #34 #35 #31(+#9) #30 #27
+B2 ops/watchdog/health: #21 #28 #22 #23 #25
+B3 safety+dedup: #11(sentinel env path+volume+per-cmd try) #18 #17 #16 #15
+B4 efficiency: #1(batched sync) #2(memo bars_fn) #3/#4/#5(gathered quotes,
+   snapshot params) #6(position= pass only; keep per-order idempotency SELECT)
+B5 assessment adoptions: A1 stitched fixed-param OOS + badge from file ·
+   A2 fail-closed gates · A3 SHA/data fingerprint stamp
+B6 cleanup: #19 crypto plane + schema/data · #14 CLAUDE.md rewrite · #24 · #20 ·
+   #12 · #7 · #8
