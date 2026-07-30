@@ -22,9 +22,9 @@
             <i :class="addingToWatchlist ? 'pi pi-spin pi-spinner' : (inWatchlist ? 'pi pi-heart-fill' : 'pi pi-heart')"></i>
             {{ inWatchlist ? 'In Watchlist' : 'Add to Watchlist' }}
           </button>
-          <button class="jd-btn jd-btn-primary">
+          <button class="jd-btn jd-btn-primary" @click="$router.push('/sim')">
             <i class="pi pi-arrow-right"></i>
-            Trade
+            Practice trade
           </button>
         </div>
       </div>
@@ -136,11 +136,7 @@
                 <i :class="addingToWatchlist ? 'pi pi-spin pi-spinner' : (inWatchlist ? 'pi pi-heart-fill' : 'pi pi-heart')"></i>
                 {{ inWatchlist ? 'Remove from Watchlist' : 'Add to Watchlist' }}
               </button>
-              <button class="jd-btn jd-btn-primary w-full">Trade →</button>
-              <button class="jd-btn jd-btn-ghost w-full">
-                <i class="pi pi-bell"></i>
-                Set Alert
-              </button>
+              <button class="jd-btn jd-btn-primary w-full" @click="$router.push('/sim')">Practice trade →</button>
             </div>
             <div v-if="watchlistMsg" class="watchlist-msg" :class="watchlistMsg.type === 'success' ? 'success' : 'error'">
               {{ watchlistMsg.text }}
@@ -167,7 +163,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '@/composables/useToast'
-import { createChart } from 'lightweight-charts'
+import { CandlestickSeries, createChart } from 'lightweight-charts'
 import { marketApi, watchlistApi } from '@/api/market'
 
 const props = defineProps({ symbol: { type: String, required: true } })
@@ -252,9 +248,11 @@ async function loadCandles() {
   try {
     const res = await marketApi.getCandles(props.symbol, { interval: interval.value, limit: 200 })
     candles.value = res.data || []
+    loadingCandles.value = false      // mount the container BEFORE drawing
     await nextTick()
     renderChart()
-  } catch {
+  } catch (e) {
+    console.error('candle load/render failed', e)
     candles.value = []
   } finally {
     loadingCandles.value = false
@@ -297,7 +295,7 @@ function renderChart() {
     height: 320,
   })
 
-  candleSeries = chart.addCandlestickSeries({
+  candleSeries = chart.addSeries(CandlestickSeries, {
     upColor:          '#22c55e',
     downColor:        '#ef4444',
     borderUpColor:    '#22c55e',

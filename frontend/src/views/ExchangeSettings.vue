@@ -6,115 +6,7 @@
         ← Back to Settings
       </router-link>
       <h1 class="jd-section-title" style="margin-bottom: 8px;">Exchange API Settings</h1>
-      <p style="color: var(--jd-text-muted); font-size: 14px;">Connect your trading exchange accounts and manage API keys</p>
-    </div>
-
-    <!-- Binance Card -->
-    <div class="jd-card">
-      <div class="jd-card-header exchange-header">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <div class="exchange-icon binance-icon">B</div>
-          <div>
-            <h2 class="jd-card-title">Binance</h2>
-            <p style="color: var(--jd-text-muted); font-size: 12px; margin-top: 2px;">Spot and Futures Trading</p>
-          </div>
-        </div>
-        <span class="jd-badge" :class="binance.connected ? 'green' : 'red'">
-          {{ binance.connected ? 'Connected' : 'Disconnected' }}
-        </span>
-      </div>
-      <div class="jd-card-body">
-        <div class="form-grid">
-          <!-- API Key -->
-          <div class="jd-form-group">
-            <label class="jd-label">API Key</label>
-            <input
-              class="jd-input"
-              v-model="binance.apiKey"
-              placeholder="Paste your Binance API key"
-              :disabled="binance.connected"
-            />
-          </div>
-
-          <!-- API Secret -->
-          <div class="jd-form-group">
-            <label class="jd-label">API Secret</label>
-            <input
-              type="password"
-              class="jd-input"
-              v-model="binance.apiSecret"
-              placeholder="Paste your Binance API secret"
-              :disabled="binance.connected"
-            />
-          </div>
-        </div>
-
-        <!-- Trading Mode -->
-        <div style="margin-top: 16px;">
-          <label style="display: block; font-size: 13px; font-weight: 500; color: var(--jd-text-muted); margin-bottom: 10px;">Trading Mode</label>
-          <div style="display: flex; gap: 20px;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <input type="radio" value="live" v-model="binance.tradingMode" name="binance-mode" id="b-live" />
-              <label for="b-live" style="cursor: pointer; color: var(--jd-text); font-size: 13px;">Live Trading</label>
-            </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <input type="radio" value="simulate" v-model="binance.tradingMode" name="binance-mode" id="b-sim" />
-              <label for="b-sim" style="cursor: pointer; color: var(--jd-text); font-size: 13px;">Simulate</label>
-            </div>
-          </div>
-        </div>
-
-        <!-- Action Buttons -->
-        <div style="display: flex; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--jd-border); flex-wrap: wrap;">
-          <button
-            class="jd-btn jd-btn-ghost jd-btn-sm"
-            :disabled="!binance.apiKey || !binance.apiSecret || saving || testing"
-            @click="testConnection"
-          >
-            <i v-if="testing" class="pi pi-spin pi-spinner"></i>
-            Test Connection
-          </button>
-          <button
-            v-if="!binance.connected"
-            class="jd-btn jd-btn-primary jd-btn-sm"
-            :disabled="!binance.apiKey || !binance.apiSecret || testing || saving"
-            @click="connectExchange"
-          >
-            <i v-if="saving" class="pi pi-spin pi-spinner"></i>
-            Connect
-          </button>
-          <button
-            v-if="binance.connected"
-            class="jd-btn jd-btn-primary jd-btn-sm"
-            :disabled="testing || saving"
-            @click="updateExchange"
-          >
-            <i v-if="saving" class="pi pi-spin pi-spinner"></i>
-            Update
-          </button>
-          <button
-            v-if="binance.connected"
-            class="jd-btn jd-btn-danger jd-btn-sm"
-            :disabled="disconnecting"
-            @click="disconnectExchange"
-          >
-            <i v-if="disconnecting" class="pi pi-spin pi-spinner"></i>
-            Disconnect
-          </button>
-        </div>
-
-        <!-- Connected info -->
-        <div v-if="binance.connected" class="jd-alert success" style="margin-top: 12px;">
-          <i class="pi pi-check-circle" style="margin-right: 8px;"></i>
-          Connected — keys stored and encrypted. Toggle mode or click Update to change settings.
-        </div>
-
-        <!-- Test result -->
-        <div v-if="testResult" :class="['jd-alert', testResult.ok ? 'success' : 'error']" style="margin-top: 12px;">
-          <i :class="testResult.ok ? 'pi pi-check-circle' : 'pi pi-times-circle'" style="margin-right: 8px;"></i>
-          {{ testResult.message }}
-        </div>
-      </div>
+      <p style="color: var(--jd-text-muted); font-size: 14px;">Connect your Alpaca account and manage API keys</p>
     </div>
 
     <!-- Alpaca Card -->
@@ -226,40 +118,6 @@
       </div>
     </div>
 
-    <!-- Bitget Coming Soon -->
-    <div class="jd-card" style="opacity: 0.6;">
-      <div class="jd-card-header exchange-header">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <div class="exchange-icon bitget-icon">BG</div>
-          <div>
-            <h2 class="jd-card-title">Bitget</h2>
-            <p style="color: var(--jd-text-muted); font-size: 12px; margin-top: 2px;">Spot and Futures Trading</p>
-          </div>
-        </div>
-        <span class="jd-badge blue">Coming Soon</span>
-      </div>
-      <div class="jd-card-body" style="text-align: center; padding: 32px 16px;">
-        <p style="color: var(--jd-text-muted); font-size: 13px;">Bitget integration coming soon.</p>
-      </div>
-    </div>
-
-    <!-- OKX Coming Soon -->
-    <div class="jd-card" style="opacity: 0.6;">
-      <div class="jd-card-header exchange-header">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <div class="exchange-icon okx-icon">OKX</div>
-          <div>
-            <h2 class="jd-card-title">OKX</h2>
-            <p style="color: var(--jd-text-muted); font-size: 12px; margin-top: 2px;">Spot and Futures Trading</p>
-          </div>
-        </div>
-        <span class="jd-badge blue">Coming Soon</span>
-      </div>
-      <div class="jd-card-body" style="text-align: center; padding: 32px 16px;">
-        <p style="color: var(--jd-text-muted); font-size: 13px;">OKX integration coming soon.</p>
-      </div>
-    </div>
-
     <!-- Connected Exchanges Table -->
     <div class="jd-card" v-if="connectedList.length > 0">
       <div class="jd-card-header">
@@ -314,18 +172,6 @@ const connectedColumns = [
 ]
 
 // ── State ────────────────────────────────────────────────────────
-const binance = ref({
-  id: null,
-  apiKey: '',
-  apiSecret: '',
-  tradingMode: 'simulate',
-  connected: false,
-})
-
-const testing      = ref(false)
-const saving       = ref(false)
-const disconnecting = ref(false)
-const testResult   = ref(null)
 const connectedList = ref([])
 
 // ── Alpaca State ─────────────────────────────────────────────────
@@ -347,13 +193,6 @@ onMounted(async () => {
     const all = res.data || []
     connectedList.value = all
 
-    const existingBinance = all.find(e => e.exchange_type === 'binance')
-    if (existingBinance) {
-      binance.value.id          = existingBinance.id
-      binance.value.tradingMode = existingBinance.trading_mode
-      binance.value.connected   = true
-    }
-
     const existingAlpaca = all.find(e => e.exchange_type === 'alpaca')
     if (existingAlpaca) {
       alpaca.value.id          = existingAlpaca.id
@@ -364,107 +203,6 @@ onMounted(async () => {
     // Not fatal
   }
 })
-
-// ── Test Connection ──────────────────────────────────────────────
-async function testConnection() {
-  testResult.value = null
-  testing.value = true
-  try {
-    let id = binance.value.id
-
-    // If not yet saved, create first so we have an ID to test
-    if (!id) {
-      const created = await exchangeApi.create({
-        exchange_type:  'binance',
-        api_key:        binance.value.apiKey,
-        api_secret:     binance.value.apiSecret,
-        trading_mode:   binance.value.tradingMode,
-      })
-      id = created.data.id
-      binance.value.id = id
-    }
-
-    const res = await exchangeApi.test(id)
-    const ok  = res.data?.success !== false
-
-    testResult.value = {
-      ok,
-      message: ok
-        ? `Connection successful! Account: ${res.data?.account_info?.email || 'Verified'}`
-        : `Connection failed: ${res.data?.error || 'Unknown error'}`,
-    }
-    toast.add({
-      severity: ok ? 'success' : 'error',
-      summary:  ok ? 'Connection OK' : 'Connection Failed',
-      detail:   testResult.value.message,
-      life: 4000,
-    })
-  } catch (err) {
-    const msg = err.response?.data?.detail || err.message || 'Request failed'
-    testResult.value = { ok: false, message: msg }
-    toast.add({ severity: 'error', summary: 'Test Failed', detail: msg, life: 5000 })
-  } finally {
-    testing.value = false
-  }
-}
-
-// ── Connect (Save) ───────────────────────────────────────────────
-async function connectExchange() {
-  saving.value = true
-  try {
-    const res = await exchangeApi.create({
-      exchange_type: 'binance',
-      api_key:       binance.value.apiKey,
-      api_secret:    binance.value.apiSecret,
-      trading_mode:  binance.value.tradingMode,
-    })
-    binance.value.id        = res.data.id
-    binance.value.connected = true
-    connectedList.value = [...connectedList.value, res.data]
-    toast.add({ severity: 'success', summary: 'Connected', detail: 'Binance API keys saved and encrypted.', life: 3000 })
-  } catch (err) {
-    const msg = err.response?.data?.detail || err.message || 'Failed to save'
-    toast.add({ severity: 'error', summary: 'Connect Failed', detail: msg, life: 5000 })
-  } finally {
-    saving.value = false
-  }
-}
-
-// ── Update ───────────────────────────────────────────────────────
-async function updateExchange() {
-  if (!binance.value.id) return
-  saving.value = true
-  try {
-    // ExchangeUpdate only supports trading_mode, permissions, ip_whitelist, is_active
-    await exchangeApi.update(binance.value.id, { trading_mode: binance.value.tradingMode })
-    toast.add({ severity: 'success', summary: 'Updated', detail: 'Trading mode updated.', life: 3000 })
-  } catch (err) {
-    const msg = err.response?.data?.detail || 'Update failed'
-    toast.add({ severity: 'error', summary: 'Update Failed', detail: msg, life: 5000 })
-  } finally {
-    saving.value = false
-  }
-}
-
-// ── Disconnect ───────────────────────────────────────────────────
-async function disconnectExchange() {
-  if (!binance.value.id) return
-  disconnecting.value = true
-  try {
-    await exchangeApi.remove(binance.value.id)
-    binance.value.id        = null
-    binance.value.connected = false
-    binance.value.apiKey    = ''
-    binance.value.apiSecret = ''
-    connectedList.value = connectedList.value.filter(e => e.exchange_type !== 'binance')
-    toast.add({ severity: 'info', summary: 'Disconnected', detail: 'Binance connection removed.', life: 3000 })
-  } catch (err) {
-    const msg = err.response?.data?.detail || 'Disconnect failed'
-    toast.add({ severity: 'error', summary: 'Error', detail: msg, life: 5000 })
-  } finally {
-    disconnecting.value = false
-  }
-}
 
 // ── Alpaca functions ─────────────────────────────────────────────
 async function testAlpacaConnection() {
@@ -534,6 +272,7 @@ async function updateAlpaca() {
 
 async function disconnectAlpaca() {
   if (!alpaca.value.id) return
+  if (!window.confirm('Disconnect Alpaca? Your stored API keys will be deleted.')) return
   try {
     await exchangeApi.remove(alpaca.value.id)
     alpaca.value = { id: null, apiKey: '', apiSecret: '', tradingMode: 'simulate', connected: false }
@@ -582,25 +321,9 @@ async function fetchBalance(id) {
   flex-shrink: 0;
 }
 
-.binance-icon {
-  background-color: #fbbf24;
-  color: #000;
-}
-
 .alpaca-icon {
   background-color: #eab308;
   color: #000;
-}
-
-.bitget-icon {
-  background-color: #2563eb;
-  color: white;
-}
-
-.okx-icon {
-  background-color: #000;
-  color: #fbbf24;
-  border: 1px solid #4b5563;
 }
 
 .jd-section-title {

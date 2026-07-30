@@ -74,12 +74,6 @@
             <span>{{ currentTime }}</span>
           </div> -->
 
-          <!-- Notifications -->
-          <button class="jd-topbar-btn" style="position:relative;" title="Notifications">
-            <i class="pi pi-bell"></i>
-            <span style="position:absolute; top:7px; right:7px; width:6px; height:6px; background:var(--jd-red); border-radius:50%;"></span>
-          </button>
-
           <!-- Profile -->
           <div style="position:relative;">
             <button

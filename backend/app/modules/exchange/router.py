@@ -2,7 +2,7 @@
 Exchange connection API routes.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from uuid import UUID
 
 from app.dependencies import CurrentUser, DB, require_permission
@@ -35,7 +35,12 @@ async def create_connection(
     db: DB,
     user: User = Depends(require_permission("connect_exchange")),
 ):
-    """Create a new exchange connection."""
+    """Create a new exchange connection. v3 is stocks-only: Alpaca is the sole
+    supported broker — anything else is refused up front (QA finding #13 saw a
+    Binance connection persist and then 500 on test)."""
+    if str(data.exchange_type).lower().split(".")[-1] != "alpaca":
+        raise HTTPException(status_code=422,
+                            detail="Only Alpaca connections are supported (stocks/ETF only)")
     connection = await ExchangeService.create_connection(db, user.id, data)
     return ExchangeResponse.model_validate(connection)
 
@@ -70,8 +75,14 @@ async def test_connection(
     current_user: CurrentUser,
     db: DB,
 ):
-    """Test an exchange connection."""
-    result = await ExchangeService.test_connection(db, current_user.id, connection_id)
+    """Test an exchange connection — adapter/credential failures surface as a
+    clean 422, never a bare 500."""
+    try:
+        result = await ExchangeService.test_connection(db, current_user.id, connection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"connection test failed: {e}")
     return ExchangeTestResult(**result)
 
 

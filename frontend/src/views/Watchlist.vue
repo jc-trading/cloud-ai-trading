@@ -89,7 +89,7 @@
         <div class="jd-empty">
           <i class="pi pi-star"></i>
           <p>Your watchlist is empty</p>
-          <p style="font-size:13px">Click <b>Add Symbol</b> to track crypto or US stocks.</p>
+          <p style="font-size:13px">Click <b>Add Symbol</b> to track US stocks.</p>
         </div>
       </template>
     </DataTable>
@@ -118,7 +118,7 @@
           ref="searchInput"
           v-model="q"
           @input="onSearch"
-          placeholder="Search stocks or crypto… (AAPL, AMZN, BTC, Ethereum)"
+          placeholder="Search US stocks… (AAPL, AMZN, NVDA)"
         />
       </label>
 
@@ -127,12 +127,12 @@
         <ul v-else-if="suggestions.length" class="add-list">
           <li v-for="option in suggestions" :key="option.symbol" @click="pick(option)">
             <div class="ava" :style="{ background: tickerGradient(option.symbol) }">
-              {{ option.symbol.replace('/USDT','').charAt(0) }}
+              {{ option.symbol.charAt(0) }}
             </div>
             <div class="meta">
               <div class="sym">
-                {{ option.symbol.replace('/USDT','') }}
-                <span class="tag">{{ option.market_type === 'stock' ? 'Stock' : 'Crypto' }}</span>
+                {{ option.symbol }}
+                <span class="tag">Stock</span>
               </div>
               <div class="name">{{ option.name }}</div>
             </div>
@@ -157,7 +157,7 @@
           </li>
         </ul>
         <div v-else-if="q.trim()" class="add-hint">No matches for “{{ q.trim() }}”.</div>
-        <div v-else class="add-hint">Type a symbol or company name to search crypto &amp; US stocks.</div>
+        <div v-else class="add-hint">Type a symbol or company name to search US stocks.</div>
       </div>
 
       <p v-if="addError" class="jd-alert error" style="margin-top:12px"><i class="pi pi-times-circle"></i><span>{{ addError }}</span></p>
@@ -218,15 +218,9 @@ const allStocksMissing = computed(() => {
   return stocks.length > 0 && stocks.every(i => !i.last)
 })
 
-// Hide search results that are already in the watchlist. Mirror the crypto
-// symbol normalization used when adding (BTC -> BTC/USDT) so the match is exact.
-function normalizeSym(option) {
-  let s = option.symbol
-  if (option.market_type === 'crypto' && !s.includes('/')) s = `${s}/USDT`
-  return s.toUpperCase()
-}
+// Hide search results that are already in the watchlist.
 const existingSymbols = computed(() => new Set(items.value.map(i => String(i.symbol).toUpperCase())))
-const isAdded = (option) => existingSymbols.value.has(normalizeSym(option))
+const isAdded = (option) => existingSymbols.value.has(String(option.symbol).toUpperCase())
 
 // ── Ticker avatar gradient ──────────────────────────────────────
 const GRADIENTS = [
@@ -238,9 +232,8 @@ const GRADIENTS = [
   'linear-gradient(135deg, #7e3af2, #a06bff)',
 ]
 function tickerGradient(symbol) {
-  const base = symbol.replace('/USDT', '')
   let hash = 0
-  for (let i = 0; i < base.length; i++) hash = base.charCodeAt(i) + ((hash << 5) - hash)
+  for (let i = 0; i < symbol.length; i++) hash = symbol.charCodeAt(i) + ((hash << 5) - hash)
   return GRADIENTS[Math.abs(hash) % GRADIENTS.length]
 }
 
@@ -291,13 +284,8 @@ async function onSearch() {
   if (!query) { suggestions.value = []; return }
   searching.value = true
   try {
-    const [stocksRes, cryptoRes] = await Promise.allSettled([
-      marketApi.searchStocks(query),
-      marketApi.searchCrypto(query),
-    ])
-    const stocks = stocksRes.status === 'fulfilled' ? (stocksRes.value.data || []) : []
-    const cryptos = cryptoRes.status === 'fulfilled' ? (cryptoRes.value.data || []) : []
-    suggestions.value = [...stocks, ...cryptos].slice(0, 12)
+    const res = await marketApi.searchStocks(query)
+    suggestions.value = (res.data || []).slice(0, 12)
   } catch {
     suggestions.value = []
   } finally {
@@ -314,8 +302,7 @@ function pick(option) {
 
 // The "+" adds without navigating; keeps the modal open to add more.
 async function addFromDropdown(option) {
-  let symbol = option.symbol
-  if (option.market_type === 'crypto' && !symbol.includes('/')) symbol = `${symbol}/USDT`
+  const symbol = option.symbol
   addingSymbol.value = option.symbol
   addError.value = null
   try {

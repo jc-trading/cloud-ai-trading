@@ -3,21 +3,21 @@
     <!-- Header -->
     <div>
       <h1 class="text-3xl font-bold mb-1">Market Overview</h1>
-      <p class="text-sm" style="color: var(--jd-text-muted)">Real-time crypto and US stock prices</p>
+      <p class="text-sm" style="color: var(--jd-text-muted)">Real-time US stock prices</p>
     </div>
 
     <!-- Stats Row -->
     <div class="stats-grid">
       <div class="jd-stat-card" style="--accent: var(--jd-blue)">
         <div class="jd-stat-label">Tracked</div>
-        <div class="jd-stat-value">{{ activeTickers.length }}</div>
+        <div class="jd-stat-value">{{ stockTickers.length }}</div>
       </div>
       <div class="jd-stat-card" style="--accent: var(--jd-blue)">
-        <div class="jd-stat-label">{{ activeTab === 'crypto' ? 'BTC Price' : 'NVDA Price' }}</div>
+        <div class="jd-stat-label">NVDA Price</div>
         <div class="jd-stat-value">${{ leadPrice }}</div>
       </div>
       <div class="jd-stat-card" :style="{ '--accent': leadChange >= 0 ? 'var(--jd-green)' : 'var(--jd-red)' }">
-        <div class="jd-stat-label">{{ activeTab === 'crypto' ? 'BTC 24h' : 'NVDA 24h' }}</div>
+        <div class="jd-stat-label">NVDA 24h</div>
         <div class="jd-stat-value" :class="leadChange >= 0 ? 'price-up' : 'price-down'">
           {{ leadChange >= 0 ? '+' : '' }}{{ leadChange }}%
         </div>
@@ -32,21 +32,10 @@
       </div>
     </div>
 
-    <!-- Card with tabs and data -->
+    <!-- Card with data -->
     <div class="jd-card">
-      <!-- Card Header: crypto/stocks tab switch above the table -->
       <div class="jd-card-header flex-header">
-        <div class="jd-tabs">
-          <button
-            v-for="tab in tabs"
-            :key="tab.key"
-            @click="switchTab(tab.key)"
-            class="jd-tab"
-            :class="{ active: activeTab === tab.key }"
-          >
-            {{ tab.label }}
-          </button>
-        </div>
+        <h2 class="jd-card-title">🇺🇸 US Stocks</h2>
 
         <div class="header-right">
           <span v-if="loading" class="update-text">Loading...</span>
@@ -54,7 +43,7 @@
           <button
             class="jd-btn jd-btn-ghost jd-btn-sm"
             :disabled="loading"
-            @click="loadActiveTab"
+            @click="loadStocks"
           >
             <i class="pi pi-refresh" :class="{ 'animate-spin': loading }"></i>
           </button>
@@ -71,7 +60,7 @@
 
         <!-- Alpaca Warning Alert -->
         <div
-          v-if="activeTab === 'stocks' && !loading && activeTickers.length === 0 && !error"
+          v-if="!loading && stockTickers.length === 0 && !error"
           class="jd-alert warning mb-4"
         >
           <p class="font-semibold mb-1">Alpaca API Keys Required</p>
@@ -82,10 +71,10 @@
           <p class="text-xs">Sign up free at <a href="https://alpaca.markets" target="_blank">alpaca.markets</a></p>
         </div>
 
-        <!-- Data Table (reusable component) — active tab feeds :data -->
+        <!-- Data Table (reusable component) -->
         <DataTable
           :columns="columns"
-          :data="activeTickers"
+          :data="stockTickers"
           row-key="symbol"
           :searchable="['symbol']"
           search-placeholder="Search symbol…"
@@ -97,7 +86,7 @@
           <template #cell:symbol="{ value }">
             <div class="flex items-center gap-2">
               <span class="font-semibold">{{ value }}</span>
-              <span v-if="activeTab === 'stocks'" class="jd-badge blue">US</span>
+              <span class="jd-badge blue">US</span>
             </div>
           </template>
           <template #cell:last="{ value }">
@@ -124,7 +113,7 @@
           <template #empty>
             <div class="jd-empty">
               <i class="pi pi-chart-bar"></i>
-              <p>{{ activeTab === 'stocks' ? 'No stock data — Alpaca keys needed' : 'No market data available' }}</p>
+              <p>No stock data — Alpaca keys needed</p>
             </div>
           </template>
         </DataTable>
@@ -142,17 +131,10 @@ import { marketApi } from '@/api/market'
 const router = useRouter()
 
 // ── State ───────────────────────────────────────────────────────
-const activeTab = ref('crypto')
-const cryptoTickers = ref([])
 const stockTickers = ref([])
 const loading = ref(false)
 const error = ref(null)
 const lastUpdated = ref('--')
-
-const tabs = [
-  { key: 'crypto', label: '🔶 Crypto' },
-  { key: 'stocks', label: '🇺🇸 US Stocks' },
-]
 
 // ── Table columns ───────────────────────────────────────────────
 const columns = [
@@ -165,16 +147,9 @@ const columns = [
 ]
 
 // ── Computed ────────────────────────────────────────────────────
-const activeTickers = computed(() =>
-  activeTab.value === 'crypto' ? cryptoTickers.value : stockTickers.value
+const leadTicker = computed(() =>
+  stockTickers.value.find(t => t.symbol === 'NVDA')
 )
-
-const leadTicker = computed(() => {
-  if (activeTab.value === 'crypto') {
-    return activeTickers.value.find(t => t.symbol === 'BTC/USDT')
-  }
-  return activeTickers.value.find(t => t.symbol === 'NVDA')
-})
 
 const leadPrice = computed(() =>
   leadTicker.value ? formatPrice(leadTicker.value.last) : '--'
@@ -183,10 +158,10 @@ const leadChange = computed(() =>
   leadTicker.value ? (leadTicker.value.change_24h ?? 0).toFixed(2) : '--'
 )
 const gainers = computed(() =>
-  activeTickers.value.filter(t => (t.change_24h ?? 0) >= 0).length
+  stockTickers.value.filter(t => (t.change_24h ?? 0) >= 0).length
 )
 const losers = computed(() =>
-  activeTickers.value.filter(t => (t.change_24h ?? 0) < 0).length
+  stockTickers.value.filter(t => (t.change_24h ?? 0) < 0).length
 )
 
 // ── Formatters ──────────────────────────────────────────────────
@@ -210,33 +185,7 @@ function goToSymbol(row) {
   router.push(`/market/${encodeURIComponent(row.symbol)}`)
 }
 
-// ── Tab switching ───────────────────────────────────────────────
-async function switchTab(key) {
-  activeTab.value = key
-  // Load on demand if not yet loaded
-  if (key === 'crypto' && cryptoTickers.value.length === 0) {
-    await loadCrypto()
-  } else if (key === 'stocks' && stockTickers.value.length === 0) {
-    await loadStocks()
-  }
-}
-
-// ── Loaders ─────────────────────────────────────────────────────
-async function loadCrypto() {
-  loading.value = true
-  error.value = null
-  try {
-    const res = await marketApi.getTickers()
-    cryptoTickers.value = res.data
-    lastUpdated.value = new Date().toLocaleTimeString()
-  } catch (err) {
-    error.value = err.response?.data?.detail || err.message || 'Failed to load crypto data'
-    console.error('Crypto load error:', err)
-  } finally {
-    loading.value = false
-  }
-}
-
+// ── Loader ──────────────────────────────────────────────────────
 async function loadStocks() {
   loading.value = true
   error.value = null
@@ -252,16 +201,8 @@ async function loadStocks() {
   }
 }
 
-async function loadActiveTab() {
-  if (activeTab.value === 'crypto') {
-    await loadCrypto()
-  } else {
-    await loadStocks()
-  }
-}
-
 onMounted(() => {
-  loadCrypto()
+  loadStocks()
 })
 </script>
 

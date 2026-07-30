@@ -20,8 +20,20 @@ const add = ({ severity = 'info', summary = '', detail = '', life = 3000 } = {})
   return id
 }
 
+// Convenience wrappers — several views call toast.success/error directly
+// (QA finding #7/#8: calling a missing method threw inside the try block and
+// silently ate both the toast and the post-trade refresh).
+const success = (detail = '', summary = 'Done') =>
+  add({ severity: 'success', summary, detail })
+const error = (detail = '', summary = 'Error') =>
+  add({ severity: 'error', summary, detail, life: 6000 })
+const info = (detail = '', summary = '') =>
+  add({ severity: 'info', summary, detail })
+const warn = (detail = '', summary = '') =>
+  add({ severity: 'warn', summary, detail, life: 5000 })
+
 export function useToast() {
-  return { add, remove }
+  return { add, remove, success, error, info, warn }
 }
 
 // consumed only by ToastHost

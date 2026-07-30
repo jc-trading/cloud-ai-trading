@@ -28,7 +28,13 @@ client.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // A 401 from the auth endpoints themselves (bad password, expired refresh)
+    // must surface to the caller — routing it into the refresh flow ends in
+    // window.location redirect that reloads the page and eats the error
+    // message (QA finding #2).
+    const authPath = /\/auth\/(login|register|refresh)/.test(originalRequest?.url || '')
+
+    if (error.response?.status === 401 && !originalRequest._retry && !authPath) {
       originalRequest._retry = true
 
       try {
