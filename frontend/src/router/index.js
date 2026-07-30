@@ -28,6 +28,16 @@ const routes = [
         component: () => import('@/views/Dashboard.vue'),
       },
       {
+        path: 'recommendations',
+        name: 'Recommendations',
+        component: () => import('@/views/Recommendations.vue'),
+      },
+      {
+        path: 'sim',
+        name: 'SimAccount',
+        component: () => import('@/views/SimAccount.vue'),
+      },
+      {
         path: 'market',
         name: 'Market',
         component: () => import('@/views/Market.vue'),

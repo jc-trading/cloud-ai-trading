@@ -21,6 +21,8 @@
         <div class="jd-nav-section">
           <div class="jd-nav-label">Overview</div>
           <SidebarItem to="/" icon="pi-book" label="Decision Feed" :isActive="route.path === '/'" />
+          <SidebarItem to="/recommendations" icon="pi-compass" label="Recommendations" :isActive="route.path === '/recommendations'" />
+          <SidebarItem to="/sim" icon="pi-wallet" label="Sim Accounts" :isActive="route.path === '/sim'" />
         </div>
 
         <div class="jd-nav-section">
