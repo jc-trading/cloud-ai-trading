@@ -51,7 +51,8 @@ def sync_sectors(symbols: list[str] | None = None, *, delay_s: float = 1.05,
     """Fetch + cache sectors for the universe (resumable, rate-limited)."""
     from dotenv import dotenv_values
 
-    token = dotenv_values(str(config.REPO_ROOT / ".env")).get("FINNHUB_API_KEY")
+    token = (dotenv_values(str(config.REPO_ROOT / ".env")).get("FINNHUB_API_KEY")
+             or __import__("os").environ.get("FINNHUB_API_KEY"))
     if not token:
         raise RuntimeError("FINNHUB_API_KEY missing from .env")
     if symbols is None:

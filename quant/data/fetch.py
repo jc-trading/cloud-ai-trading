@@ -12,6 +12,7 @@ clock are injectable so the closed-bar logic is unit-testable without the networ
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
@@ -30,9 +31,11 @@ _DAILY_CLOSE_OFFSET = pd.Timedelta(hours=16, minutes=20)
 
 @lru_cache(maxsize=1)
 def _keys() -> tuple[str, str]:
+    # host runs read repo .env; inside the backend container the keys arrive as
+    # ENV vars instead (compose passthrough) and no .env is mounted
     cfg = dotenv_values(str(config.REPO_ROOT / ".env"))
-    key = cfg.get("ALPACA_API_KEY")
-    sec = cfg.get("ALPACA_API_SECRET")
+    key = cfg.get("ALPACA_API_KEY") or os.environ.get("ALPACA_API_KEY")
+    sec = cfg.get("ALPACA_API_SECRET") or os.environ.get("ALPACA_API_SECRET")
     if not key or not sec:
         raise RuntimeError("ALPACA_API_KEY / ALPACA_API_SECRET missing from .env")
     return key, sec

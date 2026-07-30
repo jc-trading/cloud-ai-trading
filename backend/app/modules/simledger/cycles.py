@@ -285,6 +285,58 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
     return booked
 
 
+# --- protections (R1-4) ----------------------------------------------------
+
+async def update_protections(db: AsyncSession, account: SimAccount, equity: float,
+                             today: date, *,
+                             pause_pct: float = qconfig.DAILY_LOSS_PAUSE_PCT,
+                             halt_pct: float = qconfig.PORTFOLIO_DRAWDOWN_HALT_PCT,
+                             halt_cooldown_days: int = 30) -> SafetyState:
+    """Post-close protections bookkeeping, persisted so restarts keep the state:
+    daily-loss pause (blocks the NEXT session's entries), drawdown halt with a
+    cooldown + peak-baseline reset on expiry (models A5's manual-review restart —
+    same semantics the backtest simulator uses)."""
+    from app.modules.simledger.models import AccountSnapshot
+
+    scope = str(account.id)
+    state = (await db.execute(
+        select(SafetyState).where(SafetyState.scope == scope))).scalar_one_or_none()
+    if state is None:
+        state = SafetyState(scope=scope, halted=False, peak_equity=_dec(equity))
+        db.add(state)
+        await db.flush()
+
+    prev_snap = (await db.execute(
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id == account.id,
+               AccountSnapshot.snapshot_date < today)
+        .order_by(AccountSnapshot.snapshot_date.desc()).limit(1)
+    )).scalar_one_or_none()
+
+    now = datetime.now(timezone.utc)
+    # halt expiry -> modeled human restart: clear + reset the drawdown baseline
+    if state.halted and state.halted_until is not None and now >= state.halted_until:
+        state.halted = False
+        state.halted_until = None
+        state.peak_equity = _dec(equity)
+        state.reason = "halt expired — baseline reset"
+
+    peak = max(float(state.peak_equity or equity), equity)
+    state.peak_equity = _dec(peak)
+
+    if prev_snap is not None and float(prev_snap.equity) > 0:
+        day_ret = equity / float(prev_snap.equity) - 1.0
+        if day_ret <= -pause_pct:
+            state.paused_until = qcal.next_session(today)
+            state.reason = f"daily loss {day_ret:.1%} on {today}"
+
+    if not state.halted and equity <= peak * (1.0 - halt_pct):
+        state.halted = True
+        state.halted_until = now + pd.Timedelta(days=halt_cooldown_days).to_pytimedelta()
+        state.reason = f"drawdown {equity / peak - 1.0:.1%} from peak {peak:.0f}"
+    return state
+
+
 # --- position cycle --------------------------------------------------------
 
 async def check_stops(db: AsyncSession, account: SimAccount, *, quote_fn,

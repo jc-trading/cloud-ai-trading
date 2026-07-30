@@ -48,8 +48,11 @@ def fetch_actions(symbols: list[str], start: date, end: date, *, client=None) ->
 
     if client is None:
         from dotenv import dotenv_values
+        import os
         cfg = dotenv_values(str(config.REPO_ROOT / ".env"))
-        client = CorporateActionsClient(cfg["ALPACA_API_KEY"], cfg["ALPACA_API_SECRET"])
+        client = CorporateActionsClient(
+            cfg.get("ALPACA_API_KEY") or os.environ.get("ALPACA_API_KEY"),
+            cfg.get("ALPACA_API_SECRET") or os.environ.get("ALPACA_API_SECRET"))
 
     # limit=None: the SDK's CorporateActionsRequest defaults limit to 1000, which
     # silently truncates a multi-symbol 10y query to its first page — None lets

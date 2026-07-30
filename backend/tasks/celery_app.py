@@ -30,6 +30,7 @@ celery_app = Celery(
         "app.tasks.fundamentals_tasks",
         "app.tasks.equity_tasks",
         "app.tasks.execution_tasks",
+        "app.tasks.quant_tasks",
     ],
 )
 
@@ -235,3 +236,37 @@ _R0_0_QUIESCED = [
 ]
 for _quiesced_key in _R0_0_QUIESCED:
     celery_app.conf.beat_schedule.pop(_quiesced_key, None)
+
+
+# --- R1-2 three-tier quant schedule (2026-07-30, Direction v3) --------------
+# signal-level daily post-close · position-level 5-min in RTH · heartbeat 1-min.
+# All tasks re-gate themselves on the XNYS calendar internally; the two entry
+# slots cover EDT/EST opens (the wrong one no-ops). All carry expires so a
+# recovering worker discards stale backlog (07-04 incident rules).
+celery_app.conf.beat_schedule.update({
+    "quant-heartbeat": {
+        "task": "quant.heartbeat",
+        "schedule": 60.0,
+        "options": {"expires": 55},
+    },
+    "quant-position-cycle": {
+        "task": "quant.position_cycle",
+        "schedule": 300.0,          # gated to RTH inside the task
+        "options": {"expires": 290},
+    },
+    "quant-entry-cycle-edt": {
+        "task": "quant.entry_cycle",
+        "schedule": crontab(hour=13, minute=36),   # 09:36 ET during EDT
+        "options": {"expires": 900},
+    },
+    "quant-entry-cycle-est": {
+        "task": "quant.entry_cycle",
+        "schedule": crontab(hour=14, minute=36),   # 09:36 ET during EST
+        "options": {"expires": 900},
+    },
+    "quant-signal-cycle": {
+        "task": "quant.signal_cycle",
+        "schedule": crontab(hour=21, minute=30),   # post-close in both regimes
+        "options": {"expires": 3300},
+    },
+})
