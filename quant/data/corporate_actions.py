@@ -51,7 +51,11 @@ def fetch_actions(symbols: list[str], start: date, end: date, *, client=None) ->
         cfg = dotenv_values(str(config.REPO_ROOT / ".env"))
         client = CorporateActionsClient(cfg["ALPACA_API_KEY"], cfg["ALPACA_API_SECRET"])
 
-    req = CorporateActionsRequest(symbols=[s.upper() for s in symbols], start=start, end=end)
+    # limit=None: the SDK's CorporateActionsRequest defaults limit to 1000, which
+    # silently truncates a multi-symbol 10y query to its first page — None lets
+    # the client paginate until next_page_token runs out
+    req = CorporateActionsRequest(symbols=[s.upper() for s in symbols],
+                                  start=start, end=end, limit=None)
     resp = client.get_corporate_actions(req)
     data = resp.data if hasattr(resp, "data") else resp
     out: list[dict] = []
@@ -59,7 +63,13 @@ def fetch_actions(symbols: list[str], start: date, end: date, *, client=None) ->
     def _get(obj, name):
         return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
 
-    for s in data.get("forward_splits", []) if isinstance(data, dict) else getattr(data, "forward_splits", []):
+    def _bucket(name):
+        return data.get(name, []) if isinstance(data, dict) else getattr(data, name, []) or []
+
+    # forward AND reverse splits share the new_rate/old_rate fields; ratio is
+    # new/old in both directions (4:1 forward -> 4.0, 1:8 reverse -> 0.125),
+    # which is exactly what adjust() expects (price_factor /= ratio).
+    for s in list(_bucket("forward_splits")) + list(_bucket("reverse_splits")):
         new_rate = float(_get(s, "new_rate")); old_rate = float(_get(s, "old_rate"))
         out.append({
             "symbol": _get(s, "symbol"),
@@ -68,8 +78,20 @@ def fetch_actions(symbols: list[str], start: date, end: date, *, client=None) ->
             "ratio": new_rate / old_rate if old_rate else None,
             "cash_amount": None,
         })
-    divs = data.get("cash_dividends", []) if isinstance(data, dict) else getattr(data, "cash_dividends", [])
-    for d in divs:
+    # a stock dividend pays `rate` extra shares per share held — economically a
+    # (1 + rate):1 split for adjustment purposes
+    for s in _bucket("stock_dividends"):
+        rate = _get(s, "rate")
+        if rate is None:
+            continue
+        out.append({
+            "symbol": _get(s, "symbol"),
+            "ex_date": _get(s, "ex_date"),
+            "action_type": "split",
+            "ratio": 1.0 + float(rate),
+            "cash_amount": None,
+        })
+    for d in _bucket("cash_dividends"):
         out.append({
             "symbol": _get(d, "symbol"),
             "ex_date": _get(d, "ex_date"),
@@ -119,6 +141,43 @@ def load_actions(symbol: str, *, db_path: Path | None = None) -> pd.DataFrame:
 def sync_actions(symbols: list[str], start: date, end: date, *,
                  client=None, db_path: Path | None = None) -> int:
     return store_actions(fetch_actions(symbols, start, end, client=client), db_path=db_path)
+
+
+def count_symbols_with_actions(*, db_path: Path | None = None) -> int:
+    conn = _connect(db_path)
+    try:
+        return conn.execute(
+            "SELECT COUNT(DISTINCT symbol) FROM corporate_actions").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def sync_universe(*, chunk_size: int = 100, client=None,
+                  db_path: Path | None = None, progress=print) -> int:
+    """Sync corporate actions for the FULL backfilled universe (point-in-time
+    S&P500 union + ETF whitelist) over the daily-history window. Review finding
+    B1: only symbols synced here get adjusted prices — a partial sync silently
+    backtests the rest on RAW."""
+    from datetime import timedelta
+
+    from quant.data import universe
+
+    end = date.today()
+    start = end - timedelta(days=365 * config.DAILY_HISTORY_YEARS + 7)
+    symbols = sorted(set(universe.all_symbols_in_range(start, end))
+                     | set(config.ETF_WHITELIST))
+    total = 0
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i + chunk_size]
+        total += sync_actions(chunk, start, end, client=client, db_path=db_path)
+        progress(f"corporate actions: {min(i + chunk_size, len(symbols))}/{len(symbols)} "
+                 f"symbols, {total} actions stored")
+    return total
+
+
+if __name__ == "__main__":
+    n = sync_universe()
+    print(f"done: {n} actions, {count_symbols_with_actions()} symbols have actions")
 
 
 # --- read-time adjustment (pure) ------------------------------------------
