@@ -28,7 +28,6 @@ celery_app = Celery(
         "tasks.system_tasks",
         # PARKED (importable, nothing schedules them): equity catalyst pipeline
         # + its execution/fundamentals/risk companions await a future decision
-        "app.tasks.risk_tasks",
         "app.tasks.fundamentals_tasks",
         "app.tasks.equity_tasks",
         "app.tasks.execution_tasks",
