@@ -281,6 +281,31 @@ def test_etf_slot_is_extra_not_ladder(monkeypatch, small_params):
         "an ETF holding consumed a stock ladder slot (A4-Extra violated)"
 
 
+def test_membership_gate_blocks_pre_inclusion_entries(monkeypatch, small_params):
+    # Review B3: a symbol must not be tradable before its index-inclusion date.
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=20)]
+    dates = [pd.Timestamp(s).date() for s in sessions]
+    closes = [10 + i for i in range(15)] + [24, 18, 12, 9, 8]   # entry then crash
+    frames = {"AAA": _synth_bars(sessions, closes),
+              "SPY": _synth_bars(sessions, [400] * 20)}
+    _patch_bars(monkeypatch, frames)
+
+    def run_with(membership):
+        cfg = simulator.SimConfig(start="2024-01-01", end="2024-02-01",
+                                  starting_capital=2000, adv_window=2,
+                                  strategy=sp, funnel=fp, exits=ep,
+                                  membership_on=membership)
+        return simulator.run(["AAA"], {"AAA": "tech"}, cfg)
+
+    # control: member the whole window -> trades
+    assert run_with(lambda d: {"AAA"}).trades
+    # joins the index only after the crash -> never tradable in the window
+    join = dates[17]
+    res = run_with(lambda d: {"AAA"} if d >= join else set())
+    assert not res.trades, "entered a symbol before its index-inclusion date"
+
+
 def test_simulator_entry_and_stop_exit(monkeypatch, small_params):
     sp, fp, ep = small_params
     sessions = [d.date().isoformat() for d in

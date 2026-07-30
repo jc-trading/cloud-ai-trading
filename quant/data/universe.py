@@ -58,14 +58,20 @@ def _changes() -> pd.DataFrame:
     return df[["date", "members"]]
 
 
-def constituents_on(d: date | str) -> list[str]:
-    """S&P500 members as of date d (latest snapshot with snapshot_date <= d)."""
-    d = pd.Timestamp(d).date()
+@lru_cache(maxsize=8192)
+def constituents_set_on(d: date) -> frozenset[str]:
+    """S&P500 members as of date d, cached per date — fast enough to call once
+    per simulated day (the B3 point-in-time gate)."""
     ch = _changes()
     prior = ch[ch["date"] <= d]
     if prior.empty:
-        return []
-    return sorted(prior.iloc[-1]["members"])
+        return frozenset()
+    return prior.iloc[-1]["members"]
+
+
+def constituents_on(d: date | str) -> list[str]:
+    """S&P500 members as of date d (latest snapshot with snapshot_date <= d)."""
+    return sorted(constituents_set_on(pd.Timestamp(d).date()))
 
 
 def all_symbols_in_range(start: date | str, end: date | str) -> list[str]:

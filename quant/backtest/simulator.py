@@ -47,6 +47,10 @@ class SimConfig:
     # Evaluated on D-1 close info; exits ALWAYS still run.
     daily_loss_pause_pct: float = config.DAILY_LOSS_PAUSE_PCT      # [C3]
     drawdown_halt_pct: float = config.PORTFOLIO_DRAWDOWN_HALT_PCT  # [A5]
+    # point-in-time membership gate (review B3): date -> set of symbols eligible
+    # for NEW entries that day. None = no gate (small hand-picked runs only —
+    # a fixed symbol list over history IS index-inclusion lookahead).
+    membership_on: object | None = None       # Callable[[date], set[str]]
 
 
 @dataclass
@@ -198,6 +202,12 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
             stock_entries = etf_entries = 0
             touched_today: list[str] = []
             cand = by_date[prev]
+            if cfg.membership_on is not None:
+                # B3: entries draw only from D-1 as-of index members — a name
+                # added in 2024 must not be tradable in 2017. ETFs exempt.
+                allowed = cfg.membership_on(prev)
+                cand = cand[cand["symbol"].isin(allowed)
+                            | cand["symbol"].isin(etf_set)]
             shortlist = fn.build_shortlist(cand, cfg.funnel)
             shortlist += fn.select_etfs(cand)
 
