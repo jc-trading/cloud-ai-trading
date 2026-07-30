@@ -182,3 +182,15 @@ B5 assessment adoptions: A1 stitched fixed-param OOS + badge from file ·
    A2 fail-closed gates · A3 SHA/data fingerprint stamp
 B6 cleanup: #19 crypto plane + schema/data · #14 CLAUDE.md rewrite · #24 · #20 ·
    #12 · #7 · #8
+
+---
+
+## FIX ROUND COMPLETE (2026-07-31)
+All 33 confirmed findings + A1-A4 adoptions fixed across 6 commits
+(B1 money-path -> B2 ops -> B3 sentinel+dedup -> B4-B6+A1-A3 combined).
+Suites: backend 203 / quant 72 / vite build clean. 13 new pinning tests.
+Key outcome: the honest deployed-config number is now measured and served —
+fixed-param stitched OOS = PF 0.91, avg R +0.01, CAGR 2.2%, maxDD -38.6%
+(vs the misleading per-window-calibrated 1.34 the badge used to show).
+Deferred by decision: #6 full idempotency-prefetch (kept per-order SELECT —
+correctness guard), R2 research items (confidence IC, ablation, new alphas).
