@@ -37,6 +37,17 @@ from app.modules.trading.models import (  # noqa: F401
 from app.modules.risk.models import RiskLimit, PositionMetric, DrawdownRecord  # noqa: F401
 from app.modules.fundamentals.models import CompanyFundamentals, EarningsCalendar  # noqa: F401
 from app.modules.system.models import SystemLog, SystemMetric, TaskStatus  # noqa: F401
+from app.modules.simledger.models import (  # noqa: F401
+    SimAccount,
+    SimPosition,
+    SimOrder,
+    SimFill,
+    AccountSnapshot,
+    SafetyState,
+    HeartbeatRecord,
+    MasterSetting,
+    Recommendation,
+)
 
 __all__ = [
     "Base",
@@ -63,4 +74,13 @@ __all__ = [
     "SystemLog",
     "SystemMetric",
     "TaskStatus",
+    "SimAccount",
+    "SimPosition",
+    "SimOrder",
+    "SimFill",
+    "AccountSnapshot",
+    "SafetyState",
+    "HeartbeatRecord",
+    "MasterSetting",
+    "Recommendation",
 ]
