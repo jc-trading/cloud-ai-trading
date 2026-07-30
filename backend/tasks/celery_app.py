@@ -229,6 +229,9 @@ _R0_0_QUIESCED = [
     "equity-market-open",
     "equity-eod",
     "execution-auto-execute-equity",
+    # R1-0 (2026-07-30): hourly portfolio Telegram belongs to the retired legacy
+    # loop — silenced until the R1-2 three-tier schedule replaces it
+    "calculate-portfolio-stats",
 ]
 for _quiesced_key in _R0_0_QUIESCED:
     celery_app.conf.beat_schedule.pop(_quiesced_key, None)

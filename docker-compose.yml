@@ -25,7 +25,9 @@ services:
     container_name: cat_redis
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # host 6379 is held by a native redis-server (another project) —
+      # expose on 6380; containers use the internal network name anyway
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -75,6 +77,8 @@ services:
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
       - ./backend/tests:/app/tests
+      - ./quant:/app/quant
+      - ./cat-data:/app/cat-data
     networks:
       - cat_network
     restart: unless-stopped
@@ -116,6 +120,8 @@ services:
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
       - ./backend/tests:/app/tests
+      - ./quant:/app/quant
+      - ./cat-data:/app/cat-data
     networks:
       - cat_network
     restart: unless-stopped
@@ -157,6 +163,8 @@ services:
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
       - ./backend/tests:/app/tests
+      - ./quant:/app/quant
+      - ./cat-data:/app/cat-data
     networks:
       - cat_network
     restart: unless-stopped
