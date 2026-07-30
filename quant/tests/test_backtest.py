@@ -185,6 +185,49 @@ def test_data_end_forces_close(monkeypatch, small_params):
         assert ends[0].exit_price <= 20.0   # last available close, cost-deducted
 
 
+def _protection_scenario(monkeypatch, small_params, **overrides):
+    """AAA trends up, gaps down hard on day 12 (big daily equity loss + drawdown).
+    BBB's ONLY up-signal is day 12's close -> its entry would fill day 13. With
+    protections on, that entry must be blocked; with them off, BBB trades."""
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=22)]
+    aaa_closes = [10 + i * 0.5 for i in range(12)] + [9.8] + [9.5] * 9
+    aaa_opens = list(aaa_closes); aaa_highs = [c * 1.001 for c in aaa_closes]
+    aaa_lows = [c * 0.999 for c in aaa_closes]
+    aaa_opens[12] = 10.0; aaa_lows[12] = 9.5          # -35% gap through the stop
+    bbb_closes = [10.0] * 12 + [11.0, 10.2] + [10.0] * 8
+    bbb_opens = list(bbb_closes); bbb_highs = [c * 1.001 for c in bbb_closes]
+    bbb_lows = [c * 0.999 for c in bbb_closes]
+    bbb_opens[13] = 11.0; bbb_lows[13] = 9.8          # if entered: same-day stop -> a trade
+    frames = {"AAA": _ohlc_bars(sessions, aaa_opens, aaa_highs, aaa_lows, aaa_closes),
+              "BBB": _ohlc_bars(sessions, bbb_opens, bbb_highs, bbb_lows, bbb_closes),
+              "SPY": _synth_bars(sessions, [400] * 22)}
+    _patch_bars(monkeypatch, frames)
+    cfg = simulator.SimConfig(start="2024-01-01", end="2024-02-01",
+                              starting_capital=2000, adv_window=2,
+                              strategy=sp, funnel=fp, exits=ep, **overrides)
+    return simulator.run(["AAA", "BBB"], {"AAA": "tech", "BBB": "fin"}, cfg)
+
+
+def test_daily_loss_pause_blocks_next_day_entries(monkeypatch, small_params):
+    # control: protections effectively off -> BBB is entered (and stops out)
+    res = _protection_scenario(monkeypatch, small_params,
+                               daily_loss_pause_pct=1.0, drawdown_halt_pct=1.0)
+    assert any(t.symbol == "BBB" for t in res.trades), "control run should trade BBB"
+    # with the daily-loss pause armed, the day after the -2%+ equity day is frozen
+    res = _protection_scenario(monkeypatch, small_params,
+                               daily_loss_pause_pct=0.02, drawdown_halt_pct=1.0)
+    assert not any(t.symbol == "BBB" for t in res.trades), \
+        "entry filled the day after a daily-loss-pause breach"
+
+
+def test_drawdown_halt_blocks_entries(monkeypatch, small_params):
+    res = _protection_scenario(monkeypatch, small_params,
+                               daily_loss_pause_pct=1.0, drawdown_halt_pct=0.05)
+    assert not any(t.symbol == "BBB" for t in res.trades), \
+        "entry filled while portfolio drawdown exceeded the halt threshold"
+
+
 def test_simulator_entry_and_stop_exit(monkeypatch, small_params):
     sp, fp, ep = small_params
     sessions = [d.date().isoformat() for d in

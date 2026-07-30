@@ -43,6 +43,10 @@ class SimConfig:
     exits: ExitParams = field(default_factory=ExitParams)
     costs: CostModel = field(default_factory=CostModel)
     risk_pct: float = config.PER_TRADE_RISK_PCT
+    # protections (design §8.6; review B5 — C3 is uncalibratable without them).
+    # Evaluated on D-1 close info; exits ALWAYS still run.
+    daily_loss_pause_pct: float = config.DAILY_LOSS_PAUSE_PCT      # [C3]
+    drawdown_halt_pct: float = config.PORTFOLIO_DRAWDOWN_HALT_PCT  # [A5]
 
 
 @dataclass
@@ -168,8 +172,20 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 record_exit(sym, pos, d, decision.price, decision.action)
                 exited_today.add(sym)
 
+        # --- protections (B5): block NEW entries, never exits -------------
+        entries_blocked = False
+        if prev is not None:
+            peak = max(equity_curve.values())
+            if equity_curve[prev] <= peak * (1.0 - cfg.drawdown_halt_pct):
+                entries_blocked = True                       # [A5] 15% halt
+            if i >= 2:
+                prev2 = trading_days[i - 2]
+                day_ret = equity_curve[prev] / equity_curve[prev2] - 1.0
+                if day_ret <= -cfg.daily_loss_pause_pct:
+                    entries_blocked = True                   # [C3] daily-loss pause
+
         # --- ENTRIES (signals from D-1, fill at D open) ------------------
-        if prev is not None and prev in by_date:
+        if prev is not None and prev in by_date and not entries_blocked:
             # sizing sees D-1 CLOSE equity (review F5) — never today's closes
             equity_ref = equity_curve[prev]
             slots = sizing.concurrent_slots(equity_ref)
