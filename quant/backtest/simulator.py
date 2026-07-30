@@ -47,6 +47,12 @@ class SimConfig:
     # Evaluated on D-1 close info; exits ALWAYS still run.
     daily_loss_pause_pct: float = config.DAILY_LOSS_PAUSE_PCT      # [C3]
     drawdown_halt_pct: float = config.PORTFOLIO_DRAWDOWN_HALT_PCT  # [A5]
+    # A5's halt requires HUMAN review + restart in live. The backtest models
+    # that restart: entries stay blocked this many sessions, then the peak
+    # baseline resets to current equity. Without a reset, an all-cash halted
+    # book can never recover the old peak -> permanent freeze (found in the
+    # r09 smoke: 1,603 dead sessions).
+    halt_cooldown_sessions: int = 21
     # point-in-time membership gate (review B3): date -> set of symbols eligible
     # for NEW entries that day. None = no gate (small hand-picked runs only —
     # a fixed symbol list over history IS index-inclusion lookahead).
@@ -90,15 +96,26 @@ def _build_features(symbol: str, sector: str, cfg: SimConfig) -> pd.DataFrame | 
     return df if not df.empty else None
 
 
-def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
-        benchmark_symbol: str = "SPY", progress=lambda *_: None) -> SimResult:
-    # 1) precompute per-symbol features
+def prepare_features(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
+                     progress=lambda *_: None) -> dict[str, pd.DataFrame]:
+    """Precompute per-symbol feature frames once. Feature content depends only
+    on cfg.strategy/adv_window/start/end — funnel, exit and protection knobs do
+    NOT touch it, so calibration sweeps reuse one prepared dict across runs."""
     feats: dict[str, pd.DataFrame] = {}
     for s in symbols:
         f = _build_features(s, sectors.get(s, "unknown"), cfg)
         if f is not None:
             feats[s] = f
     progress(f"features built for {len(feats)}/{len(symbols)} symbols")
+    return feats
+
+
+def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
+        benchmark_symbol: str = "SPY", progress=lambda *_: None,
+        features: dict[str, pd.DataFrame] | None = None) -> SimResult:
+    # 1) per-symbol features (precomputed via prepare_features for sweeps)
+    feats = features if features is not None else prepare_features(
+        symbols, sectors, cfg, progress=progress)
     if not feats:
         raise RuntimeError("no symbols had enough data for the window")
 
@@ -119,6 +136,9 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
     equity_curve: dict = {}
     last_close: dict[str, float] = {}                 # last SEEN close per symbol (F6)
     last_seen = {s: f.index.max() for s, f in bars_by_symbol.items()}
+
+    peak = cfg.starting_capital
+    halted_until: int | None = None
 
     def price_on(sym, d, col):
         try:
@@ -180,9 +200,17 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
         # --- protections (B5): block NEW entries, never exits -------------
         entries_blocked = False
         if prev is not None:
-            peak = max(equity_curve.values())
-            if equity_curve[prev] <= peak * (1.0 - cfg.drawdown_halt_pct):
+            peak = max(peak, equity_curve[prev])
+            if halted_until is not None:
+                if i < halted_until:
+                    entries_blocked = True                   # halted, under review
+                else:
+                    peak = equity_curve[prev]                # modeled restart:
+                    halted_until = None                      # fresh dd baseline
+            if halted_until is None and \
+                    equity_curve[prev] <= peak * (1.0 - cfg.drawdown_halt_pct):
                 entries_blocked = True                       # [A5] 15% halt
+                halted_until = i + cfg.halt_cooldown_sessions
             if i >= 2:
                 prev2 = trading_days[i - 2]
                 day_ret = equity_curve[prev] / equity_curve[prev2] - 1.0
