@@ -26,6 +26,7 @@ from sqlalchemy import select
 from app.celery_database import CeleryAsyncSessionLocal
 from app.modules.auth.models import User, UserRole
 from app.modules.fundamentals.finnhub_client import FinnhubClient
+from app.modules.notifications import TelegramNotifier
 from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, SafetyState
 from app.modules.simledger.service import SimLedgerService
@@ -34,6 +35,14 @@ logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 
 SYSTEM_ACCOUNT_NAME = "system-对照"
+
+
+async def _notify(message: str) -> None:
+    """Event notification — never lets a Telegram failure break the cycle."""
+    try:
+        await TelegramNotifier().send_message(message)
+    except Exception:
+        logger.warning("telegram notify failed", exc_info=True)
 
 
 def _run_async(coro):
@@ -120,6 +129,8 @@ def position_cycle():
             closed = await cycles.check_stops(db, account, quote_fn=_quote_fn(client))
             await _beat(db, "position_cycle", closed=closed)
             await db.commit()
+            if closed:
+                await _notify(f"🛑 对照账户 stop exit: {', '.join(closed)}")
             return f"closed: {closed}" if closed else "no breaches"
     try:
         return _run_async(_do())
@@ -156,6 +167,8 @@ def entry_cycle():
                                              quote_fn=_quote_fn(client))
             await _beat(db, "entry_cycle", booked=booked)
             await db.commit()
+            if booked:
+                await _notify(f"📈 对照账户 entries booked: {', '.join(booked)}")
             return f"booked: {booked}" if booked else "nothing to book"
     try:
         return _run_async(_do())
@@ -220,6 +233,11 @@ def signal_cycle():
             await _beat(db, "signal_cycle", recs=n, closed=closed,
                         synced=synced, failed=failed)
             await db.commit()
+            if closed:
+                await _notify(f"📤 对照账户 daily exits: {', '.join(closed)}")
+            shortlist = [r["symbol"] for r in recs if r.get("shortlist_rank")]
+            if shortlist:
+                await _notify("🔎 明日 shortlist: " + ", ".join(shortlist[:10]))
             return f"recs={n} closed={closed} synced={synced}/{len(symbols)}"
     try:
         return _run_async(_do())

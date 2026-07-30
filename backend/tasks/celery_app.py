@@ -31,6 +31,7 @@ celery_app = Celery(
         "app.tasks.equity_tasks",
         "app.tasks.execution_tasks",
         "app.tasks.quant_tasks",
+        "app.tasks.telegram_tasks",
     ],
 )
 
@@ -246,6 +247,11 @@ for _quiesced_key in _R0_0_QUIESCED:
 celery_app.conf.beat_schedule.update({
     "quant-heartbeat": {
         "task": "quant.heartbeat",
+        "schedule": 60.0,
+        "options": {"expires": 55},
+    },
+    "quant-telegram-poll": {
+        "task": "quant.telegram_poll",
         "schedule": 60.0,
         "options": {"expires": 55},
     },

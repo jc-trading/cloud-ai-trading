@@ -117,21 +117,110 @@ async def _check_decision_freshness() -> None:
         )
 
 
+# --- R1-5 quant-era checks (2026-07-30) -------------------------------------
+# The v3 sim platform's liveness truth lives in the heartbeats table (written by
+# quant.* tasks) and the sim ledger. These are the two-layer watchdog's INNER
+# layer; the outer layer is an external ping service (optional until VPS).
+
+WORKER_HEARTBEAT_STALE = 5 * 60          # quant.heartbeat runs every 60s
+POSITION_CYCLE_STALE_RTH = 20 * 60       # runs every 5 min during RTH
+SIGNAL_CYCLE_STALE = 26 * 3600           # daily; >26h on trading days = missed
+
+
+def _now_et_minutes() -> tuple[object, int]:
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    return now_et, now_et.hour * 60 + now_et.minute
+
+
+async def _check_quant_heartbeats() -> None:
+    from app.database import AsyncSessionLocal
+    from app.modules.simledger.models import HeartbeatRecord
+
+    async with AsyncSessionLocal() as db:
+        rows = {r.name: r for r in (
+            await db.execute(select(HeartbeatRecord))).scalars().all()}
+
+    now = time.time()
+    worker = rows.get("worker")
+    if worker is not None and now - worker.last_beat_at.timestamp() > WORKER_HEARTBEAT_STALE:
+        await _alert(
+            "worker heartbeat stale",
+            f"quant.heartbeat last wrote {(now - worker.last_beat_at.timestamp()) / 60:.0f}m "
+            f"ago (limit {WORKER_HEARTBEAT_STALE // 60}m) — the worker is wedged or "
+            f"down. This is the 07-01 failure mode; restart cat_celery_worker.",
+        )
+
+    try:
+        from quant.data import calendar as qcal
+        now_et, minutes = _now_et_minutes()
+        trading_day = qcal.is_trading_day(now_et.date())
+    except Exception:
+        return  # calendar unavailable — heartbeat ages alone still covered above
+
+    if trading_day and (9 * 60 + 40) <= minutes < (16 * 60):
+        pc = rows.get("position_cycle")
+        if pc is None or now - pc.last_beat_at.timestamp() > POSITION_CYCLE_STALE_RTH:
+            age = "never" if pc is None else f"{(now - pc.last_beat_at.timestamp()) / 60:.0f}m ago"
+            await _alert(
+                "position cycle stale",
+                f"Market is OPEN but quant.position_cycle last ran {age} — open sim "
+                f"positions have NO stop monitoring right now.",
+            )
+
+    sc = rows.get("signal_cycle")
+    if sc is not None and now - sc.last_beat_at.timestamp() > SIGNAL_CYCLE_STALE \
+            and trading_day:
+        await _alert(
+            "signal cycle missed",
+            f"quant.signal_cycle last completed "
+            f"{(now - sc.last_beat_at.timestamp()) / 3600:.0f}h ago — no fresh "
+            f"recommendations/exit management. Check beat + worker logs.",
+        )
+
+
+async def _check_sim_stops() -> None:
+    """TOP-severity: every open sim lot must carry a usable stop — a lot without
+    one has NO exit protection (the internal analog of 'every position has a
+    live stop order at the broker')."""
+    from app.database import AsyncSessionLocal
+    from app.modules.simledger.models import SimPosition
+
+    async with AsyncSessionLocal() as db:
+        bad = list((await db.execute(
+            select(SimPosition.symbol).where(
+                SimPosition.status == "open",
+                (SimPosition.stop.is_(None)) | (SimPosition.stop <= 0))
+        )).scalars().all())
+    if bad:
+        await _alert(
+            "OPEN POSITION WITHOUT STOP",
+            f"Open sim lots with no usable stop: {', '.join(bad)} — exit "
+            f"protection is missing; investigate immediately.",
+        )
+
+
 async def run_watchdog() -> None:
     """Background loop; started from the FastAPI lifespan, cancelled on shutdown."""
     logger.info(
-        "Pipeline watchdog started (every %ss: queue depth > %s, decisions stale > %ss)",
+        "Pipeline watchdog started (every %ss: queue depth > %s, decisions stale > %ss, "
+        "quant heartbeats, sim stops)",
         CHECK_INTERVAL_SECONDS,
         QUEUE_DEPTH_ALERT,
         DECISION_STALE_SECONDS,
     )
+    checks = (
+        ("queue", _check_queue_depth),
+        ("freshness", _check_decision_freshness),
+        ("quant heartbeats", _check_quant_heartbeats),
+        ("sim stops", _check_sim_stops),
+    )
     while True:
-        try:
-            await _check_queue_depth()
-        except Exception as e:
-            logger.warning("Watchdog queue check failed: %s", e)
-        try:
-            await _check_decision_freshness()
-        except Exception as e:
-            logger.warning("Watchdog freshness check failed: %s", e)
+        for name, check in checks:
+            try:
+                await check()
+            except Exception as e:
+                logger.warning("Watchdog %s check failed: %s", name, e)
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
