@@ -1,8 +1,8 @@
 # /code-review 7440a71..HEAD — IN PROGRESS (paused 2026-07-30, usage reset)
 
 Protocol: 8 finder angles → dedup → 1-vote verify → ≤10 findings. Writer≠reviewer.
-**Status: 4/7 finders returned (12 candidates below, UNVERIFIED). 3 finders
-(A line-scan / B removed-behavior / C cross-file) still to re-run, then dedup + verify ALL.**
+**Status: 5/7 finders returned (12 candidates below, UNVERIFIED). 2 finders
+(A line-scan / C cross-file) still to re-run, then dedup + verify ALL.**
 
 ## Efficiency angle (6 candidates)
 1. quant_tasks.py:200 — signal_cycle serial per-symbol sync_daily (~500 HTTP round-trips,
@@ -66,6 +66,25 @@ Clean per this finder: engine purity, RAW-adjust-on-read, no-live-trading, UI_RU
     to main.css.
 Not flagged (recorded): zones.py is live; Position<->SimPosition converter below bar
 at 1 call site; parked modules' _run_async variants not worth consolidating.
+
+## Removed-behavior angle B (5 candidates)
+21. watchdog.py:79 — _check_decision_freshness monitors the DELETED crypto producer;
+    legacy active QuantStrategy row + watchlist items = false 'stale decisions' alert
+    every 6h forever (alert-fatigue risk); on clean DB silently dead. → delete or
+    re-point at Recommendation freshness.
+22. exchange/service.py:27 + router balance route — legacy binance ExchangeConnection
+    row + GET /exchanges/{id}/balance → unhandled ValueError → 500 (test route got the
+    422 shield, balance didn't); POST still accepts exchange_type=binance via enum.
+    → shield balance route, restrict schema enum, optionally purge legacy rows.
+23. celery_health.py:27 — retired tasks' task_statuses rows never deleted → /api/v1/system
+    health stuck critical-unhealthy forever; new quant.* tasks absent from EXPECTED_TASKS
+    (zero health coverage of the v3 pipeline in that view).
+24. frontend api/auth.js:11 — listUsers/updateUserRole orphaned (admin UI deleted, backend
+    endpoints survive) → role management (incl. SUPER_ADMIN the 对照账户 depends on) has
+    no UI path; decide: delete exports or restore a minimal admin surface.
+25. celery_app.py:57 — stale comment claims risk_tasks is in the include list (deleted).
+Clean per this finder: no surviving imports of deleted modules; beat entries all live;
+frontend calls all map to mounted routes; migration 013 tables have no surviving FK/ORM refs.
 
 ## Resume
 1. Re-run finder angles A/B/C only on 7440a71..HEAD (others archived above).
