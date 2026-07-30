@@ -13,7 +13,6 @@ from app.core.exceptions import NotFoundException, ExchangeConnectionError
 from app.modules.exchange.models import ExchangeConnection, ExchangeType, TradingMode
 from app.modules.exchange.schemas import ExchangeCreate, ExchangeUpdate
 from app.modules.exchange.adapters.base import ExchangeAdapter
-from app.modules.exchange.adapters.binance import BinanceAdapter
 from app.modules.exchange.adapters.alpaca import AlpacaAdapter
 
 
@@ -26,7 +25,9 @@ class ExchangeService:
         api_secret = decrypt_api_key(connection.api_secret_encrypted)
 
         if connection.exchange_type == ExchangeType.BINANCE:
-            return BinanceAdapter(api_key, api_secret)
+            # R1-8: crypto is out of scope for good (Direction v2/v3) — the
+            # Binance adapter is deleted; existing rows can't build an adapter
+            raise ValueError("Binance connections are retired — stocks/ETF only")
         elif connection.exchange_type == ExchangeType.ALPACA:
             # Use paper trading by default; live if connection is in LIVE mode
             paper = connection.trading_mode.value != "live"

@@ -24,13 +24,13 @@ const routes = [
     children: [
       {
         path: '',
-        name: 'Dashboard',
-        component: () => import('@/views/Dashboard.vue'),
-      },
-      {
-        path: 'recommendations',
         name: 'Recommendations',
         component: () => import('@/views/Recommendations.vue'),
+      },
+      {
+        // Legacy link support
+        path: 'recommendations',
+        redirect: '/',
       },
       {
         path: 'sim',
@@ -54,36 +54,6 @@ const routes = [
         component: () => import('@/views/Watchlist.vue'),
       },
       {
-        path: 'analysis',
-        name: 'Analysis',
-        component: () => import('@/views/Analysis.vue'),
-      },
-      {
-        path: 'strategies',
-        name: 'Strategies',
-        component: () => import('@/views/StrategyBuilder.vue'),
-      },
-      {
-        path: 'trading',
-        name: 'Trading',
-        component: () => import('@/views/Trading.vue'),
-      },
-      {
-        path: 'signals',
-        name: 'Signals',
-        component: () => import('@/views/Signals.vue'),
-      },
-      {
-        path: 'portfolio',
-        name: 'Portfolio',
-        component: () => import('@/views/Portfolio.vue'),
-      },
-      {
-        path: 'simulate',
-        name: 'Simulate',
-        component: () => import('@/views/Simulate.vue'),
-      },
-      {
         path: 'settings',
         name: 'Settings',
         component: () => import('@/views/Settings.vue'),
@@ -92,20 +62,6 @@ const routes = [
         path: 'settings/exchange',
         name: 'ExchangeSettings',
         component: () => import('@/views/ExchangeSettings.vue'),
-      },
-
-      // Admin routes
-      {
-        path: 'admin/users',
-        name: 'AdminUsers',
-        component: () => import('@/views/admin/Users.vue'),
-        meta: { requiresAdmin: true },
-      },
-      {
-        path: 'admin/system',
-        name: 'AdminSystem',
-        component: () => import('@/views/admin/System.vue'),
-        meta: { requiresAdmin: true },
       },
     ],
   },
@@ -130,11 +86,7 @@ router.beforeEach(async (to, from, next) => {
   }
 
   if (to.meta.guest && auth.isAuthenticated) {
-    return next({ name: 'Dashboard' })
-  }
-
-  if (to.meta.requiresAdmin && !auth.isAdmin) {
-    return next({ name: 'Dashboard' })
+    return next({ name: 'Recommendations' })
   }
 
   next()

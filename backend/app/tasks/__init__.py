@@ -1,22 +1,5 @@
-"""Task module for async operations."""
+"""Celery task modules (v3): quant three-tier cycle + telegram commands, plus
+the PARKED equity-catalyst companions (importable, nothing schedules them)."""
 
-from app.tasks.market_data_tasks import (
-    collect_market_data,
-    update_indicators,
-    cleanup_market_data,
-    fetch_binance_ohlcv,
-)
-
-from app.tasks.trading_tasks import (
-    generate_trading_signals,
-    calculate_portfolio_stats,
-)
-
-__all__ = [
-    "collect_market_data",
-    "update_indicators",
-    "cleanup_market_data",
-    "fetch_binance_ohlcv",
-    "generate_trading_signals",
-    "calculate_portfolio_stats",
-]
+from app.tasks import quant_tasks, telegram_tasks  # noqa: F401
+from app.tasks import equity_tasks, execution_tasks, fundamentals_tasks  # noqa: F401

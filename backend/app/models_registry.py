@@ -19,12 +19,6 @@ from app.database import Base  # noqa: F401
 from app.modules.auth.models import User  # noqa: F401
 from app.modules.exchange.models import ExchangeConnection  # noqa: F401
 from app.modules.watchlist.models import Watchlist, WatchlistItem  # noqa: F401
-from app.modules.market.models import MarketCandle  # noqa: F401
-from app.modules.market_data.models import (  # noqa: F401
-    OHLCVCandle,
-    TechnicalIndicator,
-    MarketDataEvent,
-)
 from app.modules.analysis.models import AIAnalysisResult  # noqa: F401
 from app.modules.strategy.models import QuantStrategy  # noqa: F401
 from app.modules.trading.models import (  # noqa: F401
@@ -55,10 +49,6 @@ __all__ = [
     "ExchangeConnection",
     "Watchlist",
     "WatchlistItem",
-    "MarketCandle",
-    "OHLCVCandle",
-    "TechnicalIndicator",
-    "MarketDataEvent",
     "AIAnalysisResult",
     "QuantStrategy",
     "TradingSignal",

@@ -21,13 +21,8 @@ import app.models_registry  # noqa: F401
 from app.modules.auth.router import router as auth_router
 from app.modules.exchange.router import router as exchange_router
 from app.modules.market.router import router as market_router
-from app.modules.market_data.router import router as market_data_router
 from app.modules.watchlist.router import router as watchlist_router
-from app.modules.analysis.router import router as analysis_router
-from app.modules.decisions.router import router as decisions_router
 from app.modules.simledger.router import router as simledger_router
-from app.modules.trading.router import router as trading_router
-from app.modules.strategy.router import router as strategy_router
 from app.modules.system.routes import router as system_router
 from app.modules.admin.router import router as admin_router
 
@@ -105,13 +100,8 @@ setup_middleware(app)
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(exchange_router, prefix=settings.API_V1_PREFIX)
 app.include_router(market_router, prefix=settings.API_V1_PREFIX)
-app.include_router(market_data_router)
 app.include_router(watchlist_router, prefix=settings.API_V1_PREFIX)
-app.include_router(analysis_router, prefix=settings.API_V1_PREFIX)
-app.include_router(decisions_router, prefix=settings.API_V1_PREFIX)
 app.include_router(simledger_router, prefix=settings.API_V1_PREFIX)
-app.include_router(trading_router, prefix=settings.API_V1_PREFIX)
-app.include_router(strategy_router, prefix=settings.API_V1_PREFIX)
 app.include_router(system_router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 

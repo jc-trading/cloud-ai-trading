@@ -20,8 +20,7 @@
 
         <div class="jd-nav-section">
           <div class="jd-nav-label">Overview</div>
-          <SidebarItem to="/" icon="pi-book" label="Decision Feed" :isActive="route.path === '/'" />
-          <SidebarItem to="/recommendations" icon="pi-compass" label="Recommendations" :isActive="route.path === '/recommendations'" />
+          <SidebarItem to="/" icon="pi-compass" label="Recommendations" :isActive="route.path === '/'" />
           <SidebarItem to="/sim" icon="pi-wallet" label="Sim Accounts" :isActive="route.path === '/sim'" />
         </div>
 
@@ -32,25 +31,9 @@
         </div>
 
         <div class="jd-nav-section">
-          <div class="jd-nav-label">Trading</div>
-          <SidebarItem to="/analysis" icon="pi-chart-pie" label="AI Analysis" :isActive="route.path === '/analysis'" />
-          <SidebarItem to="/signals" icon="pi-bell" label="Signals" :isActive="route.path === '/signals'" />
-          <SidebarItem to="/portfolio" icon="pi-briefcase" label="Portfolio" :isActive="route.path === '/portfolio'" />
-          <SidebarItem to="/strategies" icon="pi-bolt" label="Strategies" :isActive="route.path === '/strategies'" />
-          <SidebarItem to="/trading" icon="pi-shopping-cart" label="Live Trading" :isActive="route.path === '/trading'" />
-          <SidebarItem to="/simulate" icon="pi-play" label="Simulation" :isActive="route.path === '/simulate'" />
-        </div>
-
-        <div class="jd-nav-section">
           <div class="jd-nav-label">Account</div>
           <SidebarItem to="/settings/exchange" icon="pi-link" label="Exchanges" :isActive="route.path === '/settings/exchange'" />
           <SidebarItem to="/settings" icon="pi-cog" label="Settings" :isActive="route.path === '/settings'" />
-        </div>
-
-        <div v-if="authStore.isAdmin" class="jd-nav-section">
-          <div class="jd-nav-label">Administration</div>
-          <SidebarItem to="/admin/users" icon="pi-users" label="User Management" :isActive="route.path === '/admin/users'" />
-          <SidebarItem to="/admin/system" icon="pi-server" label="System Admin" :isActive="route.path === '/admin/system'" />
         </div>
 
       </nav>
@@ -184,41 +167,26 @@ const currentTime = ref('')
 let timeTimer = null
 
 const pageTitles = {
-  'Dashboard': 'Decision Feed',
+  'Recommendations': 'Recommendations',
+  'SimAccount': 'Sim Accounts',
   'Watchlist': 'Watchlist',
-  'WatchlistPage': 'Watchlist',
   'Market': 'Market Overview',
   'SymbolDetail': 'Market Detail',
-  'Analysis': 'AI Analysis',
-  'Signals': 'Trading Signals',
-  'Portfolio': 'Portfolio',
-  'Strategies': 'Strategy Builder',
-  'Trading': 'Live Trading',
-  'Simulate': 'Simulation',
   'Settings': 'Settings',
   'ExchangeSettings': 'Exchange Connections',
-  'AdminUsers': 'User Management',
-  'AdminSystem': 'System Admin',
 }
 
 const pageDescriptions = {
-  'Dashboard': 'The latest go / no-go / watch verdict per symbol, and why',
+  'Recommendations': 'Daily stock recommendations and why',
+  'SimAccount': 'Simulation accounts & positions',
   'Watchlist': 'Track your favorite assets',
-  'Market': 'Live crypto & US stock prices',
+  'Market': 'Live US stock prices',
   'SymbolDetail': 'In-depth market analysis',
-  'Analysis': 'AI-powered trading insights',
-  'Signals': 'Generated trading signals & alerts',
-  'Portfolio': 'Simulated portfolio positions',
-  'Strategies': 'Create and backtest strategies',
-  'Trading': 'Execute trades on connected exchanges',
-  'Simulate': 'Paper trading & backtesting',
   'Settings': 'Account preferences',
   'ExchangeSettings': 'Connect exchanges via API',
-  'AdminUsers': 'Manage system users',
-  'AdminSystem': 'System administration',
 }
 
-const currentPageTitle       = computed(() => pageTitles[route.name]       || 'Dashboard')
+const currentPageTitle       = computed(() => pageTitles[route.name]       || 'Recommendations')
 const currentPageDescription = computed(() => pageDescriptions[route.name] || '')
 
 const toggleProfileMenu = () => { showProfileMenu.value = !showProfileMenu.value }

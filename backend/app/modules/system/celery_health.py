@@ -25,31 +25,6 @@ class CeleryHealthCheck:
 
     # Define expected tasks and their schedules
     EXPECTED_TASKS = {
-        "generate_trading_signals": {
-            "description": "Generate trading signals every minute",
-            "schedule_interval": "60",
-            "schedule_type": "periodic",
-        },
-        "calculate_portfolio_stats": {
-            "description": "Calculate portfolio statistics every hour",
-            "schedule_interval": "3600",
-            "schedule_type": "periodic",
-        },
-        "collect_market_data": {
-            "description": "Collect OHLCV market data every minute",
-            "schedule_interval": "60",
-            "schedule_type": "periodic",
-        },
-        "update_indicators": {
-            "description": "Update technical indicators every 2 minutes",
-            "schedule_interval": "120",
-            "schedule_type": "periodic",
-        },
-        "cleanup_market_data": {
-            "description": "Cleanup old market data daily",
-            "schedule_interval": "86400",
-            "schedule_type": "periodic",
-        },
         "collect_system_metrics": {
             "description": "Collect system metrics periodically",
             "schedule_interval": str(settings.SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS),
