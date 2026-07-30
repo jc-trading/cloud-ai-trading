@@ -86,4 +86,4 @@ Known items deliberately left (non-blocking):
    reconciles on reload)
 4. legacy watchlist rows created pre-v3 may still carry market_type=crypto
    (display-only fallback badge)
-QA login retained for manual poking: qa.browser@example.com / QaBrowser-2026!
+QA account deleted after the fix round (its password had been committed to git — credential neutralized by account deletion; see code-review candidate #13).

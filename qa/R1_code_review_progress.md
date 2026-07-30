@@ -38,6 +38,16 @@ conventions) died with the session — re-run them, then dedup + verify ALL.**
 Rejected by the altitude finder (recorded so it isn't re-litigated): frontend
 catch-all redirect = deliberate product choice, not a bandaid.
 
+## Conventions angle (2 candidates — finder returned at pause time)
+13. qa/R1_browser_qa_report.md — working QA password was committed (and pushed) in
+    b0a0bbd. MITIGATED same day: QA accounts deleted from DB (credential dead),
+    line stripped from the report. History still contains the string — acceptable
+    because the account no longer exists; do NOT reuse that password.
+14. CLAUDE.md (repo root) — still describes the deleted crypto system as “当前状态”;
+    future sessions loading it get a map of a system that no longer exists.
+    → rewrite for v3 stocks-only/simledger architecture in the fix round.
+Clean per this finder: engine purity, RAW-adjust-on-read, no-live-trading, UI_RULES.
+
 ## Resume
 1. Re-run finder angles A/B/C + reuse/simplification + conventions on 7440a71..HEAD.
 2. Dedup all candidates (12 above + new) → verify each (CONFIRMED/PLAUSIBLE/REFUTED,
