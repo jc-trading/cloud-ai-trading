@@ -57,6 +57,10 @@ class SimConfig:
     # for NEW entries that day. None = no gate (small hand-picked runs only —
     # a fixed symbol list over history IS index-inclusion lookahead).
     membership_on: object | None = None       # Callable[[date], set[str]]
+    # market regime gate: block NEW entries while the benchmark's D-1 close is
+    # below its N-session MA (None = off). Long-only trend entries in a
+    # confirmed bear tape were the strategy's biggest OOS loss source (2022).
+    regime_ma: int | None = None
 
 
 @dataclass
@@ -123,11 +127,15 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
     by_date = {d: g for d, g in master.groupby("date")}
     bars_by_symbol = {s: f.set_index("date") for s, f in feats.items()}
 
-    # benchmark curve (SPY close)
-    spy_bars = barsmod.get_bars(benchmark_symbol, "1d", start=cfg.start, end=cfg.end, adjust="split_div")
+    # benchmark curve (SPY close) — fetched WITHOUT a start bound so the regime
+    # MA has warmup history before the window, then sliced for the benchmark
+    spy_bars = barsmod.get_bars(benchmark_symbol, "1d", end=cfg.end, adjust="split_div")
     if spy_bars.empty:
         raise RuntimeError(f"benchmark {benchmark_symbol!r} has no data — backfill it first")
-    spy = spy_bars.set_index(spy_bars["ts"].dt.tz_convert("America/New_York").dt.date)["close"]
+    spy_all = spy_bars.set_index(spy_bars["ts"].dt.tz_convert("America/New_York").dt.date)["close"]
+    spy_ma = spy_all.rolling(cfg.regime_ma, min_periods=cfg.regime_ma).mean() \
+        if cfg.regime_ma else None
+    spy = spy_all[spy_all.index >= pd.Timestamp(cfg.start).date()]
 
     trading_days = sorted(by_date.keys())
     cash = cfg.starting_capital
@@ -216,6 +224,10 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 day_ret = equity_curve[prev] / equity_curve[prev2] - 1.0
                 if day_ret <= -cfg.daily_loss_pause_pct:
                     entries_blocked = True                   # [C3] daily-loss pause
+            if spy_ma is not None and prev in spy_ma.index:
+                ma = float(spy_ma.loc[prev])
+                if not np.isnan(ma) and float(spy_all.loc[prev]) < ma:
+                    entries_blocked = True                   # regime gate (bear tape)
 
         # --- ENTRIES (signals from D-1, fill at D open) ------------------
         if prev is not None and prev in by_date and not entries_blocked:

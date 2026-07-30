@@ -135,8 +135,9 @@ def recommend(chosen: list[dict]) -> dict:
     return out
 
 
-def main(quick: bool = False) -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def main(quick: bool = False, regime_ma: int | None = None) -> None:
+    out_dir = OUT_DIR if regime_ma is None else config.DATA_ROOT / f"r09-regime{regime_ma}"
+    out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
     # 1) universe + sectors -------------------------------------------------
@@ -153,7 +154,7 @@ def main(quick: bool = False) -> None:
 
     # 2) features once, warnings captured -----------------------------------
     base_cfg = simulator.SimConfig(
-        start=START, end=END,
+        start=START, end=END, regime_ma=regime_ma,
         membership_on=lambda d: universe.constituents_set_on(d))
     with warnings.catch_warnings(record=True) as wlist:
         warnings.simplefilter("always")
@@ -194,14 +195,16 @@ def main(quick: bool = False) -> None:
         f"sharpe {final_summary['sharpe']:.2f}, trades {final_summary['num_trades']}")
 
     # 5) recommendation quality (v3): phase + zones -------------------------
-    qsyms = syms[:60] if quick else syms
-    # two horizons: 20d catches mean-reversion effects, 60d the trend-holding
-    # horizon the strategy actually trades (the smoke showed 20d inverts)
-    pa = quality.phase_accuracy(qsyms, START, END, horizon=20, progress=log)
-    pa60 = quality.phase_accuracy(qsyms, START, END, horizon=60, progress=log)
-    zq = quality.zone_quality(qsyms, START, END, progress=log)
-    log(f"phase separation up-down median fwd: 20d {pa['separation_median']:+.3%} "
-        f"/ 60d {pa60['separation_median']:+.3%}")
+    pa = pa60 = zq = None
+    if regime_ma is None:      # phase/zones are portfolio-independent — score once
+        qsyms = syms[:60] if quick else syms
+        # two horizons: 20d catches mean-reversion effects, 60d the trend-holding
+        # horizon the strategy actually trades (the smoke showed 20d inverts)
+        pa = quality.phase_accuracy(qsyms, START, END, horizon=20, progress=log)
+        pa60 = quality.phase_accuracy(qsyms, START, END, horizon=60, progress=log)
+        zq = quality.zone_quality(qsyms, START, END, progress=log)
+        log(f"phase separation up-down median fwd: 20d {pa['separation_median']:+.3%} "
+            f"/ 60d {pa60['separation_median']:+.3%}")
 
     # 6) persist ------------------------------------------------------------
     oos_agg = {
@@ -212,6 +215,7 @@ def main(quick: bool = False) -> None:
     }
     results = {
         "generated_for": {"start": START, "end": END, "quick": quick,
+                          "regime_ma": regime_ma,
                           "universe_size": len(syms), "features_built": len(feats),
                           "sectors_known": known,
                           "adjustment_warnings_symbols": adj_warned},
@@ -225,12 +229,13 @@ def main(quick: bool = False) -> None:
         "zone_quality": zq,
         "wall_clock_seconds": round(time.time() - t0, 1),
     }
-    (OUT_DIR / "results.json").write_text(json.dumps(results, indent=2, default=str))
-    pd.DataFrame([t.__dict__ for t in oos_trades]).to_csv(OUT_DIR / "oos_trades.csv", index=False)
-    pd.DataFrame([t.__dict__ for t in final.trades]).to_csv(OUT_DIR / "final_trades.csv", index=False)
-    final.equity.rename("equity").to_csv(OUT_DIR / "final_equity.csv")
-    log(f"done in {results['wall_clock_seconds']}s -> {OUT_DIR}/results.json")
+    (out_dir / "results.json").write_text(json.dumps(results, indent=2, default=str))
+    pd.DataFrame([t.__dict__ for t in oos_trades]).to_csv(out_dir / "oos_trades.csv", index=False)
+    pd.DataFrame([t.__dict__ for t in final.trades]).to_csv(out_dir / "final_trades.csv", index=False)
+    final.equity.rename("equity").to_csv(out_dir / "final_equity.csv")
+    log(f"done in {results['wall_clock_seconds']}s -> {out_dir}/results.json")
 
 
 if __name__ == "__main__":
-    main(quick="--quick" in sys.argv)
+    _regime = 200 if "--regime200" in sys.argv else None
+    main(quick="--quick" in sys.argv, regime_ma=_regime)
