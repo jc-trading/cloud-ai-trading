@@ -1,8 +1,8 @@
 # /code-review 7440a71..HEAD — IN PROGRESS (paused 2026-07-30, usage reset)
 
 Protocol: 8 finder angles → dedup → 1-vote verify → ≤10 findings. Writer≠reviewer.
-**Status: 5/7 finders returned (12 candidates below, UNVERIFIED). 2 finders
-(A line-scan / C cross-file) still to re-run, then dedup + verify ALL.**
+**Status: 6/7 finders returned (12 candidates below, UNVERIFIED). 1 finder
+(A line-scan) still to re-run, then dedup + verify ALL.**
 
 ## Efficiency angle (6 candidates)
 1. quant_tasks.py:200 — signal_cycle serial per-symbol sync_daily (~500 HTTP round-trips,
@@ -86,7 +86,34 @@ at 1 call site; parked modules' _run_async variants not worth consolidating.
 Clean per this finder: no surviving imports of deleted modules; beat entries all live;
 frontend calls all map to mounted routes; migration 013 tables have no surviving FK/ORM refs.
 
+## Cross-file angle C (6 candidates — 2 likely CONFIRMED correctness bugs)
+26. 🔴 cycles.py:265 — run_entries sizes qty on RAW quote but open_or_add books at
+    cost-model price → cash-bound day: InsufficientCash raises, NOTHING catches it in
+    the loop → whole entry_cycle transaction rolls back (earlier entries + heartbeat
+    lost), deterministic on retry = zero entries that day. Backtest sizes on
+    cost-inclusive price + gracefully continues. → catch per-symbol / size on
+    entry_fill(raw) like the simulator.
+27. 🔴 quant_tasks.py:197 — signal_cycle only syncs current constituents ∪ ETF; held
+    symbol dropped from index → bars freeze → daily exit pass folds the SAME stale bar
+    nightly (phantom bars_held/reversal), stagnation exit eventually books at a
+    weeks-old price. → sync set = constituents ∪ ETF ∪ open-position symbols + live
+    analog of backtest F6 data-end force-close.
+28. watchdog.py:173 — SIGNAL_CYCLE_STALE=26h wall-clock → every Monday/post-holiday
+    3-4 false 'signal cycle missed' alerts (cooldown-paced). → measure vs previous
+    trading session's expected run.
+29. watchdog.py:79 — dup of #21 (decision-freshness false alarms), second finder agrees.
+30. router.py:135 — /sim/trade sell IGNORES payload.qty (always full lot) but echoes
+    caller qty in the receipt → API contract lie for non-frontend callers. → 422 on
+    qty != shares or implement partials.
+31. quant_tasks.py:80 — system account identity = per-call user-ordering heuristic +
+    lazy create → super-admin appears/deactivates later ⇒ SECOND system-对照 account
+    silently created, old account's lots orphaned with no exit management.
+    → stable identity: lookup by is_system=True (unique partial index) once created.
+Verified clean by this finder: expire_on_commit=False commit-then-read; celery fresh
+loops (NullPool); bar_open call sites; r09<->simulator API; frontend<->router field
+names; tz-aware heartbeat math; telegram→quant import acyclic.
+
 ## Resume
-1. Re-run finder angles A/B/C only on 7440a71..HEAD (others archived above).
+1. Re-run finder angle A (line-by-line scan) only on 7440a71..HEAD.
 2. Dedup all candidates (12 above + new) → verify each (CONFIRMED/PLAUSIBLE/REFUTED,
    plausible-by-default) → ≤10 findings ranked → then fix round.
