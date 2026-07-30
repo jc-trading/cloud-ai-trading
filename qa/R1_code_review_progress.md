@@ -135,6 +135,21 @@ names; tz-aware heartbeat math; telegram→quant import acyclic.
 Angle A verified clean: frontend diffs (client.js/useToast/sim.js/views) above threshold;
 celery includes/tasks __init__ consistent; NullPool covers per-task loops.
 
+## Adopted from PROFESSIONAL_QUANT_SYSTEM_ASSESSMENT.md (2026-07-31, into this fix round)
+A1. Stitched fixed-param OOS: r09 mode that runs the consensus params across ALL OOS
+    windows and stitches the curve — THE honest deployed-config number. Badge (#10)
+    upgraded: it is misleading TODAY (per-window-calibrated 1.34 shown as if deployed);
+    badge must show the fixed-param stitched OOS with wording of what it is.
+A2. Fail-closed gates in entry_cycle: no recommendations for today / bar-sync failure
+    rate above threshold / quote failures above threshold → book NOTHING + alert.
+A3. Experiment record: stamp code SHA + data manifest fingerprint into r09 results.json.
+A4. Formal gates adopted (plan doc): paper→next stage needs ≥70% OOS windows positive,
+    median window PF ≥ 1.15, positive under 2x cost stress, stable param neighborhood,
+    zero critical parity findings.
+R2 (research round, not this fix round): confidence rank-IC/decile validation;
+signal ablation; low-correlation alphas. NOT adopted (conflicts v3 拍板, Jiacong to
+re-decide if real money ever returns): broker paper order lifecycle; factor/beta suite.
+
 ## Resume
 1. (done — all finders in)
 2. Dedup (~37 → ~30: merge #21/#29, #28/#36, #26 triple) → verify each → rank →
