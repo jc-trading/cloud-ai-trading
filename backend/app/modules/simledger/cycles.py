@@ -324,9 +324,18 @@ async def daily_exit_management(db: AsyncSession, account: SimAccount,
 
 async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
                       quote_fn, now: datetime | None = None,
-                      risk_pct: float = qconfig.PER_TRADE_RISK_PCT) -> list[str]:
-    """Book shortlisted entries at the live open-ish quote. Idempotent per
-    (account, symbol, session). Protections must be checked by the caller."""
+                      risk_pct: float = qconfig.PER_TRADE_RISK_PCT,
+                      chase_cap: float | None = qconfig.INTRADAY_ENTRY_CHASE_CAP
+                      ) -> list[str]:
+    """Book shortlisted entries at the live quote. Called every 15 min during
+    RTH (v3.1): a name enters the first cycle its price is a good entry — at or
+    below the recommendation's reference * (1 + chase_cap) — so a big intraday
+    gap-up waits for a pullback instead of chasing. chase_cap=None disables the
+    gate (fills at any price, the pre-v3.1 open-only behavior). Idempotent per
+    (account, symbol, session); protections checked by the caller.
+
+    ⚠️ Intraday timing is NOT backtested (R0-9 models next-day-open fills) —
+    live diverges from the fixed_oos scoreboard here."""
     now = now or datetime.now(timezone.utc)
     recs = list((await db.execute(
         select(Recommendation)
@@ -366,6 +375,15 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
         feats = rec.features or {}
         stop_distance = float(feats.get("stop_distance") or 0)
         if stop_distance <= 0:
+            continue
+        # v3.1 intraday timing: don't chase. The reco reference price is D-1's
+        # close; if the live price has run more than chase_cap above it, wait —
+        # a later 15-min cycle may catch a pullback (or the day ends unentered).
+        ref_price = float(feats.get("price") or 0)
+        if chase_cap is not None and ref_price > 0 \
+                and q.price > ref_price * (1 + chase_cap):
+            logger.info("entry_cycle: %s at %.2f is >%.0f%% above ref %.2f — "
+                        "not chasing", sym, q.price, chase_cap * 100, ref_price)
             continue
         adv = float(feats.get("adv") or 0) or None
         # review #26: size against the COST-INCLUSIVE buy price, exactly like

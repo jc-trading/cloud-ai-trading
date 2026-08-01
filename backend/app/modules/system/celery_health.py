@@ -58,8 +58,8 @@ class CeleryHealthCheck:
             "schedule_type": "periodic",
         },
         "quant.entry_cycle": {
-            "description": "Post-open entry booking (both DST slots)",
-            "schedule_interval": "86400",
+            "description": "Intraday entry timing (RTH, 15 min)",
+            "schedule_interval": "900",
             "schedule_type": "periodic",
         },
         "quant.signal_cycle": {

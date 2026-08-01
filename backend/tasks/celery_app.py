@@ -108,18 +108,14 @@ celery_app.conf.beat_schedule.update({
         "schedule": 300.0,          # gated to RTH inside the task
         "options": {"expires": 290},
     },
-    # The two entry slots below must fire inside cycles.ENTRY_WINDOW_ET
-    # (app/modules/simledger/cycles.py) — THE authoritative entry window; the
-    # task re-gates itself on it, so a slot outside the window silently no-ops.
-    "quant-entry-cycle-edt": {
+    # v3.1: intraday entry timing — every 15 min through RTH (self-gated on the
+    # XNYS calendar + RTH inside the task). A shortlisted name enters the first
+    # cycle its price is a good entry (run_entries' chase cap); the idempotency
+    # key caps it at one entry per symbol per day.
+    "quant-entry-cycle": {
         "task": "quant.entry_cycle",
-        "schedule": crontab(hour=13, minute=36),   # 09:36 ET during EDT
-        "options": {"expires": 900},
-    },
-    "quant-entry-cycle-est": {
-        "task": "quant.entry_cycle",
-        "schedule": crontab(hour=14, minute=36),   # 09:36 ET during EST
-        "options": {"expires": 900},
+        "schedule": 900.0,          # 15 min; RTH-gated inside the task
+        "options": {"expires": 870},
     },
     "quant-signal-cycle": {
         "task": "quant.signal_cycle",

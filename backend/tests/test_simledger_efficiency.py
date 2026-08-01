@@ -252,7 +252,9 @@ def test_entry_cycle_fails_closed_without_recommendations(monkeypatch):
     beats = [o for o in db.added if isinstance(o, HeartbeatRecord)]
     assert len(beats) == 1 and beats[0].name == "entry_cycle"
     assert beats[0].meta == {"fail_closed": "no recommendations"}
-    assert len(notes) == 1 and "fail-closed" in notes[0]
+    # v3.1: no-recs is LOG-only now (entry_cycle runs every 15 min, so a
+    # Telegram alert would fire ~26x/day; signal_cycle alerts the fail-closed)
+    assert notes == []
 
 
 # --- A2 fail-closed: signal cycle with mass bar-sync failure ----------------

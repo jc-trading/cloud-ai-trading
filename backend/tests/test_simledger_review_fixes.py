@@ -262,3 +262,86 @@ def test_system_account_prefers_existing_is_system_row():
 
     out = asyncio.run(SimLedgerService.system_account(_S()))
     assert out is existing          # no user-heuristic resolution, no create
+
+
+# --- v3.1: intraday chase-cap entry gate ------------------------------------
+
+def test_chase_cap_skips_gap_up_enters_at_ref(monkeypatch):
+    """A price >3% above the reco reference is not chased; at/below it enters."""
+    import app.modules.simledger.cycles as cyc
+
+    booked = []
+
+    async def fake_open(db, account, **kw):
+        booked.append(kw["symbol"])
+        return object()
+
+    async def fake_positions(db, account_id):
+        return []
+
+    monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
+    monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+
+    # rec reference price = 100; stop_distance 2, adv big
+    def rec(sym):
+        return Recommendation(id=uuid4(), symbol=sym, trade_date=date(2026, 7, 30),
+                              direction="up", confidence=_dec(70), shortlist_rank=1,
+                              phase="up", phase_reason="",
+                              features={"stop_distance": 2.0, "adv": 5e7, "price": 100.0})
+
+    class _RS:
+        def __init__(self, recs): self._r = recs
+        async def execute(self, stmt):
+            r = self._r
+            class _R:
+                def scalars(self):
+                    class _S:
+                        def all(self): return r
+                    return _S()
+            return _R()
+
+    # GAP: quote 104 (>+3%) -> skipped
+    q = lambda s: cyc.QuoteReading(price=104.0, at=NOW)
+    out = asyncio.run(cyc.run_entries(_RS([rec("AAA")]), _acct(), date(2026, 7, 30),
+                                      quote_fn=q, now=NOW))
+    assert out == [] and booked == []
+
+    # at reference 100 -> enters
+    booked.clear()
+    q2 = lambda s: cyc.QuoteReading(price=100.0, at=NOW)
+    out = asyncio.run(cyc.run_entries(_RS([rec("AAA")]), _acct(), date(2026, 7, 30),
+                                      quote_fn=q2, now=NOW))
+    assert out == ["AAA"]
+
+
+def test_chase_cap_none_disables_gate(monkeypatch):
+    import app.modules.simledger.cycles as cyc
+    booked = []
+
+    async def fake_open(db, account, **kw):
+        booked.append(kw["symbol"]); return object()
+
+    async def fake_positions(db, account_id):
+        return []
+
+    monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
+    monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+
+    rec = Recommendation(id=uuid4(), symbol="AAA", trade_date=date(2026, 7, 30),
+                         direction="up", confidence=_dec(70), shortlist_rank=1,
+                         phase="up", phase_reason="",
+                         features={"stop_distance": 2.0, "adv": 5e7, "price": 100.0})
+
+    class _RS:
+        async def execute(self, stmt):
+            class _R:
+                def scalars(self):
+                    class _S:
+                        def all(self): return [rec]
+                    return _S()
+            return _R()
+
+    q = lambda s: cyc.QuoteReading(price=120.0, at=NOW)   # +20%, would be capped
+    out = asyncio.run(cyc.run_entries(_RS(), _acct(), date(2026, 7, 30),
+                                      quote_fn=q, now=NOW, chase_cap=None))
+    assert out == ["AAA"]                     # gate disabled -> books anyway

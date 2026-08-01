@@ -94,6 +94,36 @@ def all_symbols_in_range(start: date | str, end: date | str) -> list[str]:
     return sorted(union)
 
 
+def rank_by_liquidity(symbols: list[str], *, window: int = config.LIQUIDITY_WINDOW,
+                      bars_reader=None) -> list[tuple[str, float]]:
+    """Rank symbols by their trailing-`window` average SHARE volume, descending.
+    bars_reader(symbol) -> daily DataFrame (defaults to the Parquet store);
+    injectable for tests. Symbols with < window bars are dropped."""
+    if bars_reader is None:
+        from quant.data import store
+        bars_reader = store.read_daily
+    out: list[tuple[str, float]] = []
+    for s in symbols:
+        df = bars_reader(s)
+        if df is None or len(df) < window:
+            continue
+        out.append((s, float(df["volume"].tail(window).mean())))
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out
+
+
+def top_liquid(symbols: list[str], pct: float = config.LIQUIDITY_TOP_PCT, *,
+               window: int = config.LIQUIDITY_WINDOW, bars_reader=None) -> list[str]:
+    """The top `pct` of `symbols` by trailing average share volume (v3.1). The
+    analyzed universe — the full index is still synced so this ranking stays
+    fresh, but only this slice (+ watchlist) is scanned."""
+    ranked = rank_by_liquidity(symbols, window=window, bars_reader=bars_reader)
+    if not ranked:
+        return []
+    k = max(1, round(len(ranked) * pct))
+    return [s for s, _ in ranked[:k]]
+
+
 def normalize_for_alpaca(symbol: str) -> str:
     """Map dataset ticker punctuation to Alpaca's convention (class shares use a
     dot in the dataset, e.g. BRK.B; Alpaca also uses a dot). Left as a single

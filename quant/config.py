@@ -54,6 +54,20 @@ STOCK_INDEX: str = "sp500"                  # [A4] point-in-time S&P500 constitu
 ETF_WHITELIST: tuple[str, ...] = ("SPY", "QQQ")  # [A4] separate quota, <=1 slot
 ETF_MAX_SLOTS: int = 1                       # [A4] ETFs don't share the stock funnel
 
+# Analyzed universe = the most-liquid slice of the index, not all 503 (v3.1,
+# 2026-07-31 拍板). The full index is still SYNCED for a fresh liquidity
+# ranking; only this top slice + the user watchlist gets scanned/recommended.
+LIQUIDITY_TOP_PCT: float = 0.20              # top 20% by 20-day avg SHARE volume
+LIQUIDITY_WINDOW: int = 20                   # sessions for the volume average
+
+# Intraday entry timing (v3.1, 2026-07-31): the entry cycle runs every 15 min
+# during RTH instead of once at the open, and books when the price is a good
+# entry rather than chasing. ⚠️ NOT backtested — R0-9 models next-day-open
+# fills, so this diverges from the fixed_oos scoreboard; a starting value to be
+# calibrated. Enter only while quote <= reco reference * (1 + chase cap): a big
+# gap-up waits for a pullback, an at/below-reference price fills promptly.
+INTRADAY_ENTRY_CHASE_CAP: float = 0.03       # [uncalibrated] don't chase > +3%
+
 # Funnel filter defaults [A8] — tuned in backtest
 MIN_AVG_DOLLAR_VOLUME: float = 20_000_000.0  # [A8] $20M ADV
 MIN_PRICE: float = 5.0                        # [design §7] no penny stocks
