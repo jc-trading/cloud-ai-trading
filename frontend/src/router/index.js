@@ -38,6 +38,11 @@ const routes = [
         component: () => import('@/views/SimAccount.vue'),
       },
       {
+        path: 'llm-log',
+        name: 'LlmLog',
+        component: () => import('@/views/LlmLog.vue'),
+      },
+      {
         path: 'market',
         name: 'Market',
         component: () => import('@/views/Market.vue'),
