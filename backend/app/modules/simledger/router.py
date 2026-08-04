@@ -84,7 +84,7 @@ async def recommendations(user: CurrentUser, db: DB = None,
             "symbol": r.symbol, "rank": r.shortlist_rank,
             "direction": r.direction, "confidence": float(r.confidence),
             "phase": r.phase, "phase_reason": r.phase_reason,
-            "features": r.features,
+            "features": r.features, "llm_explanation": r.llm_explanation,
         } for r in rows],
     }
 
