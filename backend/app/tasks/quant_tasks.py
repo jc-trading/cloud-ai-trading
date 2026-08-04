@@ -255,6 +255,19 @@ def signal_cycle():
                     r["features"]["sector"] = sectors.get(r["symbol"], "unknown")
                 n = await cycles.store_recommendations(db, recs)
 
+            # v3 explanation layer (LLM, explanation-only): a one-line read on
+            # the top-N names, booked into llm_calls. Never blocks the cycle —
+            # call_llm swallows provider errors and leaves llm_explanation null.
+            explained = 0
+            if recs:
+                from app.modules.llm.explain import explain_recommendations
+                try:
+                    explained = await explain_recommendations(
+                        db, recs[0]["trade_date"], top_n=10)
+                except Exception:
+                    logger.warning("signal_cycle: explanation layer failed",
+                                   exc_info=True)
+
             account = await _system_account(db)
             closed: list[str] = []
             if account is not None:
@@ -274,7 +287,7 @@ def signal_cycle():
                 await SimLedgerService.snapshot(db, account, today, quotes,
                                                 positions=positions,
                                                 equity=equity)
-            meta = {"recs": n, "closed": closed,
+            meta = {"recs": n, "explained": explained, "closed": closed,
                     "synced": synced, "failed": failed}
             if sync_fail_closed:
                 meta["fail_closed"] = "bar sync failures"
