@@ -187,6 +187,10 @@ class Recommendation(Base):
     phase_reason = Column(Text, nullable=True)
     # engine evidence for the transparency dashboard (indicators, funnel fields)
     features = Column(JSONB(), nullable=True)
+    # one-or-two-sentence LLM read of WHY (explanation-only, does NOT affect the
+    # deterministic score); written for top-N names by the signal_cycle
+    # explanation layer via app.modules.llm.client. See llm_calls for the cost.
+    llm_explanation = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (UniqueConstraint("symbol", "trade_date",

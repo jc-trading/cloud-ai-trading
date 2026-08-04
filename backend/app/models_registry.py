@@ -42,6 +42,7 @@ from app.modules.simledger.models import (  # noqa: F401
     MasterSetting,
     Recommendation,
 )
+from app.modules.llm.models import LLMCall  # noqa: F401
 
 __all__ = [
     "Base",
@@ -73,4 +74,5 @@ __all__ = [
     "HeartbeatRecord",
     "MasterSetting",
     "Recommendation",
+    "LLMCall",
 ]
