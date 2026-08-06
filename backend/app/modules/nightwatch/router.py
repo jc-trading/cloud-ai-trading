@@ -156,9 +156,11 @@ async def nightwatch_log(user: CurrentUser, db: DB = None,
     heartbeats = (await db.execute(
         select(HeartbeatRecord).order_by(HeartbeatRecord.name)
     )).scalars().all()
-    safety = (await db.execute(
-        select(SafetyState).where(SafetyState.scope == "global")
-    )).scalar_one_or_none()
+    # scope holds an account uuid in practice (not "global") — surface any
+    # row with an active pause/halt, else the first row as the status source
+    safety_rows = (await db.execute(select(SafetyState))).scalars().all()
+    active = [s for s in safety_rows if s.halted or s.paused_until]
+    safety = active[0] if active else (safety_rows[0] if safety_rows else None)
 
     ordered = sorted(nights.values(), key=lambda n: n["date"], reverse=True)
     return {

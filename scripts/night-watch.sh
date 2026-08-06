@@ -23,8 +23,13 @@ DC="docker compose"
 CAFFEINATE_PID_FILE="runtime/night-watch.caffeinate.pid"
 # Host port 8000 is shadowed by a native php83 server on IPv4 (2026-07-06 note):
 # always probe health INSIDE the backend container, never via localhost:8000.
-# The backend image has no curl — probe with its python instead.
-HEALTH="$DC exec -T backend python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)\""
+# The backend image has no curl — probe with its python instead. A function,
+# not a $VAR (unquoted expansion would shred the quoted -c argument).
+health_ok() {
+  $DC exec -T backend python -c \
+    "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)" \
+    >/dev/null 2>&1
+}
 
 sql() {  # run one read-only query against the app DB (creds from container env)
   $DC exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -A -t -F " | "' <<< "$1"
@@ -52,7 +57,7 @@ stop_caffeinate() {
 wait_healthy() {
   echo -n "· waiting for backend health"
   for _ in $(seq 1 30); do
-    if $HEALTH >/dev/null 2>&1; then echo " — healthy"; return 0; fi
+    if health_ok; then echo " — healthy"; return 0; fi
     echo -n "."
     sleep 2
   done
@@ -66,7 +71,7 @@ show_status() {
   echo "-- containers --"
   $DC ps --format 'table {{.Service}}\t{{.Status}}' 2>/dev/null || $DC ps
   echo
-  if ! $HEALTH >/dev/null 2>&1; then
+  if ! health_ok; then
     echo "backend: NOT healthy — run '$0 start' first"
     return 1
   fi
