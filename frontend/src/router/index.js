@@ -38,6 +38,11 @@ const routes = [
         component: () => import('@/views/SimAccount.vue'),
       },
       {
+        path: 'night-watch',
+        name: 'NightWatch',
+        component: () => import('@/views/NightWatch.vue'),
+      },
+      {
         path: 'llm-log',
         name: 'LlmLog',
         component: () => import('@/views/LlmLog.vue'),

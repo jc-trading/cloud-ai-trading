@@ -22,6 +22,7 @@
           <div class="jd-nav-label">Overview</div>
           <SidebarItem to="/" icon="pi-compass" label="Recommendations" :isActive="route.path === '/'" />
           <SidebarItem to="/sim" icon="pi-wallet" label="Sim Accounts" :isActive="route.path === '/sim'" />
+          <SidebarItem to="/night-watch" icon="pi-moon" label="Night Watch" :isActive="route.path === '/night-watch'" />
           <SidebarItem to="/llm-log" icon="pi-bolt" label="LLM Log" :isActive="route.path === '/llm-log'" />
         </div>
 

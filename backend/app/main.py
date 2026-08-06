@@ -24,6 +24,7 @@ from app.modules.market.router import router as market_router
 from app.modules.watchlist.router import router as watchlist_router
 from app.modules.simledger.router import router as simledger_router
 from app.modules.llm.router import router as llm_router
+from app.modules.nightwatch.router import router as nightwatch_router
 from app.modules.system.routes import router as system_router
 from app.modules.admin.router import router as admin_router
 
@@ -104,6 +105,7 @@ app.include_router(market_router, prefix=settings.API_V1_PREFIX)
 app.include_router(watchlist_router, prefix=settings.API_V1_PREFIX)
 app.include_router(simledger_router, prefix=settings.API_V1_PREFIX)
 app.include_router(llm_router, prefix=settings.API_V1_PREFIX)
+app.include_router(nightwatch_router, prefix=settings.API_V1_PREFIX)
 app.include_router(system_router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 
