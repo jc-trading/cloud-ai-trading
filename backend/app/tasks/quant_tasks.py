@@ -33,7 +33,9 @@ logger = logging.getLogger(__name__)
 async def _notify(message: str) -> None:
     """Event notification — never lets a Telegram failure break the cycle."""
     try:
-        await TelegramNotifier().send_message(message)
+        # Plain text: messages carry dynamic names (signal_cycle, symbols)
+        # whose _ would 400 Telegram's Markdown parser; no formatting is used.
+        await TelegramNotifier().send_message(message, parse_mode=None)
     except Exception:
         logger.warning("telegram notify failed", exc_info=True)
 

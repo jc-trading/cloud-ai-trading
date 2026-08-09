@@ -8,6 +8,18 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def escape_markdown(text: str) -> str:
+    """Escape a dynamic fragment for Telegram legacy Markdown parse mode.
+
+    Legacy Markdown treats ``_ * ` [`` as entity openers; an unpaired one in
+    dynamic text (task names like ``position_cycle``, LLM prose) makes the
+    whole sendMessage 400 with "can't parse entities". Escape all four.
+    """
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 class TelegramNotifier:
     """Send notifications via Telegram."""
 
@@ -16,12 +28,15 @@ class TelegramNotifier:
         self.chat_id = chat_id or settings.TELEGRAM_CHAT_ID
         self.api_url = f"https://api.telegram.org/bot{self.bot_token}"
 
-    async def send_message(self, message: str) -> bool:
+    async def send_message(self, message: str, parse_mode: Optional[str] = "Markdown") -> bool:
         """
         Send a message to Telegram.
 
         Args:
-            message: Message text (supports Markdown)
+            message: Message text (supports Markdown by default)
+            parse_mode: Telegram parse mode; pass ``None`` to send plain text —
+                required for messages built from dynamic strings (task names,
+                symbols, exception text) that are not Markdown-escaped.
 
         Returns:
             True if successful, False otherwise
@@ -38,8 +53,9 @@ class TelegramNotifier:
                 payload = {
                     "chat_id": self.chat_id,
                     "text": message,
-                    "parse_mode": "Markdown"
                 }
+                if parse_mode is not None:
+                    payload["parse_mode"] = parse_mode
                 async with session.post(
                     f"{self.api_url}/sendMessage",
                     json=payload,
@@ -145,6 +161,8 @@ class TelegramNotifier:
         reason_str = (reason or "").strip() or "No reasoning recorded."
         if len(reason_str) > 400:
             reason_str = reason_str[:397] + "..."
+        # LLM prose may contain _ * ` [ — unescaped they 400 the whole send
+        reason_str = escape_markdown(reason_str)
 
         message = (
             f"🧾 *PAPER Order Filled*\n\n"

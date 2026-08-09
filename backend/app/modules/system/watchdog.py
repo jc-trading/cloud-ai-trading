@@ -45,7 +45,11 @@ async def _alert(check: str, message: str) -> None:
         return
     _last_alert_at[check] = now
     try:
-        await TelegramNotifier().send_message(f"🚨 *Pipeline watchdog — {check}*\n{message}")
+        # Plain text (no parse_mode): alert bodies carry task names like
+        # position_cycle whose underscores 400 Telegram's Markdown parser.
+        await TelegramNotifier().send_message(
+            f"🚨 Pipeline watchdog — {check}\n{message}", parse_mode=None
+        )
     except Exception as e:  # alerting must never take the watchdog down
         logger.error("Watchdog failed to send Telegram alert: %s", e)
 

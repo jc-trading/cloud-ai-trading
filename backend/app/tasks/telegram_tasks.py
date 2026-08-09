@@ -60,7 +60,7 @@ async def _status_text(db) -> str:
         f"stop {float(p.stop):.2f}" for p in positions) or "  (none)"
     blocked = cycles.entries_blocked_reason(state, today=date.today())
     hb = ", ".join(f"{k} {v:%H:%M}" for k, v in sorted(beats.items()))
-    return (f"*CAT 对照账户*\n"
+    return (f"CAT 对照账户\n"
             f"cash: ${float(account.cash):,.2f}\n"
             f"positions:\n{pos_lines}\n"
             f"entries: {'🚫 ' + blocked if blocked else '✅ allowed'}\n"
@@ -135,7 +135,10 @@ def telegram_poll():
                 except Exception as e:
                     logger.exception("telegram command failed: %s", text)
                     reply = f"⚠️ command failed: {e}"
-                await notifier.send_message(reply)
+                # Plain text: /status carries heartbeat names (position_cycle
+                # etc.) and error replies carry raw exception text — both 400
+                # Telegram's Markdown parser when underscores are unpaired.
+                await notifier.send_message(reply, parse_mode=None)
                 handled += 1
             from app.tasks.quant_tasks import _beat
             await _beat(db, _OFFSET_ROW, offset=offset)   # review #18: one upsert impl
