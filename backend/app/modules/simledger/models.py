@@ -21,6 +21,9 @@ Tables:
   - recommendations    the daily engine output feed (v3 dashboard reads this):
                        shortlist rank + confidence + phase read, one per
                        (symbol, trade_date)
+  - recommendation_outcomes  forward returns per recommendation (P1 复盘
+                       ground work); written only by the manual backfill in
+                       app.modules.simledger.outcomes, never by the cycles
 """
 
 from uuid import uuid4
@@ -195,3 +198,38 @@ class Recommendation(Base):
 
     __table_args__ = (UniqueConstraint("symbol", "trade_date",
                                        name="uq_recommendation_symbol_date"),)
+
+
+class RecommendationOutcome(Base):
+    """Forward evaluation of a Recommendation (P1 backfill, 2026-08-12).
+
+    Derived analytics ONLY — one row per evaluable recommendation, returns
+    anchored at the trade_date session open (what acting at the next open
+    would see). Written solely by ``app.modules.simledger.outcomes`` (manual
+    backfill, idempotent); the trading cycles never touch this table.
+    """
+
+    __tablename__ = "recommendation_outcomes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    recommendation_id = Column(UUID(as_uuid=True),
+                               ForeignKey("recommendations.id", ondelete="CASCADE"),
+                               nullable=False)
+    symbol = Column(String(20), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    base_open = Column(Numeric(18, 6), nullable=False)
+    close_d0 = Column(Numeric(18, 6), nullable=False)
+    # close(t+N sessions) / base_open - 1; NULL until enough bars exist
+    ret_1d = Column(Numeric(12, 6), nullable=True)
+    ret_3d = Column(Numeric(12, 6), nullable=True)
+    ret_5d = Column(Numeric(12, 6), nullable=True)
+    # last session in the bars store at compute time; re-runs rewrite rows
+    # whenever the symbol's store advanced (extends horizons AND re-absorbs
+    # corporate-action read-time re-adjustments)
+    evaluated_through = Column(Date, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(),
+                        onupdate=func.now(), nullable=False)
+
+    __table_args__ = (UniqueConstraint("recommendation_id",
+                                       name="uq_recommendation_outcome_rec"),)
