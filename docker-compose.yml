@@ -79,6 +79,7 @@ services:
       - ./backend/tests:/app/tests
       - ./quant:/app/quant
       - ./cat-data:/app/cat-data
+      - ./stock-market-data:/app/stock-market-data
       - ./runtime:/app/runtime
     networks:
       - cat_network
@@ -123,6 +124,7 @@ services:
       - ./backend/tests:/app/tests
       - ./quant:/app/quant
       - ./cat-data:/app/cat-data
+      - ./stock-market-data:/app/stock-market-data
       - ./runtime:/app/runtime
     networks:
       - cat_network
@@ -167,11 +169,62 @@ services:
       - ./backend/tests:/app/tests
       - ./quant:/app/quant
       - ./cat-data:/app/cat-data
+      - ./stock-market-data:/app/stock-market-data
       - ./runtime:/app/runtime
     networks:
       - cat_network
     restart: unless-stopped
     command: celery -A tasks.celery_app beat --loglevel=info
+
+  # Realtime IEX 1-min bar consumer (方案 Phase 5)
+  # why single instance (no replicas): the 30-symbol subscription cap is counted
+  # per WebSocket connection, and the minute flush rewrites the whole day file —
+  # a second replica would exceed the cap and overwrite the other's rows.
+  market-stream:
+    container_name: cat_market_stream
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
+      REDIS_URL: redis://redis:6379
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DEBUG: ${DEBUG:-False}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      ALPACA_MODE: ${ALPACA_MODE:-paper}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tasks:/app/tasks
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/tests:/app/tests
+      - ./quant:/app/quant
+      - ./cat-data:/app/cat-data
+      - ./stock-market-data:/app/stock-market-data
+      - ./runtime:/app/runtime
+    networks:
+      - cat_network
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+    command: python -m quant.data.stream
 
 volumes:
   postgres_data:

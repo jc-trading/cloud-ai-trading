@@ -101,7 +101,9 @@ def rank_by_liquidity(symbols: list[str], *, window: int = config.LIQUIDITY_WIND
     injectable for tests. Symbols with < window bars are dropped."""
     if bars_reader is None:
         from quant.data import store
-        bars_reader = store.read_daily
+
+        def bars_reader(symbol: str) -> pd.DataFrame:
+            return store.read_bars(symbol, "daily")
     out: list[tuple[str, float]] = []
     for s in symbols:
         df = bars_reader(s)

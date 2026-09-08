@@ -1,5 +1,6 @@
 """R0-5 get_bars() tests: single entry point, read-time adjustment, session
-filter, and 5m->1h resample consistency. Synthetic parquet, no network."""
+filter, native 1hour reads and the 1min->higher-timeframe resample. Synthetic
+parquet, no network, in-memory file registry."""
 
 from datetime import date
 
@@ -9,15 +10,10 @@ import pytest
 from quant import config
 from quant.data import bars, corporate_actions, store
 
-
-@pytest.fixture
-def synth(monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "BARS_DIR", tmp_path / "bars")
-    monkeypatch.setattr(config, "MANIFEST_DB", tmp_path / "manifest.db")
-    return tmp_path
+_SIP = config.PROVIDER_HISTORICAL
 
 
-def _et5m(day, hhmm_list, closes):
+def _et_bars(day, hhmm_list, closes):
     ts = pd.DatetimeIndex(
         [pd.Timestamp(f"{day} {hm}", tz="America/New_York") for hm in hhmm_list]
     ).tz_convert("UTC")
@@ -30,7 +26,13 @@ def _et5m(day, hhmm_list, closes):
     })
 
 
-def test_only_imports_get_bars(synth):
+def _minutes(day, start_hhmm, closes):
+    start = pd.Timestamp(f"{day} {start_hhmm}", tz="America/New_York")
+    hhmm = [(start + pd.Timedelta(minutes=i)).strftime("%H:%M") for i in range(len(closes))]
+    return _et_bars(day, hhmm, closes)
+
+
+def test_only_imports_get_bars(tmp_store):
     # daily: write RAW, a 2:1 split, then read adjusted vs raw via get_bars only
     df = pd.DataFrame({
         "ts": pd.DatetimeIndex([pd.Timestamp(f"2024-01-0{d} 00:00", tz="America/New_York")
@@ -40,10 +42,10 @@ def test_only_imports_get_bars(synth):
         "volume": [1_000, 1_000, 2_000, 2_000], "vwap": [200, 202, 100, 101],
         "trade_count": [10, 10, 10, 10],
     })
-    store.write_daily("ZZZ", df)
+    store.write_frame("ZZZ", "daily", df, provider=_SIP)
     corporate_actions.store_actions([{
         "symbol": "ZZZ", "ex_date": date(2024, 1, 4), "action_type": "split",
-        "ratio": 2.0, "cash_amount": None}], db_path=config.MANIFEST_DB)
+        "ratio": 2.0, "cash_amount": None}], db_path=config.ACTIONS_DB)
 
     raw = bars.get_bars("ZZZ", "1d", adjust="none")
     adj = bars.get_bars("ZZZ", "1d", adjust="split_div")
@@ -52,27 +54,33 @@ def test_only_imports_get_bars(synth):
     assert adj["close"].tolist() == [100.0, 101.0, 100.0, 101.0]
 
 
-def test_resample_5m_to_1h_consistency(synth):
-    hhmm = [f"{9 if m < 30 else 10}:{(30 + m) % 60:02d}" if m < 30
-            else f"10:{(m - 30):02d}" for m in range(0, 60, 5)]
-    # build 09:30..10:25 (12 five-minute bars)
-    hhmm = ["09:30", "09:35", "09:40", "09:45", "09:50", "09:55",
-            "10:00", "10:05", "10:10", "10:15", "10:20", "10:25"]
-    closes = [10, 12, 9, 15, 11, 8, 14, 13, 7, 16, 10, 12]
-    store.write_intraday("QQQ", _et5m("2026-07-24", hhmm, closes))
+def test_native_1hour_is_read_not_resampled(tmp_store):
+    hour = _et_bars("2026-07-24", ["09:30", "10:30", "11:30"], [10, 11, 12])
+    store.write_frame("HHH", "1hour", hour, provider=_SIP)
+    got = bars.get_bars("HHH", "1h", start="2026-07-24", end="2026-07-24",
+                        adjust="none", session="regular")
+    assert got["close"].tolist() == [10, 11, 12]
+    # nothing was written to 1min: 1h no longer comes from a resample
+    assert not store.bar_dir("HHH", "1min").exists()
 
-    hour = bars.get_bars("QQQ", "1h", start="2026-07-24", end="2026-07-25",
+
+def test_resample_1min_to_30m_consistency(tmp_store):
+    closes = [10, 12, 9, 15, 11, 8, 14, 13, 7, 16, 10, 12] * 5   # 60 one-minute bars
+    store.write_frame("QQQ", "1min", _minutes("2026-07-24", "09:30", closes),
+                      provider=_SIP)
+
+    half = bars.get_bars("QQQ", "30m", start="2026-07-24", end="2026-07-24",
                          adjust="none", session="regular")
-    assert len(hour) == 1
-    b = hour.iloc[0]
-    assert b["open"] == 10                 # first
-    assert b["close"] == 12                # last
-    assert b["high"] == max(closes) + 2    # 16+2
-    assert b["low"] == min(closes) - 2     # 7-2
-    assert b["volume"] == sum(100 * (i + 1) for i in range(12))
+    assert len(half) == 2
+    first = half.iloc[0]
+    assert first["open"] == closes[0]
+    assert first["close"] == closes[29]
+    assert first["high"] == max(closes[:30]) + 2
+    assert first["low"] == min(closes[:30]) - 2
+    assert first["volume"] == sum(100 * (i + 1) for i in range(30))
 
 
-def test_end_date_is_inclusive(synth):
+def test_end_date_is_inclusive(tmp_store):
     # daily bars anchor at ET midnight (04/05:00Z); a date-like `end` must
     # include that day's bar, not silently drop it (review F9)
     df = pd.DataFrame({
@@ -82,13 +90,13 @@ def test_end_date_is_inclusive(synth):
         "close": [10.0, 11.0, 12.0], "volume": [1, 1, 1], "vwap": [10, 11, 12],
         "trade_count": [1, 1, 1],
     })
-    store.write_daily("INC", df)
+    store.write_frame("INC", "daily", df, provider=_SIP)
     got = bars.get_bars("INC", "1d", start="2024-03-04", end="2024-03-05", adjust="none")
     assert len(got) == 2                      # the 03-05 bar is included
     assert got["close"].tolist() == [10.0, 11.0]
 
 
-def test_unadjusted_series_warns(synth):
+def test_unadjusted_series_warns(tmp_store):
     # split-sized jump + zero cached actions + adjust requested -> loud warning
     df = pd.DataFrame({
         "ts": pd.DatetimeIndex([pd.Timestamp(f"2024-01-0{d} 00:00", tz="America/New_York")
@@ -97,26 +105,27 @@ def test_unadjusted_series_warns(synth):
         "close": [400.0, 100.0], "volume": [1, 1], "vwap": [400, 100],
         "trade_count": [1, 1],
     })
-    store.write_daily("NOSYNC", df)
+    store.write_frame("NOSYNC", "daily", df, provider=_SIP)
     with pytest.warns(UserWarning, match="actions likely not synced"):
         bars.get_bars("NOSYNC", "1d", adjust="split_div")
     # with the action cached, no warning
     corporate_actions.store_actions([{
         "symbol": "NOSYNC", "ex_date": date(2024, 1, 3), "action_type": "split",
-        "ratio": 4.0, "cash_amount": None}], db_path=config.MANIFEST_DB)
+        "ratio": 4.0, "cash_amount": None}], db_path=config.ACTIONS_DB)
     import warnings as _w
     with _w.catch_warnings():
         _w.simplefilter("error")
         bars.get_bars("NOSYNC", "1d", adjust="split_div")
 
 
-def test_session_filter(synth):
+def test_session_filter(tmp_store):
     # include a pre-market (09:00) and after-hours (16:30) bar
     hhmm = ["09:00", "09:30", "10:00", "16:30"]
-    store.write_intraday("PRE", _et5m("2026-07-24", hhmm, [10, 11, 12, 13]))
-    reg = bars.get_bars("PRE", "5m", start="2026-07-24", end="2026-07-25",
+    store.write_frame("PRE", "1min", _et_bars("2026-07-24", hhmm, [10, 11, 12, 13]),
+                      provider=_SIP)
+    reg = bars.get_bars("PRE", "1min", start="2026-07-24", end="2026-07-24",
                         adjust="none", session="regular")
-    allh = bars.get_bars("PRE", "5m", start="2026-07-24", end="2026-07-25",
+    allh = bars.get_bars("PRE", "1min", start="2026-07-24", end="2026-07-24",
                          adjust="none", session="all")
     reg_et = reg["ts"].dt.tz_convert("America/New_York").dt.strftime("%H:%M").tolist()
     assert reg_et == ["09:30", "10:00"]          # pre/post dropped

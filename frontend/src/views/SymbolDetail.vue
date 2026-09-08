@@ -69,24 +69,62 @@
       <div class="jd-card">
         <div class="jd-card-header flex-header">
           <h2 class="jd-card-title">Price Chart</h2>
-          <div class="jd-tabs">
-            <button
-              v-for="tf in timeframes"
-              :key="tf.value"
-              @click="changeTimeframe(tf.value)"
-              class="jd-tab"
-              :class="{ active: interval === tf.value }"
-            >{{ tf.label }}</button>
+          <div class="chart-controls">
+            <div class="jd-tabs">
+              <button
+                v-for="tf in TIMEFRAMES"
+                :key="tf.value"
+                @click="changeTimeframe(tf.value)"
+                class="jd-tab"
+                :class="{ active: interval === tf.value }"
+              >{{ tf.label }}</button>
+            </div>
+            <div class="indicator-menu">
+              <button class="jd-btn jd-btn-ghost indicator-trigger" @click.stop="indicatorMenuOpen = !indicatorMenuOpen">
+                <i class="pi pi-sliders-h"></i>
+                Indicators
+              </button>
+              <div v-if="indicatorMenuOpen" class="indicator-dropdown" @click.stop>
+                <button
+                  v-for="ind in INDICATORS"
+                  :key="ind.name"
+                  class="indicator-option"
+                  :class="{ active: activeIndicators.includes(ind.name) }"
+                  @click="toggleIndicator(ind.name)"
+                >
+                  <i :class="activeIndicators.includes(ind.name) ? 'pi pi-check-square' : 'pi pi-stop'"></i>
+                  <span class="indicator-name">{{ ind.label }}</span>
+                  <span class="indicator-pane">{{ ind.pane === 'main' ? 'overlay' : 'panel' }}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="jd-card-body">
-          <div v-if="loadingCandles" class="chart-loading">
-            <i class="pi pi-spin pi-spinner"></i>
+        <div class="jd-card-body chart-body">
+          <div class="draw-toolbar">
+            <button
+              v-for="tool in DRAW_TOOLS"
+              :key="tool.name"
+              class="draw-tool"
+              :class="{ active: activeTool === tool.name }"
+              :title="tool.label"
+              @click="selectTool(tool.name)"
+            >
+              <i :class="[tool.icon, tool.rotate ? 'rot90' : '']"></i>
+            </button>
+            <button class="draw-tool danger" title="Clear all drawings" @click="clearDrawings">
+              <i class="pi pi-trash"></i>
+            </button>
           </div>
-          <div v-else-if="candles.length === 0" class="chart-empty">
-            <p>No candle data available for this timeframe.</p>
+          <div class="chart-wrap">
+            <div ref="chartContainer" class="chart-container"></div>
+            <div v-if="loadingCandles" class="chart-msg">
+              <i class="pi pi-spin pi-spinner"></i>
+            </div>
+            <div v-else-if="noData" class="chart-msg">
+              <p>No candle data available for this timeframe.</p>
+            </div>
           </div>
-          <div v-else ref="chartContainer" class="chart-container"></div>
         </div>
       </div>
 
@@ -163,7 +201,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '@/composables/useToast'
-import { CandlestickSeries, createChart } from 'lightweight-charts'
+import { dispose, init } from 'klinecharts'
 import { marketApi, watchlistApi } from '@/api/market'
 
 const props = defineProps({ symbol: { type: String, required: true } })
@@ -171,29 +209,57 @@ const toast = useToast()
 
 // ── State ────────────────────────────────────────────────────────
 const ticker        = ref(null)
-const candles       = ref([])
 const loading       = ref(false)
 const loadingCandles = ref(false)
+const noData        = ref(false)
 const error         = ref(null)
 const interval      = ref('1h')
 const chartContainer = ref(null)
+const activeTool    = ref(null)
+const activeIndicators   = ref([])
+const indicatorMenuOpen  = ref(false)
 const inWatchlist   = ref(false)
 const addingToWatchlist = ref(false)
 const watchlistMsg  = ref(null)
 
-let chart   = null
-let candleSeries = null
+let chart = null
+let pendingOverlayId = null
+let restored = false
 
 const isStock = computed(() => !props.symbol.includes('/'))
 
-const timeframes = [
-  { label: '1m',  value: '1m' },
-  { label: '5m',  value: '5m' },
-  { label: '15m', value: '15m' },
-  { label: '1H',  value: '1h' },
-  { label: '4H',  value: '4h' },
-  { label: '1D',  value: '1d' },
+const TIMEFRAMES = [
+  { label: '1m',  value: '1m',  period: { type: 'minute', span: 1 } },
+  { label: '5m',  value: '5m',  period: { type: 'minute', span: 5 } },
+  { label: '15m', value: '15m', period: { type: 'minute', span: 15 } },
+  { label: '1H',  value: '1h',  period: { type: 'hour', span: 1 } },
+  { label: '1D',  value: '1d',  period: { type: 'day', span: 1 } },
 ]
+
+// KLineChart built-in overlays — the drawing toolbar just starts one of them.
+const DRAW_TOOLS = [
+  { name: 'horizontalStraightLine', label: 'Horizontal line', icon: 'pi pi-minus' },
+  { name: 'verticalStraightLine',   label: 'Vertical line',   icon: 'pi pi-minus', rotate: true },
+  { name: 'segment',                label: 'Trend line',      icon: 'pi pi-arrow-up-right' },
+  { name: 'rayLine',                label: 'Ray',             icon: 'pi pi-chart-line' },
+  { name: 'parallelStraightLine',   label: 'Channel',         icon: 'pi pi-bars' },
+  { name: 'fibonacciLine',          label: 'Fibonacci',       icon: 'pi pi-percentage' },
+  { name: 'brush',                  label: 'Free draw',       icon: 'pi pi-pencil' },
+]
+
+// KLineChart built-in indicators; 'main' draws over the candles, 'sub' gets its own pane.
+const INDICATORS = [
+  { name: 'MA',   label: 'MA',     pane: 'main' },
+  { name: 'EMA',  label: 'EMA',    pane: 'main' },
+  { name: 'BOLL', label: 'BOLL',   pane: 'main' },
+  { name: 'SAR',  label: 'SAR',    pane: 'main' },
+  { name: 'VOL',  label: 'Volume', pane: 'sub' },
+  { name: 'MACD', label: 'MACD',   pane: 'sub' },
+  { name: 'RSI',  label: 'RSI',    pane: 'sub' },
+  { name: 'KDJ',  label: 'KDJ',    pane: 'sub' },
+]
+const DEFAULT_INDICATORS = ['MA', 'VOL']
+const CANDLE_PANE = 'candle_pane'
 
 // ── Formatters ───────────────────────────────────────────────────
 const GRADIENTS = [
@@ -240,86 +306,219 @@ async function loadData() {
   } finally {
     loading.value = false
   }
-  await loadCandles()
+  await nextTick()
+  mountChart()
 }
 
-async function loadCandles() {
+async function changeTimeframe(tf) {
+  if (interval.value === tf) return
+  interval.value = tf
+  chart?.setPeriod(TIMEFRAMES.find(t => t.value === tf).period)
+}
+
+// ── Chart ────────────────────────────────────────────────────────
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
+}
+
+function chartStyles() {
+  const text   = cssVar('--jd-text-muted', '#7683a8')
+  const line   = cssVar('--jd-line-2', '#131a30')
+  const border = cssVar('--jd-border', '#1b2440')
+  const up     = cssVar('--jd-green', '#2ee08a')
+  const down   = cssVar('--jd-red', '#ff5470')
+  const cyan   = cssVar('--jd-cyan', '#3fe0ff')
+  const body   = cssVar('--jd-body', '#05070f')
+  const mono   = cssVar('--jd-mono', 'monospace')
+  const axis = {
+    axisLine: { color: border },
+    tickLine: { color: border },
+    tickText: { color: text, family: mono, size: 11 },
+  }
+  const crosshairSide = {
+    line: { color: cyan },
+    text: { color: body, backgroundColor: cyan, family: mono },
+  }
+  return {
+    grid: { horizontal: { color: line }, vertical: { color: line } },
+    candle: {
+      bar: {
+        upColor: up, downColor: down,
+        upBorderColor: up, downBorderColor: down,
+        upWickColor: up, downWickColor: down,
+      },
+      priceMark: { high: { color: text }, low: { color: text } },
+      tooltip: { text: { color: text, family: mono, size: 11 } },
+    },
+    indicator: {
+      ohlc: { upColor: up, downColor: down },
+      tooltip: { text: { color: text, family: mono, size: 11 } },
+    },
+    xAxis: axis,
+    yAxis: axis,
+    separator: { color: border },
+    crosshair: { horizontal: crosshairSide, vertical: crosshairSide },
+    overlay: {
+      line: { color: cyan },
+      point: { color: cyan, borderColor: cssVar('--jd-blue-glow', 'rgba(63,224,255,0.14)') },
+      text: { color: text, family: mono },
+    },
+  }
+}
+
+function mountChart() {
+  if (chart || !chartContainer.value) return
+  chart = init(chartContainer.value, { locale: 'en-US', styles: chartStyles() })
+  if (!chart) return
+  restored = false
+  chart.setDataLoader({ getBars: loadBars })
+  chart.setSymbol({ ticker: props.symbol, pricePrecision: 2, volumePrecision: 0 })
+  chart.setPeriod(TIMEFRAMES.find(t => t.value === interval.value).period)
+}
+
+function destroyChart() {
+  if (!chart) return
+  dispose(chartContainer.value)
+  chart = null
+  pendingOverlayId = null
+  activeTool.value = null
+}
+
+async function loadBars({ type, callback }) {
+  if (type !== 'init') {
+    callback([], false)
+    return
+  }
   loadingCandles.value = true
   try {
-    const res = await marketApi.getCandles(props.symbol, { interval: interval.value, limit: 200 })
-    candles.value = res.data || []
-    loadingCandles.value = false      // mount the container BEFORE drawing
-    await nextTick()
-    renderChart()
+    const res = await marketApi.getCandles(props.symbol, { interval: interval.value, limit: 500 })
+    const bars = (res.data || []).map(c => ({
+      timestamp: c.timestamp,
+      open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+    }))
+    noData.value = bars.length === 0
+    callback(bars, false)
+    if (!restored) {
+      restored = true
+      restoreIndicators()
+      restoreDrawings()
+    }
   } catch (e) {
-    console.error('candle load/render failed', e)
-    candles.value = []
+    console.error('candle load failed', e)
+    noData.value = true
+    callback([], false)
   } finally {
     loadingCandles.value = false
   }
 }
 
-async function changeTimeframe(tf) {
-  interval.value = tf
-  await loadCandles()
-}
-
-// ── Chart ────────────────────────────────────────────────────────
-function renderChart() {
-  if (!chartContainer.value || candles.value.length === 0) return
-
-  // Destroy previous instance
-  if (chart) {
-    chart.remove()
-    chart = null
-    candleSeries = null
-  }
-
-  chart = createChart(chartContainer.value, {
-    layout: {
-      background: { color: 'transparent' },
-      textColor:  '#9ca3af',
-    },
-    grid: {
-      vertLines:  { color: 'rgba(55,65,81,0.5)' },
-      horzLines:  { color: 'rgba(55,65,81,0.5)' },
-    },
-    crosshair: { mode: 1 },
-    rightPriceScale: { borderColor: '#374151' },
-    timeScale: {
-      borderColor: '#374151',
-      timeVisible: true,
-      secondsVisible: false,
-    },
-    width:  chartContainer.value.clientWidth,
-    height: 320,
-  })
-
-  candleSeries = chart.addSeries(CandlestickSeries, {
-    upColor:          '#22c55e',
-    downColor:        '#ef4444',
-    borderUpColor:    '#22c55e',
-    borderDownColor:  '#ef4444',
-    wickUpColor:      '#22c55e',
-    wickDownColor:    '#ef4444',
-  })
-
-  const data = candles.value.map(c => ({
-    time:  Math.floor(c.timestamp / 1000),
-    open:  c.open,
-    high:  c.high,
-    low:   c.low,
-    close: c.close,
-  }))
-  candleSeries.setData(data)
-  chart.timeScale().fitContent()
-}
-
-// Resize chart on window resize
 function onResize() {
-  if (chart && chartContainer.value) {
-    chart.applyOptions({ width: chartContainer.value.clientWidth })
+  chart?.resize()
+}
+
+// ── Indicators (persisted per symbol) ────────────────────────────
+function paneIdFor(name) {
+  const meta = INDICATORS.find(i => i.name === name)
+  return meta?.pane === 'main' ? CANDLE_PANE : `pane_${name}`
+}
+
+function restoreIndicators() {
+  activeIndicators.value = readStored('indicators', [...DEFAULT_INDICATORS])
+    .filter(name => INDICATORS.some(i => i.name === name))
+  activeIndicators.value.forEach(name => chart.createIndicator({ name, paneId: paneIdFor(name) }))
+}
+
+function toggleIndicator(name) {
+  if (!chart) return
+  if (activeIndicators.value.includes(name)) {
+    chart.removeIndicator({ paneId: paneIdFor(name), name })
+    activeIndicators.value = activeIndicators.value.filter(n => n !== name)
+  } else {
+    chart.createIndicator({ name, paneId: paneIdFor(name) })
+    activeIndicators.value = [...activeIndicators.value, name]
   }
+  writeStored('indicators', activeIndicators.value)
+}
+
+// ── Drawings (persisted per symbol) ──────────────────────────────
+function overlayCallbacks() {
+  return {
+    onDrawEnd: () => {
+      pendingOverlayId = null
+      activeTool.value = null
+      persistDrawings()
+      return false
+    },
+    onPressedMoveEnd: () => { persistDrawings(); return false },
+    onRemoved: () => { persistDrawings(); return false },
+  }
+}
+
+function selectTool(name) {
+  if (!chart) return
+  cancelPendingDraw()
+  if (activeTool.value === name) {
+    activeTool.value = null
+    return
+  }
+  activeTool.value = name
+  pendingOverlayId = chart.createOverlay({ name, ...overlayCallbacks() })
+}
+
+function cancelPendingDraw() {
+  if (chart && pendingOverlayId) chart.removeOverlay({ id: pendingOverlayId })
+  pendingOverlayId = null
+}
+
+function clearDrawings() {
+  if (!chart) return
+  cancelPendingDraw()
+  activeTool.value = null
+  chart.removeOverlay()
+  writeStored('overlays', [])
+}
+
+function persistDrawings() {
+  if (!chart) return
+  const overlays = chart.getOverlays()
+    .map(o => ({
+      name: o.name,
+      points: (o.points || []).map(pt => ({ timestamp: pt.timestamp, value: pt.value })),
+    }))
+    .filter(o => o.points.length > 0 && o.points.every(pt => pt.timestamp != null))
+  writeStored('overlays', overlays)
+}
+
+function restoreDrawings() {
+  readStored('overlays', []).forEach(o => {
+    chart.createOverlay({ name: o.name, points: o.points, ...overlayCallbacks() })
+  })
+}
+
+// ── Per-symbol chart preferences (localStorage; DB persistence is out of scope) ──
+function storageKey(kind) {
+  return `chart_${kind}_${props.symbol}`
+}
+
+function readStored(kind, fallback) {
+  try {
+    const raw = localStorage.getItem(storageKey(kind))
+    const parsed = raw ? JSON.parse(raw) : null
+    return Array.isArray(parsed) ? parsed : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeStored(kind, value) {
+  try {
+    localStorage.setItem(storageKey(kind), JSON.stringify(value))
+  } catch { /* private mode / quota — drawings just don't survive a reload */ }
+}
+
+function closeIndicatorMenu() {
+  indicatorMenuOpen.value = false
 }
 
 // ── Watchlist toggle ─────────────────────────────────────────────
@@ -357,17 +556,19 @@ async function toggleWatchlist() {
 // ── Lifecycle ────────────────────────────────────────────────────
 onMounted(async () => {
   window.addEventListener('resize', onResize)
+  document.addEventListener('click', closeIndicatorMenu)
   await loadData()
   await checkWatchlist()
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
-  if (chart) { chart.remove(); chart = null }
+  document.removeEventListener('click', closeIndicatorMenu)
+  destroyChart()
 })
 
 watch(() => props.symbol, async () => {
-  if (chart) { chart.remove(); chart = null }
+  destroyChart()
   await loadData()
   await checkWatchlist()
 })
@@ -460,16 +661,141 @@ a { text-decoration: none; }
   justify-content: space-between;
 }
 
-.chart-loading,
-.chart-empty {
-  height: 320px;
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.indicator-menu {
+  position: relative;
+}
+
+.indicator-trigger {
+  font-size: 0.75rem;
+  padding: 6px 10px;
+}
+
+.indicator-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--jd-card-2);
+  border: 1px solid var(--jd-border);
+  border-radius: 8px;
+  box-shadow: var(--jd-shadow-card);
+}
+
+.indicator-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--jd-text-muted);
+  font-family: var(--jd-mono);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background var(--jd-trans), color var(--jd-trans);
+}
+
+.indicator-option:hover {
+  background: var(--jd-card-hover);
+  color: var(--jd-text);
+}
+
+.indicator-option.active {
+  color: var(--jd-cyan);
+}
+
+.indicator-name {
+  flex: 1;
+  text-align: left;
+}
+
+.indicator-pane {
+  color: var(--jd-text-faint);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.chart-body {
+  display: flex;
+  gap: 10px;
+}
+
+.draw-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  padding-right: 10px;
+  border-right: 1px solid var(--jd-border);
+}
+
+.draw-tool {
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--jd-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--jd-trans);
+}
+
+.draw-tool:hover {
+  background: var(--jd-card-hover);
+  color: var(--jd-text);
+}
+
+.draw-tool.active {
+  border-color: var(--jd-cyan);
+  color: var(--jd-cyan);
+  box-shadow: var(--jd-shadow-glow);
+}
+
+.draw-tool.danger:hover {
+  color: var(--jd-red);
+}
+
+.rot90 {
+  transform: rotate(90deg);
+}
+
+.chart-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.chart-container {
+  width: 100%;
+  height: 520px;
+}
+
+.chart-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--jd-card);
   color: var(--jd-text-muted);
 }
 
-.chart-loading i {
+.chart-msg i {
   font-size: 24px;
   animation: spin 1s linear infinite;
 }
@@ -477,11 +803,6 @@ a { text-decoration: none; }
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
-}
-
-.chart-container {
-  width: 100%;
-  height: 320px;
 }
 
 .info-grid {

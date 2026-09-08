@@ -24,7 +24,7 @@
 
 ### `quant/` — 确定性引擎（framework-free，host venv 跑 R0 回测）
 - `config.py` — 只读常量（路径、universe、Master Settings 默认值）
-- `data/` — fetch · store (Parquet) · manifest · corporate_actions · calendar ·
+- `data/` — fetch · store (Parquet) · registry (PG file provenance) · corporate_actions · calendar ·
   universe · `bars.get_bars()`（唯一行情入口）
 - `engine/` — indicators · signal · strategy · funnel · sizing · exits（全纯函数）
 - `backtest/` — costs · simulator · metrics · walkforward · bias_checks

@@ -12,7 +12,7 @@
     "axios": "^1.4.0",
     "dayjs": "^1.11.8",
     "echarts": "^5.4.2",
-    "lightweight-charts": "^5.1.0",
+    "klinecharts": "10.0.3",
     "pinia": "^2.1.0",
     "primeicons": "^7.0.0",
     "tailwindcss": "^4.2.2",

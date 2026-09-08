@@ -117,6 +117,14 @@ celery_app.conf.beat_schedule.update({
         "schedule": 900.0,          # 15 min; RTH-gated inside the task
         "options": {"expires": 870},
     },
+    # 方案 Phase 8: EOD SIP correction — 01:30 UTC is past 20:00 ET + the
+    # free-tier 15-min SIP delay in both EDT and EST; the task re-gates itself
+    # on the XNYS calendar and only touches a session that has closed.
+    "market-eod-correction": {
+        "task": "market.eod_correction",
+        "schedule": crontab(hour=1, minute=30),
+        "options": {"expires": 3300},
+    },
     "quant-signal-cycle": {
         "task": "quant.signal_cycle",
         "schedule": crontab(hour=21, minute=30),   # post-close in both regimes

@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     # Finnhub (fundamental analysis data source — earnings, estimates, news, profile)
     FINNHUB_API_KEY: str = ""
 
+    # Chart candles read from the local Parquet store (quant.data.bars.get_bars)
+    # instead of the Alpaca IEX REST endpoint. Off = the REST path only.
+    MARKET_CANDLES_FROM_STORE: bool = True
+
     # Exchange defaults
     DEFAULT_SIMULATE_BALANCE: float = 10000.0  # USDT
     BINANCE_FEE_RATE: float = 0.001  # 0.1%

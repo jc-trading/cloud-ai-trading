@@ -267,10 +267,15 @@ class SystemMonitoringService:
             if system_metrics.get("disk"):
                 disk_percent = system_metrics["disk"].get("percent")
                 if disk_percent and disk_percent > settings.SYSTEM_DISK_CRITICAL_THRESHOLD:
+                    bar_store = system_metrics.get("bar_store") or {}
+                    store_note = (
+                        f" (bar store {SystemMetrics.format_bytes(bar_store['bytes'])})"
+                        if bar_store.get("bytes") else ""
+                    )
                     alerts.append({
                         "alert_type": "disk_high",
                         "severity": "critical",
-                        "message": f"High disk usage: {disk_percent:.1f}%",
+                        "message": f"High disk usage: {disk_percent:.1f}%{store_note}",
                         "current_value": disk_percent,
                         "threshold": settings.SYSTEM_DISK_CRITICAL_THRESHOLD,
                     })

@@ -4,9 +4,12 @@ from quant import config
 
 
 def test_config_imports_and_paths():
-    assert config.REPO_ROOT.name == "cloud-ai-trading"
+    # the repo mounts at /app inside the containers, so pin the shape not the name
+    assert (config.REPO_ROOT / "quant" / "config.py").exists()
     assert config.DATA_ROOT == config.REPO_ROOT / "cat-data"
-    assert config.MANIFEST_DB.parent == config.META_DIR
+    assert config.BARS_ROOT == config.REPO_ROOT / "stock-market-data"
+    assert config.ACTIONS_DB.parent == config.META_DIR
+    assert config.TIMEFRAMES == ("daily", "1hour", "1min")
 
 
 def test_master_settings_sane():

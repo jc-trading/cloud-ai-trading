@@ -8,5 +8,6 @@ numpy>=1.26,<3
 alpaca-py>=0.20            # market data + (R1) execution client
 exchange-calendars>=4.5    # XNYS trading calendar (design §8.2)
 python-dotenv>=1.0         # read repo .env for API keys (never hardcode)
+psycopg[binary]>=3.1       # raw PG driver for data/registry.py (no ORM here)
 vectorbt>=0.26             # single-symbol signal-quality sweeps (D1)
 pytest>=8.0

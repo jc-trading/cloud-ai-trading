@@ -2,10 +2,13 @@
 
 Upper layers (engine, backtest, R1 live) call ONLY this. It hides where bars are
 stored (Parquet now, could change), applies read-time corporate-action adjustment
-(RAW on disk -> adjusted on read), filters trading session, and resamples higher
-intraday timeframes from 5m. Storage can change and nothing above moves.
+(RAW on disk -> adjusted on read), filters trading session, and resamples the
+higher intraday timeframes from 1min. Storage can change and nothing above moves.
 
     get_bars(symbol, timeframe, start, end, adjust="split_div", session="regular")
+
+Stored timeframes are daily / 1hour / 1min (config.TIMEFRAMES); 5m/15m/30m are
+resampled from 1min on read.
 """
 
 from __future__ import annotations
@@ -20,28 +23,18 @@ from quant import config
 from quant.data import corporate_actions, store
 
 _ET = ZoneInfo("America/New_York")
-_DAILY_TF = {"1d", "1day", "d", "daily"}
-_BASE_INTRADAY_TF = {"5m", "5min"}
-# resampled-from-5m intraday timeframes -> pandas offset alias
-_RESAMPLE_TF = {"15m": "15min", "30m": "30min", "1h": "60min", "60m": "60min"}
+# public timeframe vocabulary -> the stored timeframe it reads
+_NATIVE_TF = {
+    "1d": "daily", "1day": "daily", "d": "daily", "daily": "daily",
+    "1h": "1hour", "60m": "1hour", "1hour": "1hour",
+    "1m": "1min", "1min": "1min",
+}
+# resampled-from-1min intraday timeframes -> pandas offset alias
+_RESAMPLE_TF = {"5m": "5min", "5min": "5min", "15m": "15min", "30m": "30min"}
 _REGULAR_OPEN = (9, 30)   # ET
 _REGULAR_CLOSE = (16, 0)  # ET (exclusive)
 
-
-def _slice(df: pd.DataFrame, start, end) -> pd.DataFrame:
-    if df.empty:
-        return df
-    if start is not None:
-        df = df[df["ts"] >= pd.Timestamp(start, tz="UTC")]
-    if end is not None:
-        end_ts = pd.Timestamp(end, tz="UTC")
-        if end_ts == end_ts.normalize():
-            # date-like end (no time part) means "through that day" — daily bars
-            # are anchored at 04:00/05:00Z, so midnight-UTC <= would silently
-            # exclude the end day itself (review F9)
-            end_ts = end_ts + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
-        df = df[df["ts"] <= end_ts]
-    return df.reset_index(drop=True)
+_slice = store.slice_range
 
 
 _SUSPICIOUS_JUMP = 0.5   # |1-day close move| beyond this with zero actions -> warn
@@ -66,23 +59,6 @@ def _warn_if_unadjusted(symbol: str, df: pd.DataFrame, actions: pd.DataFrame) ->
             stacklevel=3)
 
 
-def _read_intraday_range(symbol: str, start, end) -> pd.DataFrame:
-    """Concat the per-month 5m parquet files spanning [start, end] (ET months)."""
-    lo = pd.Timestamp(start).tz_localize(None) if start is not None else pd.Timestamp("2000-01-01")
-    hi = pd.Timestamp(end).tz_localize(None) if end is not None else pd.Timestamp.now()
-    frames = []
-    period = pd.Period(lo, freq="M")
-    last = pd.Period(hi, freq="M")
-    while period <= last:
-        df = store.read_intraday(symbol, period.year, period.month)
-        if not df.empty:
-            frames.append(df)
-        period += 1
-    if not frames:
-        return pd.DataFrame(columns=list(config.BAR_COLUMNS))
-    return store.normalize(pd.concat(frames, ignore_index=True))
-
-
 def _regular_session_filter(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -95,7 +71,7 @@ def _regular_session_filter(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resample(df: pd.DataFrame, alias: str) -> pd.DataFrame:
-    """Resample 5m -> higher intraday timeframe, aligned to the 09:30 ET session
+    """Resample 1min -> higher intraday timeframe, aligned to the 09:30 ET session
     open (empty overnight buckets are dropped)."""
     if df.empty:
         return df
@@ -121,16 +97,32 @@ def get_bars(symbol: str, timeframe: str = "1d", start: date | str | None = None
 
     adjust : 'split_div' (default) | 'split' | 'none'
     session: 'regular' (09:30-16:00 ET) | 'all' (include pre/post) — intraday only.
+
+    Intraday timeframes are RAW only: corporate_actions.adjust derives each
+    dividend factor from the last close before the ex-date *inside the frame it
+    is given*, which a windowed intraday read cannot supply. Requesting an
+    adjustment on an intraday timeframe raises rather than returning a number
+    that silently depends on the window.
     """
     tf = timeframe.lower()
-    is_intraday = tf not in _DAILY_TF
+    stored_tf = _NATIVE_TF.get(tf)
+    is_intraday = stored_tf != "daily"
+    if is_intraday and adjust != "none":
+        raise ValueError(
+            f"adjust={adjust!r} is not supported for intraday timeframe "
+            f"{timeframe!r} — intraday bars are served RAW; pass adjust='none'")
 
-    if tf in _DAILY_TF:
-        raw = store.read_daily(symbol)
-    elif tf in _BASE_INTRADAY_TF:
-        raw = _read_intraday_range(symbol, start, end)
+    if stored_tf == "daily":
+        # the FULL history, then adjust, then window: the dividend factor comes
+        # from the last close before each ex-date, so adjusting a frame that was
+        # already truncated at `end` moves every price in it
+        raw = store.read_bars(symbol, stored_tf, None, None)
+    elif stored_tf is not None:
+        raw = store.read_bars(symbol, stored_tf, start, end)
+        if session == "regular":
+            raw = _regular_session_filter(raw)
     elif tf in _RESAMPLE_TF:
-        base = _read_intraday_range(symbol, start, end)
+        base = store.read_bars(symbol, "1min", start, end)
         if session == "regular":
             base = _regular_session_filter(base)
         raw = _resample(base, _RESAMPLE_TF[tf])
@@ -143,12 +135,7 @@ def get_bars(symbol: str, timeframe: str = "1d", start: date | str | None = None
     # read-time adjustment (RAW on disk -> adjusted)
     if adjust != "none":
         actions = corporate_actions.load_actions(symbol)
-        if not is_intraday:
-            _warn_if_unadjusted(symbol, raw, actions)
+        _warn_if_unadjusted(symbol, raw, actions)
         raw = corporate_actions.adjust(raw, actions, mode=adjust)
-
-    # session filter for base intraday (resampled path already filtered pre-resample)
-    if is_intraday and tf in _BASE_INTRADAY_TF and session == "regular":
-        raw = _regular_session_filter(raw)
 
     return _slice(raw, start, end)

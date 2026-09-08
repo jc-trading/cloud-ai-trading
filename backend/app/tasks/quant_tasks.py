@@ -7,6 +7,8 @@
                         no-ops): protections gate -> book shortlisted entries
   quant.position_cycle  every 5 min in RTH: stop-breach checks at live quotes
   quant.heartbeat       every minute: liveness row the watchdog reads
+  market.eod_correction 01:30 UTC: re-source the closed session's 1min bars
+                        from SIP over the IEX stream's files (方案 Phase 8)
 
 Every task: XNYS-calendar gated, outbound calls carry timeouts (07-04 incident
 rules), never raises out of the worker, and the position/entry writers are the
@@ -310,3 +312,44 @@ def signal_cycle():
     except Exception:
         logger.exception("quant.signal_cycle failed")
         return "error"
+
+
+@shared_task(name="market.eod_correction", soft_time_limit=1500, time_limit=1700)
+def eod_correction():
+    """Post-close: re-source the last completed ET session's 1min bars from SIP
+    (provider flips alpaca:iex -> alpaca:sip), sync that day's 1hour bars, and
+    record the IEX-vs-SIP feed comparison + completeness in
+    market_data_files.meta. Thin wrapper — the logic lives in
+    quant.data.eod_correction so it can be replayed for a past day with
+    `python -m quant.data.eod_correction --date YYYY-MM-DD`."""
+    from quant.data import eod_correction as qeod
+
+    try:
+        report = qeod.run()
+    except Exception:
+        logger.exception("market.eod_correction failed")
+        return "error"
+    if report.skipped:
+        return f"skipped: {report.skipped}"
+
+    async def _do():
+        async with CeleryAsyncSessionLocal() as db:
+            meta = {"day": str(report.day), "symbols": len(report.symbols),
+                    "corrected": len(report.corrected), "partial": len(report.partial),
+                    "stale": len(report.stale), "rows": report.rows}
+            if report.fail_closed:
+                meta["fail_closed"] = report.fail_closed
+            await _beat(db, "market_eod_correction", **meta)
+            await db.commit()
+            if report.fail_closed:
+                await _notify("⛔ market.eod_correction fail-closed: "
+                              f"{report.fail_closed} for {report.day} — no 1min "
+                              "file overwritten, rows marked stale")
+            elif report.partial:
+                await _notify(f"⚠️ {report.day} 1min incomplete for "
+                              + ", ".join(report.partial[:10]))
+    try:
+        _run_async(_do())
+    except Exception:
+        logger.exception("market.eod_correction bookkeeping failed")
+    return report.summary()

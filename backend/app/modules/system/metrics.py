@@ -1,6 +1,8 @@
 """System metrics collection using psutil."""
 
 import logging
+import time
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -9,6 +11,9 @@ except ImportError:
     psutil = None
 
 logger = logging.getLogger(__name__)
+
+BAR_STORE_TTL_SECONDS = 3600
+_bar_store_cache: dict = {}
 
 
 class SystemMetrics:
@@ -78,6 +83,46 @@ class SystemMetrics:
             return None
 
     @staticmethod
+    def get_bar_store_metrics(path: Optional[str] = None) -> Optional[dict]:
+        """Size of the Parquet bar store (stock-market-data/). It is the one
+        directory on this host that grows without bound — 100 symbols x 5 years
+        of 1min is ~126k files — so its share of the disk is worth a gauge.
+
+        Walking that tree costs seconds, and the collector runs every 60s, so a
+        measurement is reused for BAR_STORE_TTL_SECONDS; the number moves once
+        a night anyway."""
+        try:
+            from quant import config as quant_config
+
+            root = Path(path) if path else quant_config.BARS_ROOT
+        except Exception as e:
+            logger.error(f"Error resolving bar store path: {e}")
+            return None
+
+        key = str(root)
+        cached = _bar_store_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] < BAR_STORE_TTL_SECONDS:
+            return cached[1]
+
+        if not root.exists():
+            result = {"path": key, "bytes": 0, "files": 0}
+            _bar_store_cache[key] = (time.monotonic(), result)
+            return result
+        total = 0
+        files = 0
+        try:
+            for entry in root.rglob("*"):
+                if entry.is_file():
+                    total += entry.stat().st_size
+                    files += 1
+        except OSError as e:
+            logger.error(f"Error sizing bar store: {e}")
+            return None
+        result = {"path": key, "bytes": total, "files": files}
+        _bar_store_cache[key] = (time.monotonic(), result)
+        return result
+
+    @staticmethod
     def get_network_metrics() -> Optional[dict]:
         """Get network I/O metrics."""
         if psutil is None:
@@ -107,6 +152,7 @@ class SystemMetrics:
             "cpu": SystemMetrics.get_cpu_metrics(),
             "memory": SystemMetrics.get_memory_metrics(),
             "disk": SystemMetrics.get_disk_metrics(),
+            "bar_store": SystemMetrics.get_bar_store_metrics(),
             "network": SystemMetrics.get_network_metrics(),
         }
 

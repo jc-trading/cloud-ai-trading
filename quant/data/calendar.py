@@ -51,6 +51,23 @@ def previous_session(d: date | str | pd.Timestamp) -> date:
     return _CAL.date_to_session(ts, direction="previous").date()
 
 
+def is_early_close(d: date | str | pd.Timestamp) -> bool:
+    """True on a half day (13:00 ET close instead of 16:00) — the after-hours
+    tape stops early too, which changes the day's expected bar count."""
+    ts = _ts(d)
+    if not _CAL.is_session(ts):
+        return False
+    close_et = _CAL.session_close(ts).tz_convert("America/New_York")
+    return bool(close_et.hour < 16)
+
+
+def rth_bounds(d: date | str | pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """The regular session's [open, close) in UTC — 09:30-16:00 ET, or the
+    13:00 ET close on a half day."""
+    ts = _ts(d)
+    return _CAL.session_open(ts), _CAL.session_close(ts)
+
+
 def sessions_in_range(start, end) -> list[date]:
     idx = _CAL.sessions_in_range(_ts(start), _ts(end))
     return [t.date() for t in idx]

@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS corporate_actions (
 
 
 def _connect(db_path: Path | None = None) -> sqlite3.Connection:
-    path = db_path or config.MANIFEST_DB
+    path = db_path or config.ACTIONS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.execute(_SCHEMA)

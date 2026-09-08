@@ -23,7 +23,7 @@ pytest quant/tests
 ## Layout
 
 - `config.py` — read-only constants (paths, universe, Master Settings defaults)
-- `data/` — fetch · store (Parquet) · manifest · corporate_actions · calendar ·
+- `data/` — fetch · store (Parquet) · registry (PG file provenance) · corporate_actions · calendar ·
   universe · **`bars.get_bars()`** (the only market-data entry point)
 - `engine/` — indicators · signal · strategy · funnel · sizing · exits (all pure)
 - `backtest/` — costs · simulator (thin, <500 lines) · metrics · walkforward · bias_checks

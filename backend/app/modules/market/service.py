@@ -1,6 +1,10 @@
 """
 Market data service — US stocks only (Direction v3; crypto plane deleted).
 
+Candles  → the local Parquet store via quant.data.bars.get_bars (方案 Phase 7);
+           symbols the store does not cover fall back to Alpaca IEX REST, which
+           is returned but never persisted (never mix an IEX file into the SIP
+           store). Toggle with MARKET_CANDLES_FROM_STORE.
 US Stocks → Alpaca Data API v2 (requires ALPACA_API_KEY in .env)
 Quotes    → Finnhub real-time /quote overrides Alpaca's delayed IEX prices
 Search    → Finnhub /search (full US universe) + curated stock list fallback
@@ -8,12 +12,18 @@ Search    → Finnhub /search (full US universe) + curated stock list fallback
 
 import asyncio
 import logging
-from datetime import datetime
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
+from app.core.exceptions import NotFoundException
 from app.modules.fundamentals.finnhub_client import get_finnhub_client
+from app.modules.market.models import MarketDataFile, MarketStreamSymbol
 
 logger = logging.getLogger("cloud_ai_trading.market")
 
@@ -194,8 +204,17 @@ ALPACA_DATA_URL = "https://data.alpaca.markets"
 ALPACA_TRADING_URL = "https://api.alpaca.markets"
 ALPACA_INTERVAL_MAP = {
     "1m": "1Min", "5m": "5Min", "15m": "15Min",
-    "1h": "1Hour", "4h": "4Hour", "1d": "1Day",
+    "1h": "1Hour", "1d": "1Day",
 }
+
+# ── Local Parquet store (quant) ──────────────────────────────────
+# Chart interval -> the timeframe vocabulary get_bars() speaks. 5m/15m are
+# resampled from 1min inside get_bars; only daily may be adjusted, intraday is
+# served RAW (get_bars raises on any other adjust for an intraday timeframe).
+STORE_INTERVAL_MAP = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}
+# regular-session bars per trading day — how the read window is sized
+_SESSION_BARS = {"1m": 390, "5m": 78, "15m": 26, "1h": 7, "1d": 1}
+_WINDOW_PAD_DAYS = 5  # holidays inside the window
 
 # ── Shared HTTP clients ──────────────────────────────────────────
 # These singletons are bound to the event loop they were created on. In FastAPI
@@ -244,6 +263,119 @@ def _get_alpaca_client() -> Optional[httpx.AsyncClient]:
         )
         _alpaca_data_client_loop = loop
     return _alpaca_data_client
+
+
+# ── Candle window + store reads ──────────────────────────────────
+
+def _candle_window(interval: str, limit: int,
+                   end: Optional[datetime] = None) -> tuple[datetime, datetime]:
+    """Turn `limit` bars into the calendar window that certainly contains them.
+
+    Only ~5 of every 7 calendar days trade and holidays eat a few more, so the
+    window is deliberately wider than the arithmetic minimum; the caller takes
+    the tail `limit` rows afterwards.
+    """
+    end = end or datetime.now(timezone.utc)
+    sessions = math.ceil(limit / _SESSION_BARS[interval])
+    days = math.ceil(sessions * 7 / 5) + _WINDOW_PAD_DAYS
+    return end - timedelta(days=days), end
+
+
+def _rfc3339(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _bar_rows(df, limit: int) -> list[dict]:
+    rows = []
+    for r in df.tail(limit).itertuples(index=False):
+        rows.append({
+            "timestamp": int(r.ts.timestamp() * 1000),
+            "open": _f(r.open) or 0.0,
+            "high": _f(r.high) or 0.0,
+            "low": _f(r.low) or 0.0,
+            "close": _f(r.close) or 0.0,
+            "volume": _f(r.volume) or 0.0,
+        })
+    return rows
+
+
+def _read_store_candles(symbol: str, interval: str, start: datetime,
+                        end: datetime, limit: int) -> list[dict]:
+    """Chart candles out of the Parquet store. Returns [] when the symbol/timeframe
+    is not covered (~700 symbols have daily only) so the caller can fall back."""
+    from quant.data.bars import get_bars
+
+    timeframe = STORE_INTERVAL_MAP[interval]
+    try:
+        df = get_bars(symbol.upper(), timeframe, start=start, end=end,
+                      adjust="split_div" if timeframe == "1d" else "none")
+    except Exception as e:
+        logger.warning(f"store candles failed for {symbol} {interval}: {e}")
+        return []
+    return _bar_rows(df, limit) if not df.empty else []
+
+
+def _read_store_bars(symbol: str, timeframe: str, start, end, limit: int) -> list[dict]:
+    """Raw stored bars for the read-only /bars endpoint — no adjustment and no
+    session filter, so what comes back is exactly what the files hold."""
+    from quant.data.bars import get_bars
+
+    try:
+        df = get_bars(symbol.upper(), timeframe, start=start, end=end,
+                      adjust="none", session="all")
+    except Exception as e:
+        logger.warning(f"store bars failed for {symbol} {timeframe}: {e}")
+        return []
+    if df.empty:
+        return []
+    return [
+        {
+            "t": r.ts.to_pydatetime(),
+            "o": _f(r.open) or 0.0,
+            "h": _f(r.high) or 0.0,
+            "l": _f(r.low) or 0.0,
+            "c": _f(r.close) or 0.0,
+            "v": _f(r.volume) or 0.0,
+            "vwap": _f(r.vwap),
+            "n": int(r.trade_count) if _f(r.trade_count) else None,
+        }
+        for r in df.tail(limit).itertuples(index=False)
+    ]
+
+
+async def _alpaca_rest_candles(symbol: str, interval: str, start: datetime,
+                               end: datetime, limit: int) -> list[dict]:
+    """Alpaca IEX fallback for symbols the store does not cover. `start` is always
+    sent — without it Alpaca answers with today's bars only."""
+    client = _get_alpaca_client()
+    if not client:
+        return []
+    try:
+        resp = await client.get(
+            f"{ALPACA_DATA_URL}/v2/stocks/bars",
+            params={
+                "symbols": symbol,
+                "timeframe": ALPACA_INTERVAL_MAP[interval],
+                "start": _rfc3339(start),
+                "end": _rfc3339(end),
+                "limit": limit,
+                "feed": "iex",
+                "sort": "desc",
+            },
+        )
+        resp.raise_for_status()
+        bars = resp.json().get("bars", {}).get(symbol, [])
+        bars = sorted(bars, key=lambda b: b["t"])[-limit:]
+        return [
+            {
+                "timestamp": int(datetime.fromisoformat(b["t"].replace("Z", "+00:00")).timestamp() * 1000),
+                "open": b["o"], "high": b["h"], "low": b["l"], "close": b["c"], "volume": b["v"],
+            }
+            for b in bars
+        ]
+    except Exception as e:
+        logger.error(f"Alpaca stock candles failed for {symbol}: {e}")
+        return []
 
 
 # ── Popular stocks index for fast search (deduped by symbol) ─────
@@ -299,28 +431,79 @@ class MarketService:
 
     @staticmethod
     async def get_stock_candles(symbol: str, interval: str = "1h", limit: int = 100) -> list[dict]:
-        client = _get_alpaca_client()
-        if not client:
-            return []
-        timeframe = ALPACA_INTERVAL_MAP.get(interval, "1Hour")
-        try:
-            resp = await client.get(
-                f"{ALPACA_DATA_URL}/v2/stocks/bars",
-                params={"symbols": symbol, "timeframe": timeframe, "limit": limit, "feed": "iex", "sort": "desc"},
-            )
-            resp.raise_for_status()
-            bars = resp.json().get("bars", {}).get(symbol, [])
-            bars = sorted(bars, key=lambda b: b["t"])
-            return [
-                {
-                    "timestamp": int(datetime.fromisoformat(b["t"].replace("Z", "+00:00")).timestamp() * 1000),
-                    "open": b["o"], "high": b["h"], "low": b["l"], "close": b["c"], "volume": b["v"],
-                }
-                for b in bars
-            ]
-        except Exception as e:
-            logger.error(f"Alpaca stock candles failed for {symbol}: {e}")
-            return []
+        if interval not in STORE_INTERVAL_MAP:
+            interval = "1h"
+        start, end = _candle_window(interval, limit)
+        if get_settings().MARKET_CANDLES_FROM_STORE:
+            rows = await asyncio.to_thread(
+                _read_store_candles, symbol, interval, start, end, limit)
+            if rows:
+                return rows
+        return await _alpaca_rest_candles(symbol, interval, start, end, limit)
+
+    # ── Local store: raw bars + subscription set ──────────────────
+
+    @staticmethod
+    async def get_bars(db: AsyncSession, symbol: str, timeframe: str, start=None,
+                       end=None, limit: int = 1000) -> dict:
+        """Read-only bars envelope: the stored rows plus the provenance of the
+        newest registered file for that (symbol, timeframe)."""
+        rows = await asyncio.to_thread(
+            _read_store_bars, symbol, timeframe, start, end, limit)
+        meta = (await db.execute(
+            select(MarketDataFile.provider, MarketDataFile.last_ts)
+            .where(MarketDataFile.symbol == symbol.upper(),
+                   MarketDataFile.timeframe == timeframe)
+            .order_by(MarketDataFile.last_ts.desc())
+            .limit(1)
+        )).first()
+        return {
+            "symbol": symbol.upper(),
+            "timeframe": timeframe,
+            "provider": meta[0] if meta else None,
+            "last_ts": meta[1] if meta else None,
+            "bars": rows,
+        }
+
+    @staticmethod
+    async def list_stream_symbols(db: AsyncSession) -> list[MarketStreamSymbol]:
+        result = await db.execute(
+            select(MarketStreamSymbol)
+            .order_by(MarketStreamSymbol.priority.asc(), MarketStreamSymbol.symbol.asc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def upsert_stream_symbol(db: AsyncSession, symbol: str, priority: int,
+                                   note: Optional[str]) -> MarketStreamSymbol:
+        sym = symbol.strip().upper()
+        result = await db.execute(
+            select(MarketStreamSymbol).where(MarketStreamSymbol.symbol == sym)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            row = MarketStreamSymbol(symbol=sym, priority=priority, note=note)
+            db.add(row)
+        else:
+            row.priority = priority
+            row.note = note
+        row.enabled = True
+        await db.flush()
+        await db.refresh(row)
+        return row
+
+    @staticmethod
+    async def disable_stream_symbol(db: AsyncSession, symbol: str) -> MarketStreamSymbol:
+        result = await db.execute(
+            select(MarketStreamSymbol).where(MarketStreamSymbol.symbol == symbol.strip().upper())
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise NotFoundException(f"Stream symbol {symbol.strip().upper()}")
+        row.enabled = False
+        await db.flush()
+        await db.refresh(row)
+        return row
 
     # ── Search (autocomplete) ─────────────────────────────────────
 

@@ -21,11 +21,15 @@ from pathlib import Path
 # --------------------------------------------------------------------------
 # repo root = two levels up from this file (quant/config.py -> quant/ -> repo)
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
+# Bars live in their own root (方案 Phase 4); cat-data keeps the research
+# artefacts (universe/, r09/, _meta/) that are NOT market data.
+BARS_ROOT: Path = REPO_ROOT / "stock-market-data"  # gitignored; created on demand
 DATA_ROOT: Path = REPO_ROOT / "cat-data"          # gitignored; created on demand
-BARS_DIR: Path = DATA_ROOT / "bars"
 UNIVERSE_DIR: Path = DATA_ROOT / "universe"
 META_DIR: Path = DATA_ROOT / "_meta"
-MANIFEST_DB: Path = META_DIR / "manifest.db"       # SQLite (D2); migrates to PG in R1
+# keeps its historical file name so the cached corporate actions survive the
+# bar-manifest retirement — the SQLite file now holds ONLY those actions
+ACTIONS_DB: Path = META_DIR / "manifest.db"
 SCHEMA_VERSION_FILE: Path = META_DIR / "schema_version.json"
 
 # --------------------------------------------------------------------------
@@ -35,16 +39,23 @@ SCHEMA_VERSION_FILE: Path = META_DIR / "schema_version.json"
 # (free-tier-legal full-market SIP incl. pre/post). Never pull history via IEX.
 DATA_FEED: str = "sip"
 SIP_DELAY_MINUTES: int = 15
+# Provider keys resolved by quant.data.providers.get_historical/get_realtime.
+# Upgrading to the paid SIP stream = change PROVIDER_REALTIME + its DataFeed.
+PROVIDER_HISTORICAL: str = "alpaca:sip"
+PROVIDER_REALTIME: str = "alpaca:iex"
 # Bar schema stored in Parquet (indicators are NOT persisted — computed in memory)
 BAR_COLUMNS: tuple[str, ...] = (
     "ts", "open", "high", "low", "close", "volume", "vwap", "trade_count",
 )
 PARQUET_COMPRESSION: str = "zstd"
+# The stored timeframe vocabulary — the ONLY three that reach disk. 5m was
+# retired in Phase 2 (resampled from 1min on read). providers/base.py re-exports
+# this so a provider and the store can never disagree on the vocabulary.
+TIMEFRAMES: tuple[str, ...] = ("daily", "1hour", "1min")
 
-# Storage layout (design §4.2–4.3): daily per-symbol, 5m per-symbol-per-month.
+# Storage layout (方案 §目标 2): {symbol}/{timeframe}/{period_key}.parquet
 DAILY_HISTORY_YEARS: int = 10
-INTRADAY_HISTORY_YEARS: int = 2
-INTRADAY_TIMEFRAME: str = "5Min"
+INTRADAY_HISTORY_YEARS: int = 5
 DAILY_TIMEFRAME: str = "1Day"
 
 # --------------------------------------------------------------------------

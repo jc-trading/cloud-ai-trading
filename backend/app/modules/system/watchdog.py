@@ -12,7 +12,9 @@ signals that cannot lie:
      QUEUE_DEPTH_ALERT within ~1.5h.
   2. Quant heartbeats — worker liveness, RTH stop monitoring, and the nightly
      signal cycle measured against its last EXPECTED session run.
-  3. Sim-ledger invariants — every open lot must carry a usable stop.
+  3. Market data coverage — the realtime 1min writer's heartbeat inside the
+     session window, and any file last night's EOD SIP correction could not fix.
+  4. Sim-ledger invariants — every open lot must carry a usable stop.
 
 Alerts go to Telegram (already wired for signals/orders) with a per-check
 cooldown, and are always logged at ERROR for the container logs.
@@ -21,6 +23,8 @@ cooldown, and are always logged at ERROR for the container logs.
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
@@ -157,6 +161,101 @@ async def _check_quant_heartbeats() -> None:
             )
 
 
+# 方案 Phase 8: the realtime writer beats every 60s; a restart takes ~60s, so 3
+# minutes of silence during the session is a real outage, not a redeploy.
+MARKET_STREAM_STALE = 3 * 60
+EOD_CORRECTION_GRACE = 3600      # slack after the scheduled 01:30 UTC run
+
+
+async def _check_market_stream() -> None:
+    """Realtime bar coverage: the WS writer's heartbeat during the session
+    window, and whether last night's EOD SIP correction left the previous
+    session's files uncorrected."""
+    from app.database import AsyncSessionLocal
+    from app.modules.market.models import MarketDataFile
+    from app.modules.simledger.models import HeartbeatRecord
+    from quant import config as qconfig
+    from quant.data import calendar as qcal
+    from quant.data import eod_correction as qeod
+
+    now = time.time()
+    now_utc = datetime.now(timezone.utc)
+    day = now_utc.astimezone(ZoneInfo("America/New_York")).date()
+    open_ts, close_ts = qeod.session_window(day)
+    in_session = (qcal.is_trading_day(day)
+                  and open_ts.to_pydatetime() <= now_utc < close_ts.to_pydatetime())
+
+    async with AsyncSessionLocal() as db:
+        beat = (await db.execute(
+            select(HeartbeatRecord).where(HeartbeatRecord.name == "market_stream")
+        )).scalar_one_or_none()
+
+        if in_session:
+            age = None if beat is None else now - beat.last_beat_at.timestamp()
+            if age is None or age > MARKET_STREAM_STALE:
+                await _alert(
+                    "market stream stale",
+                    f"Session is open but the market_stream heartbeat is "
+                    f"{'missing' if age is None else f'{age / 60:.0f}m old'} "
+                    f"(limit {MARKET_STREAM_STALE // 60}m) — today's 1min bars are "
+                    f"NOT being recorded; restart cat_market_stream.",
+                )
+            else:
+                _last_alert_at.pop("market stream stale", None)
+        else:
+            _last_alert_at.pop("market stream stale", None)
+
+        corrected_day = qcal.previous_session(day)
+        # a file still stamped alpaca:iex is an EOD run that never happened —
+        # it looks perfectly healthy on status alone
+        bad = list((await db.execute(
+            select(MarketDataFile.symbol, MarketDataFile.status,
+                   MarketDataFile.provider).where(
+                MarketDataFile.timeframe == "1min",
+                MarketDataFile.period_key == corrected_day.isoformat(),
+                (MarketDataFile.status.in_(("stale", "partial"))
+                 | (MarketDataFile.provider != qconfig.PROVIDER_HISTORICAL)))
+        )).all())
+
+        eod_beat = (await db.execute(
+            select(HeartbeatRecord).where(
+                HeartbeatRecord.name == "market_eod_correction")
+        )).scalar_one_or_none()
+
+    from datetime import datetime as _dt
+
+    session = qeod.last_completed_session(now_utc)
+    expected = None
+    if session is not None:
+        # the correction for session S runs 01:30 UTC the next calendar day
+        expected = _dt(session.year, session.month, session.day, 1, 30,
+                       tzinfo=timezone.utc).timestamp() + 86400
+    if expected is not None and now >= expected + EOD_CORRECTION_GRACE:
+        if eod_beat is None or eod_beat.last_beat_at.timestamp() < expected:
+            age = ("never" if eod_beat is None
+                   else f"{(now - eod_beat.last_beat_at.timestamp()) / 3600:.0f}h ago")
+            await _alert(
+                "eod correction missed",
+                f"market.eod_correction last ran {age} and the run due for "
+                f"session {session} is overdue — that session's 1min bars are "
+                f"still on the IEX feed. Check beat + worker logs.",
+            )
+        else:
+            _last_alert_at.pop("eod correction missed", None)
+
+    if bad:
+        await _alert(
+            "eod correction incomplete",
+            f"{corrected_day}: {len(bad)} 1min files left uncorrected — "
+            + ", ".join(f"{sym} ({status if status != 'ok' else prov})"
+                        for sym, status, prov in bad[:10])
+            + ". Re-run: docker compose exec market-stream python -m "
+            f"quant.data.eod_correction --date {corrected_day}",
+        )
+    else:
+        _last_alert_at.pop("eod correction incomplete", None)
+
+
 async def _check_sim_stops() -> None:
     """TOP-severity: every open sim lot must carry a usable stop — a lot without
     one has NO exit protection (the internal analog of 'every position has a
@@ -189,6 +288,7 @@ async def run_watchdog() -> None:
     checks = (
         ("queue", _check_queue_depth),
         ("quant heartbeats", _check_quant_heartbeats),
+        ("market stream", _check_market_stream),
         ("sim stops", _check_sim_stops),
     )
     while True:

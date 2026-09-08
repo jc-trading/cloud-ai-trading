@@ -56,6 +56,13 @@ celerybeat.pid
 template/
 .gstack/
 
-# CAT quant core — local market-data cache (Parquet + SQLite manifest); never commit
+# CAT quant core — local market-data cache; never commit.
+# cat-data/ = research artefacts (universe, r09, corporate-action cache);
+# stock-market-data/ = the bar store (Parquet, one file per symbol/timeframe/period)
 cat-data/
+stock-market-data/
 runtime/
+
+# Local tool output (code index / knowledge graph), never committed
+.codegraph/
+graphify-out/
