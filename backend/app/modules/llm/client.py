@@ -11,10 +11,19 @@ the recommendation explanation layer (see signal_cycle). The call is bounded by
 a timeout (07-04 incident rule) and NEVER raises out — a provider failure is
 logged as a failed row and returned as ``LLMResult(success=False)``.
 
+Which provider is used is env-selected (``AI_PROVIDER`` = ``claude`` |
+``deepseek``). DeepSeek serves an Anthropic-compatible endpoint, so both run on
+the same ``anthropic`` SDK — only the key, base URL and default model differ.
+``llm_calls.platform`` records which one actually served the call.
+
 Prices are per 1,000,000 tokens, USD (source: claude-api skill, 2026-06 cache):
   haiku-4.5  $1 / $5     sonnet-5  $3 / $15     opus-4.8  $5 / $25
-Update LLM_PRICES when Anthropic changes pricing; historical rows are unaffected
-because each row snapshots the price it was charged at.
+DeepSeek bills peak/off-peak since 2026-08-16 (peak = Mon-Fri 01:00-04:00 and
+06:00-10:00 UTC):
+  v4-flash  $0.44 / $1.32 peak, $0.22 / $0.66 off-peak
+  v4-pro    $1.32 / $3.96 peak, $0.66 / $1.98 off-peak
+Update LLM_PRICES when a provider changes pricing; historical rows are
+unaffected because each row snapshots the price it was charged at.
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -32,25 +42,72 @@ from app.modules.llm.models import LLMCall
 
 logger = logging.getLogger(__name__)
 
-PLATFORM = "anthropic"
-
-# (platform, model) -> (input_$/1M, output_$/1M)
+# (platform, model) -> (input_$/1M, output_$/1M). DeepSeek rows carry the
+# OFF-PEAK rate; DEEPSEEK_PEAK_PRICES replaces them inside the peak window.
 LLM_PRICES: dict[tuple[str, str], tuple[float, float]] = {
     ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),
     ("anthropic", "claude-haiku-4-5-20251001"): (1.00, 5.00),
     ("anthropic", "claude-sonnet-5"): (3.00, 15.00),
     ("anthropic", "claude-opus-4-8"): (5.00, 25.00),
+    ("deepseek", "deepseek-v4-flash"): (0.22, 0.66),
+    ("deepseek", "deepseek-v4-pro"): (0.66, 1.98),
 }
 
+DEEPSEEK_PEAK_PRICES: dict[str, tuple[float, float]] = {
+    "deepseek-v4-flash": (0.44, 1.32),
+    "deepseek-v4-pro": (1.32, 3.96),
+}
 
-def price_for(platform: str, model: str) -> tuple[Decimal, Decimal]:
-    """Per-1M (input, output) USD prices; (0, 0) with a warning if unknown so an
-    unpriced model still logs (cost 0) rather than crashing the caller."""
+# Mon-Fri UTC hour ranges [start, end) billed at the peak rate.
+DEEPSEEK_PEAK_HOURS_UTC = ((1, 4), (6, 10))
+
+
+def _is_deepseek_peak(at: datetime) -> bool:
+    utc = at.astimezone(timezone.utc) if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    if utc.weekday() >= 5:
+        return False
+    return any(start <= utc.hour < end for start, end in DEEPSEEK_PEAK_HOURS_UTC)
+
+
+def price_for(platform: str, model: str,
+              at: datetime | None = None) -> tuple[Decimal, Decimal]:
+    """Per-1M (input, output) USD prices at time ``at`` (UTC, default now) —
+    DeepSeek is billed peak/off-peak, Anthropic is flat. Unknown models return
+    (0, 0) with a warning so an unpriced model still logs (cost 0) rather than
+    crashing the caller."""
     prices = LLM_PRICES.get((platform, model))
     if prices is None:
         logger.warning("no price for %s/%s — logging call at $0", platform, model)
         return Decimal(0), Decimal(0)
+    if platform == "deepseek" and _is_deepseek_peak(at or datetime.now(timezone.utc)):
+        prices = DEEPSEEK_PEAK_PRICES.get(model, prices)
     return Decimal(str(prices[0])), Decimal(str(prices[1]))
+
+
+@dataclass(frozen=True)
+class Provider:
+    platform: str
+    api_key: str
+    base_url: str | None
+    default_model: str
+    key_env: str
+
+
+def resolve_provider() -> Provider:
+    """Map ``settings.AI_PROVIDER`` onto the concrete platform label, credentials
+    and default model the SDK is driven with. DeepSeek is served through its
+    Anthropic-compatible endpoint, hence the shared client with a base_url."""
+    provider = (settings.AI_PROVIDER or "").strip().lower()
+    if provider == "claude":
+        return Provider("anthropic", settings.ANTHROPIC_API_KEY, None,
+                        settings.ANTHROPIC_MODEL, "ANTHROPIC_API_KEY")
+    if provider == "deepseek":
+        return Provider("deepseek", settings.DEEPSEEK_API_KEY,
+                        settings.DEEPSEEK_BASE_URL, settings.DEEPSEEK_MODEL,
+                        "DEEPSEEK_API_KEY")
+    raise ValueError(
+        f"unsupported AI_PROVIDER {settings.AI_PROVIDER!r} — use 'claude' or 'deepseek'"
+    )
 
 
 @dataclass
@@ -83,29 +140,37 @@ async def call_llm(
     caller commits). Returns the text plus usage/cost. Never raises: on any
     failure a ``success=False`` row is written and returned.
 
-    If ``ANTHROPIC_API_KEY`` is unset the call is SKIPPED and nothing is logged
-    (no call was made) — ``LLMResult.skipped`` is True.
+    If the selected provider's API key is unset — or ``AI_PROVIDER`` names an
+    unsupported provider — the call is SKIPPED and nothing is logged (no call
+    was made) — ``LLMResult.skipped`` is True.
     """
-    if not settings.ANTHROPIC_API_KEY:
-        logger.warning("call_llm skipped (%s): ANTHROPIC_API_KEY not set", context)
+    def _skip(reason: str) -> LLMResult:
+        logger.warning("call_llm skipped (%s): %s", context, reason)
         return LLMResult(text=None, call_id=None, input_tokens=0,
                          output_tokens=0, cost_usd=Decimal(0),
-                         success=False, error="ANTHROPIC_API_KEY not set")
+                         success=False, error=reason)
 
-    resolved_model = model or settings.ANTHROPIC_MODEL
-    price_in, price_out = price_for(PLATFORM, resolved_model)
+    try:
+        provider = resolve_provider()
+    except ValueError as exc:
+        return _skip(str(exc))
+    if not provider.api_key:
+        return _skip(f"{provider.key_env} not set")
+
+    resolved_model = model or provider.default_model
+    price_in, price_out = price_for(provider.platform, resolved_model)
     row = LLMCall(id=uuid4(), context=context, symbol=symbol,
-                  platform=PLATFORM, model=resolved_model,
+                  platform=provider.platform, model=resolved_model,
                   unit_price_in=price_in, unit_price_out=price_out)
     started = time.perf_counter()
     try:
         import anthropic
 
-        client = anthropic.AsyncAnthropic(
-            api_key=settings.ANTHROPIC_API_KEY,
-            timeout=timeout,
-            max_retries=1,
-        )
+        client_kwargs: dict = {"api_key": provider.api_key, "timeout": timeout,
+                               "max_retries": 1}
+        if provider.base_url:
+            client_kwargs["base_url"] = provider.base_url
+        client = anthropic.AsyncAnthropic(**client_kwargs)
         kwargs: dict = {"model": resolved_model, "max_tokens": max_tokens,
                         "messages": [{"role": "user", "content": prompt}]}
         if system:

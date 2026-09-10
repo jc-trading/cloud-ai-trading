@@ -17,20 +17,7 @@ hid the risk tables from migrations.
 from app.database import Base  # noqa: F401
 
 from app.modules.auth.models import User  # noqa: F401
-from app.modules.exchange.models import ExchangeConnection  # noqa: F401
 from app.modules.watchlist.models import Watchlist, WatchlistItem  # noqa: F401
-from app.modules.analysis.models import AIAnalysisResult  # noqa: F401
-from app.modules.strategy.models import QuantStrategy  # noqa: F401
-from app.modules.trading.models import (  # noqa: F401
-    TradingSignal,
-    AlertRule,
-    Alert,
-    Position,
-    PortfolioStats,
-)
-from app.modules.risk.models import RiskLimit, PositionMetric, DrawdownRecord  # noqa: F401
-from app.modules.fundamentals.models import CompanyFundamentals, EarningsCalendar  # noqa: F401
-from app.modules.system.models import SystemLog, SystemMetric, TaskStatus  # noqa: F401
 from app.modules.simledger.models import (  # noqa: F401
     SimAccount,
     SimPosition,
@@ -48,24 +35,8 @@ from app.modules.market.models import MarketDataFile, MarketStreamSymbol  # noqa
 __all__ = [
     "Base",
     "User",
-    "ExchangeConnection",
     "Watchlist",
     "WatchlistItem",
-    "AIAnalysisResult",
-    "QuantStrategy",
-    "TradingSignal",
-    "AlertRule",
-    "Alert",
-    "Position",
-    "PortfolioStats",
-    "RiskLimit",
-    "PositionMetric",
-    "DrawdownRecord",
-    "CompanyFundamentals",
-    "EarningsCalendar",
-    "SystemLog",
-    "SystemMetric",
-    "TaskStatus",
     "SimAccount",
     "SimPosition",
     "SimOrder",

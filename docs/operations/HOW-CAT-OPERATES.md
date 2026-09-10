@@ -1,6 +1,6 @@
 # CAT 现行操作手册 — 系统实际怎么选股、分析、进出场、加减仓
 
-> 口径：**代码现状**（截至 2026-08-15,`main` @ `2932657` + working tree)。
+> 口径：**代码现状**（截至 2026-09-10,`main` + working tree,含 Phase A/B/C/D）。
 > 每条规则都指到文件行号,不写设计意图、不写还没接线的东西。
 > 唯一自动交易的账户是 **`system-对照`**(`is_system=true`);用户的 practice 账户
 > 全部手动下单,不受本文任何自动逻辑影响。
@@ -10,8 +10,8 @@
 ## 0. 一句话
 
 > 每天收盘后用一条**纯确定性**的量化漏斗,从 S&P500 最活跃的 ~20% 里选出
-> **最多 10 只**明天的候选;第二天盘中每 15 分钟看一次价格,**不追高**地把候选
-> 买进最多 3 个槽位;持仓靠 **2×ATR 硬止损 + 3×ATR 保护性移动止损**管理,
+> **最多 10 只**明天的候选;第二天**开盘价一次性**把候选买进最多 3 个槽位
+> (对照账户 = `open_once`,和回测同源;`intraday_ladder` 模式才是每 15 分钟不追高);持仓靠 **2×ATR 硬止损 + 3×ATR 保护性移动止损**管理,
 > 满足条件就**整仓卖出**(没有部分减仓);LLM 只写解释文字,**不碰任何决策**。
 
 ---
@@ -24,15 +24,16 @@ Beat 全部按 **UTC** 排程(`backend/tasks/celery_app.py:95-125`),任务内部
 | UTC | ET | MYT | 跑什么 | 频率 |
 |---|---|---|---|---|
 | 13:30–20:00 | 09:30–16:00 | 21:30–04:00 | `quant.position_cycle` 破位检查 | 每 5 分钟 |
-| 13:30–20:00 | 09:30–16:00 | 21:30–04:00 | `quant.entry_cycle` 进场/加仓 | 每 15 分钟 |
+| 13:30–20:00 | 09:30–16:00 | 21:30–04:00 | `quant.entry_cycle` 进场/加仓 | beat 每 15 分钟;`open_once` 只在开盘+16~+90 分钟内真正动作,窗口外照写 heartbeat 后返回 |
 | 21:30 | 17:30 | 05:30 | `quant.signal_cycle` 选股 + 日终出场 + 快照 | 每日一次 |
 | 每分钟 | — | — | `quant.heartbeat` · `quant.telegram_poll` | 60s |
 
 三个 cycle **各自**再判一次 `qcal.is_trading_day()` / `in_rth()`,非交易日或非
 RTH 直接返回 `skipped`——beat 排了不代表会动。
 
-> ⚠️ `cycles.py:125` 的 `ENTRY_WINDOW_ET = ((9,30),(10,10))` 是 **v3.1 之后的死代码**,
-> 没有任何地方引用。真实进场窗口 = 整个 RTH。
+> 进场窗口由**账户的 `entry_mode`** 决定(Phase C,2026-09-10):`open_once` 只在
+> `[开盘+16min, 开盘+90min)` 动作(`cycles.OPEN_ONCE_WINDOW_MIN`,按 XNYS 日历算,
+> 早收/夏令时自动对);`intraday_ladder` 是整个 RTH。旧的死常量 `ENTRY_WINDOW_ET` 已删。
 
 ---
 
@@ -131,7 +132,32 @@ Sector 来自 Finnhub 缓存;**取不到的一律记 `unknown`**,而 `unknown` �
 
 ## 5. 进场 — 要不要买、买多少
 
-`cycles.py:325-435` + `quant_tasks.py:129-175`。每 15 分钟一轮,门禁**从外到内**:
+`cycles.py` `run_entries` + `quant_tasks.entry_cycle`。
+
+### 5.0 两种进场模式(`sim_accounts.entry_mode`,Phase C)
+
+| mode | 成交价 | equity 基准 | 现金基准 | 时间窗 | 不追高 |
+|---|---|---|---|---|---|
+| **`open_once`**(对照账户默认) | 当日 **09:30 SIP 1min bar 的 open** | **D-1 的 `account_snapshots.equity`** | 当前现金 **− 当日平仓所得** | 开盘+16 ~ +90 分钟 | 不适用(开盘价就是参考价) |
+| `intraday_ladder` | Finnhub 实时报价 | 实时盯市 | 当前现金 | 整个 RTH,每 15 分钟 | 参考价 ×(1+3%) |
+
+`open_once` = **回测(fixed_oos)的口径本身**:D-1 收盘出信号、D 日开盘一次成交、
+用 D-1 收盘 equity 定量、用开盘时的现金付账。`backend/tests/test_phase_c_entry_parity.py`
+把同一份合成日线同时喂给 simulator 和 `run_entries(open_once)`,断言票集合/股数/
+成交价/止损**逐项相等**——这条测试就是「成绩单不再和回测分家」的锁。
+
+**Fail-closed**:拿不到某只票的 09:30 bar → **该票今天不进**(不拿报价近似),
+每天一条 Telegram(幂等键在 `heartbeats.entry_cycle.meta.open_price_alert`,
+**发送成功才落标记** —— 发失败下一轮会重发,不会白丢一天)。
+取价整体失败(Alpaca 挂了)= 全部票不进。
+
+**成交价对账哨兵**:当晚 `signal_cycle` 把当天每笔买入的 `raw_price` 和 store 里
+的日线 `open` 比一次,偏离 > **10bps**(`cycles.OPEN_FILL_DRIFT_BPS`)→ 日志 + Telegram。
+
+`intraday_ladder` 的逐只门禁如下(两种模式共用同一套保护层、槽位、四 cap 定量、
+成本模型和幂等键;唯一分叉就是上表那四列):
+
+门禁**从外到内**:
 
 **① 保护层门禁**(任一命中 → 整轮不买,`cycles.py:148-161`)
 ```
@@ -177,9 +203,13 @@ stop      = entry_eff − 2×ATR
 **⑥ 幂等**:`entry:{account}:{symbol}:{date}` —— 同一只票**一天只可能进一次**,
 15 分钟跑 26 轮也不会重复下单。现金不够就 `continue` 跳过这只,不炸整轮。
 
-> ⚠️ **盘中择时这一段没有回测支撑**。R0-9 / fixed_oos 建模的是「次日开盘一次性成交」;
-> 「每 15 分钟 + 不追高 3%」是 v3.1 的 live-only 行为,是待校准的起始值。
-> 对照账户的成绩单在这里会和回测分道扬镳。
+**⑦ 平台地板只收紧槽位「闸门」,不收紧仓位大小**:`max_concurrent_slots` 只压
+「最多同时持几只」,定量仍用**阶梯槽位**算 `equity ÷ slots`——否则「收紧」反而会
+把剩下那几笔做得更大(见 §8.1)。
+
+> ⚠️ **盘中择时这一段没有回测支撑**——所以它现在只属于 `intraday_ladder`。
+> 对照账户已切到 `open_once`(与回测同源);ladder 留作第二个组合实例,
+> 等 1min 数据到位再回测。
 
 ---
 
@@ -263,7 +293,9 @@ for 每个持仓:
 
 ## 8. 保护层 — 什么时候整体停手
 
-`cycles.py:440-487`,每晚 signal_cycle 结算一次,状态落库(重启不丢)。
+`cycles.update_protections`,每晚 signal_cycle 结算一次,状态落库(重启不丢)。
+盯市价用**当日日线收盘**(和回测的 `equity_curve[D]` 同源),取不到才退回实时报价,
+再取不到才用成本价(`cycles.closing_marks`,每次都会日志写明每只票用了哪个来源)。
 
 | 机制 | 触发 | 效果 | 解除 |
 |---|---|---|---|
@@ -273,6 +305,29 @@ for 每个持仓:
 
 **铁律:保护层只挡进场,永远不挡出场。** 止损、trailing、reversal、stagnation
 在 pause/halt/kill 期间照常执行。
+
+### 8.1 Master Settings — 只读、只收紧的配置地板(Phase C)
+
+`master_settings` 表**接线了,但只接读**(`app/modules/simledger/settings.py`):
+没有写 API,没有缓存,每个 cycle 读一次,由 task 层注入
+`build_recommendations` / `run_entries` / `update_protections`——`cycles.py` 自己不碰 DB。
+
+| key | 常量(migration 018 的 seed 值) | 只允许往哪边动 |
+|---|---|---|
+| `per_trade_risk_pct` | 0.03 | ↓ 更小 |
+| `daily_loss_pause_pct` | 0.02 | ↓ 更小 |
+| `portfolio_drawdown_halt_pct` | 0.15 | ↓ 更小 |
+| `min_confidence` | 65 | ↑ 更大 |
+| `intraday_entry_chase_cap` | 0.03 | ↓ 更小 |
+| `max_concurrent_slots` | 10 | ↓ 更小,只压并发**闸门** `min(阶梯槽位, 这个值)`;定量除数仍是阶梯槽位 |
+
+**分层铁律**:平台 settings **只能收紧**,实例(今天=账户,将来=策略实例)负责选择;
+收紧型 knob 合成 = `min(实例值, 平台值)`。DB 里的值**更松 / key 不认识 / 不是有限数**
+→ 一律拒绝、回落常量、ERROR 日志 + Telegram。启动时也校验一次:**backend 和 worker
+都只告警、都不拒绝启动**(拍板 2026-09-10)——backend 进程里跑着 watchdog,它 crash
+= worker 无人看管地继续交易,比用常量跑更糟;而那行坏数据本来就已经被拒绝了。
+
+seed 值 == 当前常量,所以 018 落库当天**行为零变化**——这是它的硬验收。
 
 Telegram 指令(`app/tasks/telegram_tasks.py`,每分钟轮询):
 `/status`(容器/心跳/持仓/保护状态) · `/pause`(30 天) · `/resume` · `/kill`。
@@ -313,7 +368,10 @@ worker 心跳 >5 分钟 · RTH 中 position_cycle 停滞 · signal_cycle >26 小
 | 风控 | 单笔风险 | **equity 3%** | `config.PER_TRADE_RISK_PCT` |
 | 风控 | 止损距离 | **2×ATR** | `StrategyParams.stop_atr_mult` |
 | 风控 | 槽位阶梯 | **3 / 4 / 5 / 10**($2k/5k/10k/20k) | `config.POSITION_LADDER` |
-| 进场 | 不追高上限 | **+3%**(未校准) | `config.INTRADAY_ENTRY_CHASE_CAP` |
+| 进场 | 模式 | **`open_once`**(对照账户) | `sim_accounts.entry_mode` |
+| 进场 | open_once 窗口 | **开盘+16 ~ +90 分钟** | `cycles.OPEN_ONCE_WINDOW_MIN` |
+| 进场 | 成交价对账容忍 | **10bps** | `cycles.OPEN_FILL_DRIFT_BPS` |
+| 进场 | 不追高上限(仅 ladder) | **+3%**(未校准) | `config.INTRADAY_ENTRY_CHASE_CAP` |
 | 进场 | 报价新鲜度 | **15 分钟** | `cycles.QUOTE_STALE_SECONDS` |
 | 出场 | trailing 启动 / 距离 | **1.5R / 3×ATR** | `ExitParams` |
 | 出场 | 反转确认 / 停滞门槛 | **连续 3 根 / 30 根 bar** | `ExitParams` |
@@ -325,15 +383,15 @@ worker 心跳 >5 分钟 · RTH 中 position_cycle 停滞 · signal_cycle >26 小
 
 ## 11. 诚实清单 — 现在已知的缺口
 
-1. **盘中择时未回测**。fixed_oos 建模「次日开盘一次性进场」;live 是「每 15 分钟 + 不追高 3%」。
-   两者不等价,对照账户的成绩单在这一段不能直接和回测比。
-2. **`master_settings` 表建了但没接线**。所有参数直接来自 `quant/config.py` 常量
-   + `cycles.py` 的 `RECOMMENDED_*`;设计里说的「运行时收紧-only」目前**不生效**,
-   改参数 = 改代码重启。
-3. **stagnation 的 benchmark 门槛没接**。`daily_exit_management` 不传
-   `benchmark_return_since_entry`,所以走的是「持满 30 根 + 信号不再 up 就出」的
-   简化分支,没有和 SPY 比。
-4. **`ENTRY_WINDOW_ET` 是死代码**,注释还写着「只在 09:30–10:10 进场」,实际是整个 RTH。
+1. ~~盘中择时未回测~~ → Phase C 已修:对照账户切 `open_once`,与 fixed_oos 同源
+   (见 §5.0 + `test_phase_c_entry_parity.py`)。**切换当晚 = 成绩单的第二条口径分界线**,
+   G2 从那晚重算。`intraday_ladder` 本身仍未回测,留给第二个组合实例。
+2. ~~`master_settings` 没接线~~ → Phase C 已接**只读、只收紧**的读路径(§8.1)。
+   仍然**没有运行时写 API**:改值 = 手写一行 SQL,而且只能往紧的方向写。
+3. ~~stagnation 的 benchmark 门槛没接~~ → Phase A 已接:`daily_exit_management`
+   用 `benchmark_closes("SPY")` 传 `benchmark_return_since_entry`(`cycles.py`
+   `daily_exit_management`),和回测同一条分支。
+4. ~~`ENTRY_WINDOW_ET` 是死代码~~ → 已删,换成 `OPEN_ONCE_WINDOW_MIN`(§1)。
 5. **部署参数的 OOS 成绩 ≈ 打平**:stitched PF **0.91** / avg R +0.01 / CAGR 2.2% /
    maxDD −38.6%。**平台目前没有已证明的 alpha**,对照账户是诚实实验,不是盈利承诺。
 6. **zones(顶/底区间带)不上线** —— 触后守住率只有 20–25%,未达标。
@@ -355,6 +413,7 @@ D 日 17:30 ET ─ signal_cycle
    │  日终出场: 抬 trailing(用 D-1 信息) → 折入 D 的 bar → 止损/反转/停滞
    │  更新保护状态 → 快照 equity → top10 交给 Haiku 写解释 → Telegram
    ▼
-D+1 盘中 ─ 每 15 分钟 entry_cycle: 保护层 → 报价新鲜 → 不追高 → 槽位 → 四 cap 定量 → 买
+D+1 盘中 ─ entry_cycle(open_once: 开盘+16~90 分钟内一次;ladder: 每 15 分钟)
+        │  保护层 → 09:30 开盘价(或实时报价+不追高) → 槽位 → 四 cap 定量 → 买
         └ 每 5 分钟 position_cycle: quote ≤ stop → 整仓卖(绝不盘中抬 stop)
 ```

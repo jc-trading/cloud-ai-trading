@@ -88,7 +88,7 @@ nano .env
 # 关键配置项：
 # - SECRET_KEY: 生成新的随机密钥（至少32个字符）
 # - ENCRYPTION_KEY: 生成新的加密密钥
-# - ANTHROPIC_API_KEY: 生产环境的API密钥
+# - AI_PROVIDER + 对应的 API key（见下方「LLM provider 切换」）
 # - DB_PASSWORD: 强随机密码
 # - DEBUG: False（生产环境必须关闭）
 # - ENVIRONMENT: production
@@ -97,6 +97,15 @@ nano .env
 chmod +x deploy.sh
 ./deploy.sh
 ```
+
+**LLM provider 切换**：解释层（recommendation explanation）走哪一家由 `AI_PROVIDER`
+决定 —— `claude`（Anthropic，需 `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL`）或
+`deepseek`（需 `DEEPSEEK_API_KEY`，默认 model `deepseek-v4-flash`，走
+`DEEPSEEK_BASE_URL` 的 Anthropic-compatible endpoint，SDK 不变）。两个 key 都是可选
+的：选中的那家没配 key，LLM 调用直接跳过（不写 `llm_calls`、不报错，推荐列表照常生成，
+只是没有解释文字）。`AI_PROVIDER` 填了 `claude`/`deepseek` 以外的值，backend 启动即报错。
+改完 `.env` 需要 `docker compose up -d` 让 backend / celery-worker / celery-beat /
+market-stream 重新读取。
 
 #### 3️⃣ 验证部署
 
@@ -161,6 +170,7 @@ DEBUG=True
 DB_PASSWORD=dev_password_123
 SECRET_KEY=dev-secret-key-not-secure
 ENCRYPTION_KEY=your-base64-encoded-key
+REDIS_PASSWORD=dev-redis-password
 ```
 
 ### 生产环境
@@ -171,6 +181,20 @@ DEBUG=False
 DB_PASSWORD=<强随机密码>
 SECRET_KEY=<生成随机密钥: python -c "import secrets; print(secrets.token_urlsafe(32))">
 ENCRYPTION_KEY=<生成加密密钥: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+REDIS_PASSWORD=<生成随机密码: openssl rand -hex 24>
+```
+
+### Redis 密码是必填的
+
+compose 用 `--requirepass` 启动 redis，`REDIS_PASSWORD` 缺失时 **`docker compose`
+的任何子命令都会直接报错退出**（和 `SECRET_KEY` / `ENCRYPTION_KEY` 同一套 `:?` 约束）。
+容器自己的 URL 由 `docker-compose.yml` 拼；`.env` 里这三行是给 **host** 上跑的
+`make test` / 脚本用的，密码要跟 `REDIS_PASSWORD` 一致，端口用 compose 发布的 6380：
+
+```env
+REDIS_URL=redis://:<密码>@localhost:6380/0
+CELERY_BROKER_URL=redis://:<密码>@localhost:6380/1
+CELERY_RESULT_BACKEND=redis://:<密码>@localhost:6380/2
 ```
 
 ### 生成密钥命令
@@ -181,6 +205,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 # 生成 ENCRYPTION_KEY
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# 生成 REDIS_PASSWORD
+openssl rand -hex 24
 ```
 
 ---

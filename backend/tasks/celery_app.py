@@ -3,8 +3,11 @@ Celery application configuration.
 Handles periodic tasks like market data pulling and AI analysis.
 """
 
+import logging
+
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import worker_ready
 
 from app.config import get_settings
 
@@ -24,13 +27,6 @@ celery_app = Celery(
         # v3 platform (R1): the three-tier quant schedule + telegram commands
         "app.tasks.quant_tasks",
         "app.tasks.telegram_tasks",
-        # host health
-        "tasks.system_tasks",
-        # PARKED (importable, nothing schedules them): equity catalyst pipeline
-        # + its execution/fundamentals/risk companions await a future decision
-        "app.tasks.fundamentals_tasks",
-        "app.tasks.equity_tasks",
-        "app.tasks.execution_tasks",
     ],
 )
 
@@ -45,9 +41,9 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     # Self-healing backstop: a task that blocks forever (e.g. a network call
     # whose timeout never fires) is SIGKILLed at the hard limit and the pool
-    # child is replaced with a fresh process. Generous on purpose — the coarse
-    # fundamentals/equity tasks legitimately run for minutes; the goal is only
-    # that a hung child never wedges the worker permanently (2026-07-01 freeze).
+    # child is replaced with a fresh process. Generous on purpose — signal_cycle
+    # legitimately runs for minutes; the goal is only that a hung child never
+    # wedges the worker permanently (2026-07-01 freeze).
     task_soft_time_limit=1500,  # 25 min: raises SoftTimeLimitExceeded in-task
     task_time_limit=1800,  # 30 min: hard kill + replace the pool child
 )
@@ -61,29 +57,7 @@ celery_app.conf.update(
 # crontab tasks: 1h, execution: 15 min) so that if the worker stalls and Beat
 # keeps publishing, the recovered worker DISCARDS the stale backlog instead of
 # replaying hours of queued pulls/analyses (the 2026-07-01 freeze left 10.5k).
-celery_app.conf.beat_schedule = {
-    # --- system health -----------------------------------------------------
-    "collect-system-metrics": {
-        "task": "collect_system_metrics",
-        "schedule": float(settings.SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS),
-        "options": {"expires": max(float(settings.SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS) - 5, 1)},
-    },
-    "sync-task-statuses": {
-        "task": "sync_task_statuses",
-        "schedule": float(settings.SYSTEM_TASK_HEALTH_CHECK_INTERVAL_SECONDS),
-        "options": {"expires": max(float(settings.SYSTEM_TASK_HEALTH_CHECK_INTERVAL_SECONDS) - 5, 1)},
-    },
-    "cleanup-old-logs": {
-        "task": "cleanup_old_logs",
-        "schedule": 86400.0,
-        "options": {"expires": 3600},
-    },
-    "cleanup-old-metrics": {
-        "task": "cleanup_old_metrics",
-        "schedule": 86400.0,
-        "options": {"expires": 3600},
-    },
-}
+celery_app.conf.beat_schedule = {}
 
 # R0-0 quiesce block removed in R1-8 (2026-07-30): the crypto pipeline and the
 # old catalyst schedules it silenced are deleted/unscheduled for good.
@@ -131,3 +105,32 @@ celery_app.conf.beat_schedule.update({
         "options": {"expires": 3300},
     },
 })
+
+
+async def check_master_settings() -> list[str]:
+    """Worker-side §8.6 check. Alert-only on purpose: a worker that refuses to
+    boot stops trading altogether, while a rejected settings row already falls
+    back to its constant — loud beats dead."""
+    from app.celery_database import CeleryAsyncSessionLocal
+    from app.modules.simledger.settings import validate_settings
+
+    async with CeleryAsyncSessionLocal() as db:
+        problems = await validate_settings(db)
+    if problems:
+        detail = "; ".join(problems)
+        logging.getLogger(__name__).error(
+            "master_settings validation failed: %s", detail)
+        from app.tasks.quant_tasks import _notify
+        await _notify("⚠️ master_settings 有非法行（只允许收紧）— worker 用常量在跑: "
+                      + detail)
+    return problems
+
+
+@worker_ready.connect
+def _on_worker_ready(**_kw):
+    from app.tasks.quant_tasks import _run_async
+
+    try:
+        _run_async(check_master_settings())
+    except Exception:
+        logging.getLogger(__name__).exception("master_settings validation failed to run")

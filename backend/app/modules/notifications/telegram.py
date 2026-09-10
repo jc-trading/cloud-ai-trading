@@ -1,11 +1,17 @@
 """Telegram notification service."""
 
+import asyncio
 import logging
 import aiohttp
 from typing import Optional
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 08-12 incident: a DNS race dropped the FIRST alert of an outage and nothing
+# retried it. Seconds to sleep BETWEEN attempts, so len()+1 attempts are made.
+SEND_RETRY_BACKOFF = (1, 5, 30)
+SEND_ATTEMPTS = len(SEND_RETRY_BACKOFF) + 1
 
 
 def escape_markdown(text: str) -> str:
@@ -38,6 +44,10 @@ class TelegramNotifier:
                 required for messages built from dynamic strings (task names,
                 symbols, exception text) that are not Markdown-escaped.
 
+        Retried with backoff: an alert lost to a transient network or Telegram
+        error is an alert that never existed. Four attempts, sleeping
+        1s/5s/30s in between.
+
         Returns:
             True if successful, False otherwise
         """
@@ -48,30 +58,37 @@ class TelegramNotifier:
             )
             return False
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "chat_id": self.chat_id,
-                    "text": message,
-                }
-                if parse_mode is not None:
-                    payload["parse_mode"] = parse_mode
-                async with session.post(
-                    f"{self.api_url}/sendMessage",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        logger.info(f"Telegram message sent: {message[:50]}...")
-                        return True
-                    else:
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+        }
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
+
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.api_url}/sendMessage",
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        if response.status == 200:
+                            logger.info(f"Telegram message sent: {message[:50]}...")
+                            return True
                         logger.error(
-                            f"Telegram API error: {response.status} - {await response.text()}"
+                            f"Telegram API error (attempt {attempt}/"
+                            f"{SEND_ATTEMPTS}): {response.status} - "
+                            f"{await response.text()}"
                         )
-                        return False
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-            return False
+            except Exception as e:
+                logger.error(
+                    f"Failed to send Telegram message (attempt {attempt}/"
+                    f"{SEND_ATTEMPTS}): {e}"
+                )
+            if attempt < SEND_ATTEMPTS:
+                await asyncio.sleep(SEND_RETRY_BACKOFF[attempt - 1])
+        return False
 
     async def send_trading_signal(
         self,

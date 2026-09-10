@@ -23,7 +23,7 @@ import os
 import signal
 import sys
 import threading
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from typing import Callable, Iterable
 from zoneinfo import ZoneInfo
 
@@ -34,6 +34,7 @@ from quant.data import calendar, store
 from quant.data.providers import get_historical, get_realtime
 from quant.data.providers.alpaca_ws import MAX_STREAM_SYMBOLS, is_auth_error
 from quant.data.providers.base import Bar, StreamAuthError
+from quant.data.registry import resolve_stream_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,10 @@ _TIMEFRAME = "1min"
 HEARTBEAT_NAME = "market_stream"
 
 # 拍板 2026-09-07: one session window, shared by the WS writer, the REST
-# backfill and the EOD correction — extended hours included.
-SESSION_OPEN_ET = time(4, 0)
-SESSION_CLOSE_ET = time(20, 0)
+# backfill and the EOD correction — extended hours included. Defined ONCE in
+# quant.data.calendar; re-exported here for the modules that already read them.
+SESSION_OPEN_ET = calendar.SESSION_OPEN_ET
+SESSION_CLOSE_ET = calendar.SESSION_CLOSE_ET
 
 FLUSH_SECONDS = 60
 HEARTBEAT_SECONDS = 60
@@ -76,11 +78,8 @@ def _ts(value) -> pd.Timestamp:
 
 
 def session_bounds(now) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """The [04:00, 20:00) ET window of the ET calendar date of ``now``, in UTC."""
-    et = _ts(now).tz_convert(_ET)
-    open_et = pd.Timestamp.combine(et.date(), SESSION_OPEN_ET).tz_localize(_ET)
-    close_et = pd.Timestamp.combine(et.date(), SESSION_CLOSE_ET).tz_localize(_ET)
-    return open_et.tz_convert("UTC"), close_et.tz_convert("UTC")
+    """The extended session window of the ET calendar date of ``now``, in UTC."""
+    return calendar.session_bounds(_ts(now).tz_convert(_ET).date())
 
 
 class StreamConsumer:
@@ -118,35 +117,20 @@ class StreamConsumer:
         """The session window of the day being written — anchored on
         ``_period_key``, not on the wall clock, so a flush or gap fill that runs
         after 20:00 ET still targets the day it belongs to."""
-        day = pd.Timestamp(self._period_key).date()
-        open_et = pd.Timestamp.combine(day, SESSION_OPEN_ET).tz_localize(_ET)
-        close_et = pd.Timestamp.combine(day, SESSION_CLOSE_ET).tz_localize(_ET)
-        return open_et.tz_convert("UTC"), close_et.tz_convert("UTC")
+        return calendar.session_bounds(pd.Timestamp(self._period_key).date())
 
     # --- subscription set --------------------------------------------------
 
     def resolve_symbols(self) -> list[str]:
-        """Priority-ordered subscription set: the 对照账户's open positions, then
-        the enabled ``market_stream_symbols`` rows, then its owner's stock
-        watchlist. Truncated to the IEX per-connection cap, never silently."""
-        held: list[str] = []
-        watch: list[str] = []
-        account = self._registry.system_account()
-        if account is not None:
-            held = self._registry.open_position_symbols(account.account_id)
-            watch = self._registry.watchlist_symbols(account.user_id)
-        configured = [row.symbol.upper() for row in self._registry.stream_symbols()]
-
-        ordered: list[str] = []
-        for symbol in (*held, *configured, *watch):
-            if symbol not in ordered:
-                ordered.append(symbol)
-        if len(ordered) > MAX_STREAM_SYMBOLS:
+        """Priority-ordered subscription set, truncated to the IEX
+        per-connection cap — never silently."""
+        ordered, dropped = resolve_stream_symbols(self._registry,
+                                                  cap=MAX_STREAM_SYMBOLS)
+        if dropped:
             logger.warning(
                 "subscription set of %d exceeds the %d-symbol IEX cap — dropping %s",
-                len(ordered), MAX_STREAM_SYMBOLS,
-                ",".join(ordered[MAX_STREAM_SYMBOLS:]))
-            ordered = ordered[:MAX_STREAM_SYMBOLS]
+                len(ordered) + len(dropped), MAX_STREAM_SYMBOLS,
+                ",".join(dropped))
         return ordered
 
     def refresh_subscriptions(self) -> tuple[list[str], list[str]]:

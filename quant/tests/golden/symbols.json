@@ -105,7 +105,7 @@
     "XOM": "Energy"
   },
   "selection": "top 20% by 20-session average share volume of the S&P 500 members as of session_date, plus ETF_WHITELIST",
-  "session_date": "2026-08-29",
+  "session_date": "2026-08-18",
   "symbols": [
     "AAPL",
     "ABT",

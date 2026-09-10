@@ -1,7 +1,11 @@
-FROM python:3.12-slim
+# why digest-pinned: 3.12-slim is a floating tag whose Debian snapshot moves, so
+# an unpinned rebuild stops matching the interpreter requirements.txt was frozen
+# against (Python 3.12.14 / Debian 13 trixie).
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 # System dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::Retries=3 \
+    && apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
     build-essential \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*

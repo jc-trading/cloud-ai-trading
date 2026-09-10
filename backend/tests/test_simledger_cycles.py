@@ -17,6 +17,11 @@ from app.modules.simledger.service import SimLedgerService, _dec
 NOW = datetime(2026, 7, 30, 14, 0, tzinfo=timezone.utc)
 
 
+async def _no_closes(db, account_id, session_date):
+    """run_entries also reads today's closed lots (exited_today / slot count)."""
+    return []
+
+
 def _q(price, age_s=0):
     return cycles.QuoteReading(price=price, at=NOW - timedelta(seconds=age_s))
 
@@ -47,10 +52,15 @@ def test_entries_blocked_reasons(tmp_path):
                                          sentinel_path=str(tmp_path / "x")) is None
 
 
-def _bars(closes, vol=50_000_000):
+SESSION = date(2026, 7, 30)
+
+
+def _bars(closes, vol=50_000_000, *, last_day=SESSION):
+    """Synthetic daily frame ending ON last_day — build_recommendations drops a
+    symbol whose newest bar is not the session under management."""
     n = len(closes)
-    ts = pd.DatetimeIndex([pd.Timestamp("2026-01-02", tz="America/New_York")
-                           + pd.Timedelta(days=i) for i in range(n)]).tz_convert("UTC")
+    ts = pd.DatetimeIndex([pd.Timestamp(last_day, tz="America/New_York")
+                           - pd.Timedelta(days=n - 1 - i) for i in range(n)]).tz_convert("UTC")
     return pd.DataFrame({
         "ts": ts, "open": closes, "high": [c * 1.001 for c in closes],
         "low": [c * 0.999 for c in closes], "close": closes,
@@ -63,12 +73,12 @@ def test_build_recommendations_shortlists_uptrend():
         "UPP": _bars([50 + i * 0.8 for i in range(120)]),      # clean uptrend
         "FLT": _bars([50.0 + (0.01 if i % 2 else -0.01) for i in range(120)]),
     }
-    recs = cycles.build_recommendations(
+    batch = cycles.build_recommendations(
         ["UPP", "FLT"], date(2026, 7, 30),
         funnel_params=cycles.qfunnel.FunnelParams(min_confidence=0.0,
                                                   atr_pct_min=0.0),
         bars_fn=lambda s, tf, end: frames[s])
-    by_sym = {r["symbol"]: r for r in recs}
+    by_sym = {r["symbol"]: r for r in batch.rows}
     assert by_sym["UPP"]["shortlist_rank"] == 1
     assert by_sym["UPP"]["phase"] == "up"
     assert by_sym["UPP"]["trade_date"] == date(2026, 7, 31)    # next session
@@ -121,6 +131,8 @@ def test_run_entries_books_and_skips_stale(monkeypatch):
 
     monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(_no_closes))
     quotes = {"AAA": _q(100.0), "BBB": _q(100.0, age_s=20 * 60)}  # BBB stale
     db = _RecSession([_rec("AAA", 1), _rec("BBB", 2)])
     out = asyncio.run(cycles.run_entries(db, _acct(), date(2026, 7, 30),
@@ -147,6 +159,8 @@ def test_run_entries_respects_stock_slots(monkeypatch):
 
     monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(_no_closes))
     db = _RecSession([_rec("NEW", 1)])
     out = asyncio.run(cycles.run_entries(db, _acct(cash=500), date(2026, 7, 30),
                                          quote_fn=lambda s: _q(100.0), now=NOW))

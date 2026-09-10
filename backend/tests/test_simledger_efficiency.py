@@ -20,6 +20,11 @@ NOW = datetime(2026, 7, 30, 14, 0, tzinfo=timezone.utc)
 ET = ZoneInfo("America/New_York")
 
 
+async def _no_closes(db, account_id, session_date):
+    """run_entries also reads today's closed lots (exited_today / slot count)."""
+    return []
+
+
 def _q(price, age_s=0):
     return cycles.QuoteReading(price=price, at=NOW - timedelta(seconds=age_s))
 
@@ -136,6 +141,8 @@ def test_run_entries_quotes_each_symbol_once(monkeypatch):
     monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
     monkeypatch.setattr(SimLedgerService, "get_open_positions",
                         staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(_no_closes))
     counts = Counter()
 
     def quote_fn(s):
@@ -174,7 +181,8 @@ def test_check_stops_quotes_each_position_once(monkeypatch):
 # --- A2 fail-closed: entry cycle with no recommendations --------------------
 
 class _FakeDb:
-    """execute() always resolves scalar_one_or_none() -> None."""
+    """execute() resolves scalar_one_or_none() -> None and scalars() -> empty
+    (an empty master_settings table = the constants)."""
 
     def __init__(self):
         self.added = []
@@ -184,6 +192,12 @@ class _FakeDb:
         class _R:
             def scalar_one_or_none(self):
                 return None
+
+            def scalars(self):
+                return iter(())
+
+            def all(self):
+                return []
         return _R()
 
     def add(self, obj):
@@ -213,8 +227,10 @@ class _FakeSessionFactory:
 def test_entry_cycle_fails_closed_without_recommendations(monkeypatch):
     factory = _FakeSessionFactory()
     monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    # 09:50 ET: inside RTH and inside the open_once window, so the fail-closed
+    # gate is what stops the cycle rather than the window gate
     monkeypatch.setattr(quant_tasks, "_now_et",
-                        lambda: datetime(2026, 7, 30, 9, 40, tzinfo=ET))
+                        lambda: datetime(2026, 7, 30, 9, 50, tzinfo=ET))
     acct = _acct()
 
     async def fake_system_account(db):
@@ -260,6 +276,7 @@ def test_entry_cycle_fails_closed_without_recommendations(monkeypatch):
 # --- A2 fail-closed: signal cycle with mass bar-sync failure ----------------
 
 def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
+    from quant.data import corporate_actions as qactions
     from quant.data import fetch as qfetch
     from quant.data import sectors as qsectors
     from quant.data import universe as quniverse
@@ -271,6 +288,7 @@ def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
     monkeypatch.setattr(quniverse, "constituents_on",
                         lambda d: [f"A{i}" for i in range(10)])
     monkeypatch.setattr(qsectors, "load_sectors", lambda: {})
+    monkeypatch.setattr(qactions, "sync_universe", lambda *a, **kw: 0)
 
     def fake_sync_many(symbols, *a, **kw):
         return 0, list(symbols)                     # 100% failure rate
@@ -287,7 +305,7 @@ def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
 
     def fake_build(*a, **kw):
         built.append(a)
-        return []
+        return cycles.RecommendationBatch()
 
     async def fake_store(db, recs):
         stored.append(recs)
@@ -312,3 +330,153 @@ def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
     assert beats[0].meta["fail_closed"] == "bar sync failures"
     assert beats[0].meta["recs"] == 0
     assert any("fail-closed" in n for n in notes)
+
+
+# --- #10: corporate actions are synced BEFORE the bars they adjust ----------
+
+def test_signal_cycle_syncs_corporate_actions_before_bars(monkeypatch):
+    from quant.data import corporate_actions as qactions
+    from quant.data import fetch as qfetch
+    from quant.data import sectors as qsectors
+    from quant.data import universe as quniverse
+
+    factory = _FakeSessionFactory()
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    monkeypatch.setattr(quant_tasks, "_now_et",
+                        lambda: datetime(2026, 7, 30, 17, 30, tzinfo=ET))
+    monkeypatch.setattr(quniverse, "constituents_on", lambda d: ["AAA", "BBB"])
+    monkeypatch.setattr(quniverse, "top_liquid", lambda syms, **kw: list(syms))
+    monkeypatch.setattr(qsectors, "load_sectors", lambda: {"AAA": "tech"})
+
+    order = []
+    monkeypatch.setattr(qactions, "sync_universe",
+                        lambda symbols=None, **kw: order.append(("actions", tuple(symbols))))
+    monkeypatch.setattr(qfetch, "sync_daily_many",
+                        lambda symbols, *a, **kw: (order.append(("bars", tuple(symbols)))
+                                                   or (len(symbols), [])))
+
+    seen = {}
+
+    def fake_build(symbols, session_date, **kw):
+        seen.update(kw)
+        return cycles.RecommendationBatch(scanned=len(symbols))
+
+    async def fake_store(db, recs):
+        return 0
+
+    async def fake_system_account(db):
+        return None
+
+    monkeypatch.setattr(cycles, "build_recommendations", fake_build)
+    monkeypatch.setattr(cycles, "store_recommendations", fake_store)
+    monkeypatch.setattr(SimLedgerService, "system_account",
+                        staticmethod(fake_system_account))
+
+    async def fake_notify(msg):
+        pass
+
+    monkeypatch.setattr(quant_tasks, "_notify", fake_notify)
+
+    quant_tasks.signal_cycle()
+    assert [step for step, _ in order] == ["actions", "bars"]
+    assert order[0][1] == order[1][1]          # the same symbol set, both calls
+    # the funnel receives the real sector map, not a post-hoc patch (#1)
+    assert seen["sectors"] == {"AAA": "tech"}
+
+
+# --- QA 1: guard exclusions must reach Telegram, not just the log -----------
+
+def _signal_cycle_with(monkeypatch, batch, *, exits=None):
+    from quant.data import corporate_actions as qactions
+    from quant.data import fetch as qfetch
+    from quant.data import sectors as qsectors
+    from quant.data import universe as quniverse
+
+    factory = _FakeSessionFactory()
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    monkeypatch.setattr(quant_tasks, "_now_et",
+                        lambda: datetime(2026, 7, 30, 17, 30, tzinfo=ET))
+    monkeypatch.setattr(quniverse, "constituents_on", lambda d: ["AAA", "BBB"])
+    monkeypatch.setattr(quniverse, "top_liquid", lambda syms, **kw: list(syms))
+    monkeypatch.setattr(qsectors, "load_sectors", lambda: {})
+    monkeypatch.setattr(qactions, "sync_universe", lambda *a, **kw: 0)
+    monkeypatch.setattr(qfetch, "sync_daily_many",
+                        lambda symbols, *a, **kw: (len(symbols), []))
+    monkeypatch.setattr(cycles, "build_recommendations", lambda *a, **kw: batch)
+
+    async def fake_store(db, recs):
+        return len(recs)
+
+    async def fake_exits(db, account, today, **kw):
+        return exits or cycles.ExitPass()
+
+    async def fake_account(db):
+        return None if exits is None else _acct()
+
+    async def fake_positions(db, account_id):
+        return []
+
+    async def fake_quotes(client, symbols):
+        return {}
+
+    async def fake_protections(db, account, equity, today, **kw):
+        return None
+
+    async def fake_snapshot(db, account, day, quotes, **kw):
+        return None
+
+    monkeypatch.setattr(cycles, "store_recommendations", fake_store)
+    monkeypatch.setattr(cycles, "daily_exit_management", fake_exits)
+    monkeypatch.setattr(cycles, "fetch_quotes", fake_quotes)
+    monkeypatch.setattr(cycles, "update_protections", fake_protections)
+    monkeypatch.setattr(SimLedgerService, "system_account", staticmethod(fake_account))
+    monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "snapshot", staticmethod(fake_snapshot))
+    notes = []
+
+    async def fake_notify(msg):
+        notes.append(msg)
+
+    monkeypatch.setattr(quant_tasks, "_notify", fake_notify)
+    quant_tasks.signal_cycle()
+    db = factory.dbs[-1]
+    beat = [o for o in db.added if isinstance(o, HeartbeatRecord)][0]
+    return notes, beat
+
+
+def test_zero_recommendations_alerts(monkeypatch):
+    batch = cycles.RecommendationBatch(rows=[], scanned=500, stale=499, unadjusted=1)
+    notes, beat = _signal_cycle_with(monkeypatch, batch)
+    alert = [n for n in notes if "fail-closed" in n]
+    assert len(alert) == 1
+    assert "0 recommendations published from 500 scanned" in alert[0]
+    assert "499 stale-bar, 1 unadjusted" in alert[0]
+    assert beat.meta["stale"] == 499 and beat.meta["unadjusted"] == 1
+    assert beat.meta["scanned"] == 500 and "fail_closed" in beat.meta
+
+
+def test_heavy_exclusion_alerts_even_when_some_recs_publish(monkeypatch):
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100,
+                                       stale=25, unadjusted=0)
+    notes, beat = _signal_cycle_with(monkeypatch, batch)
+    alert = [n for n in notes if "fail-closed" in n]
+    assert len(alert) == 1 and "25/100 symbols excluded" in alert[0]
+    assert beat.meta["recs"] == 1
+
+
+def test_exclusions_under_the_threshold_stay_quiet(monkeypatch):
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100,
+                                       stale=20, unadjusted=0)   # 20% is not > 20%
+    notes, beat = _signal_cycle_with(monkeypatch, batch)
+    assert [n for n in notes if "fail-closed" in n] == []
+    assert "fail_closed" not in beat.meta
+
+
+def test_unmarked_positions_reach_the_same_alert(monkeypatch):
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    exits = cycles.ExitPass(unadjusted=["HOOD"])
+    notes, beat = _signal_cycle_with(monkeypatch, batch, exits=exits)
+    alert = [n for n in notes if "fail-closed" in n]
+    assert len(alert) == 1
+    assert "held positions NOT marked (RAW prices): HOOD" in alert[0]
+    assert beat.meta["unmarked"] == ["HOOD"]

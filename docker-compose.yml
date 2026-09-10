@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-cloudaitrading}
     ports:
-      - "5432:5432"
+      # host 5432 is held by a native PostgreSQL (another project) — publish on
+      # 5433; containers use the internal network name anyway
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,6 +26,12 @@ services:
   redis:
     container_name: cat_redis
     image: redis:7-alpine
+    # requirepass: the broker holds every queued task and is published on the
+    # host — an unauthenticated 6380 is a remote shell into the pipeline.
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    environment:
+      # redis-cli reads REDISCLI_AUTH, so the healthcheck needs no inline secret
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     ports:
       # host 6379 is held by a native redis-server (another project) —
       # expose on 6380; containers use the internal network name anyway
@@ -51,8 +59,15 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
-      REDIS_URL: redis://redis:6379
+      AI_PROVIDER: ${AI_PROVIDER:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
       ENVIRONMENT: ${ENVIRONMENT:-local}
       DEBUG: ${DEBUG:-False}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -98,8 +113,15 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
-      REDIS_URL: redis://redis:6379
+      AI_PROVIDER: ${AI_PROVIDER:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
       ENVIRONMENT: ${ENVIRONMENT:-local}
       DEBUG: ${DEBUG:-False}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -143,8 +165,15 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
-      REDIS_URL: redis://redis:6379
+      AI_PROVIDER: ${AI_PROVIDER:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
       ENVIRONMENT: ${ENVIRONMENT:-local}
       DEBUG: ${DEBUG:-False}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -191,8 +220,15 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
-      REDIS_URL: redis://redis:6379
+      AI_PROVIDER: ${AI_PROVIDER:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
       ENVIRONMENT: ${ENVIRONMENT:-local}
       DEBUG: ${DEBUG:-False}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

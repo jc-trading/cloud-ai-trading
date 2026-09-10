@@ -14,9 +14,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Date, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quant import config
 from quant.backtest.costs import CostModel
 from quant.engine import sizing
 
@@ -115,13 +116,57 @@ class SimLedgerService:
         )).scalars().all())
 
     @staticmethod
+    async def get_positions_closed_on(db: AsyncSession, account_id: UUID,
+                                      session_date: date) -> list[SimPosition]:
+        """Lots closed during the ET session `session_date`. The entry cycle needs
+        them because a same-session exit must neither free a slot nor allow a
+        re-entry — the backtest's exited_today set."""
+        return list((await db.execute(
+            select(SimPosition).where(
+                SimPosition.account_id == account_id,
+                SimPosition.status == "closed",
+                cast(func.timezone("America/New_York", SimPosition.closed_at),
+                     Date) == session_date)
+        )).scalars().all())
+
+    @staticmethod
+    def _fills_on(session_date: date, side: str):
+        return (select(SimOrder.symbol, SimFill.raw_price, SimFill.price, SimFill.qty)
+                .join(SimFill, SimFill.order_id == SimOrder.id)
+                .where(SimOrder.side == side, SimOrder.status == "filled",
+                       cast(func.timezone("America/New_York", SimOrder.filled_at),
+                            Date) == session_date))
+
+    @staticmethod
+    async def cash_from_exits_on(db: AsyncSession, account: SimAccount,
+                                 session_date: date) -> float:
+        """Cash raised by lots SOLD during this ET session. open_once entries are
+        funded from the session's OPENING cash, so the backtest's cash_at_open is
+        current cash minus this (simulator.py). Read-only."""
+        rows = (await db.execute(
+            SimLedgerService._fills_on(session_date, "sell")
+            .where(SimOrder.account_id == account.id))).all()
+        return float(sum(float(r.price) * float(r.qty) for r in rows))
+
+    @staticmethod
+    async def get_entry_fills_on(db: AsyncSession, account: SimAccount,
+                                 session_date: date) -> list[tuple[str, float]]:
+        """(symbol, raw fill price) for lots BOUGHT during this ET session — the
+        reconciliation sentinel's input. Read-only."""
+        rows = (await db.execute(
+            SimLedgerService._fills_on(session_date, "buy")
+            .where(SimOrder.account_id == account.id))).all()
+        return [(r.symbol, float(r.raw_price)) for r in rows]
+
+    @staticmethod
     async def open_or_add(db: AsyncSession, account: SimAccount, *, symbol: str,
                           qty: float, raw_price: float, stop: float, reason: str,
                           idempotency_key: str, trade_date: date,
                           adv: float | None = None,
                           recommendation_id: UUID | None = None,
                           position: SimPosition | None = None,
-                          equity_for_risk: float | None = None) -> SimOrder | None:
+                          equity_for_risk: float | None = None,
+                          risk_pct: float = config.PER_TRADE_RISK_PCT) -> SimOrder | None:
         """BUY: open a new lot, or pyramid into the existing open lot (the lot
         mutates — one open lot per account+symbol by schema). Returns None when
         this idempotency key was already booked (re-run safe)."""
@@ -156,7 +201,8 @@ class SimLedgerService:
                 # within the per-trade budget — the backtest applies this after
                 # every pyramid (simulator.py); live must match
                 new_stop = sizing.raise_stop_for_combined_risk(
-                    new_total, float(pos.avg_cost), equity_for_risk, new_stop)
+                    new_total, float(pos.avg_cost), equity_for_risk, new_stop,
+                    risk_pct=risk_pct)
             pos.stop = _dec(new_stop)
             pos.adds_done = int(pos.adds_done) + 1
 

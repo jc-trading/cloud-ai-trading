@@ -146,3 +146,16 @@ def test_store_roundtrip(tmp_path):
     ca.store_actions([{"symbol": "AAPL", "ex_date": date(2020, 8, 31),
                        "action_type": "split", "ratio": 4.0, "cash_amount": None}], db_path=db)
     assert len(ca.load_actions("AAPL", db_path=db)) == 2
+
+
+def test_sync_watermark_roundtrip(tmp_path):
+    """'no actions cached' and 'nobody ever asked' must be distinguishable —
+    without the watermark the read-time RAW guard can never clear for a symbol
+    that genuinely has no corporate actions (HOOD)."""
+    db = tmp_path / "manifest.db"
+    assert ca.load_synced_at("HOOD", db_path=db) is None
+    ca.record_sync(["hood", "AAPL"], date(2026, 8, 18), db_path=db)
+    assert ca.load_synced_at("HOOD", db_path=db) == date(2026, 8, 18)
+    assert ca.load_synced_at("AAPL", db_path=db) == date(2026, 8, 18)
+    ca.record_sync(["HOOD"], date(2026, 8, 19), db_path=db)
+    assert ca.load_synced_at("HOOD", db_path=db) == date(2026, 8, 19)

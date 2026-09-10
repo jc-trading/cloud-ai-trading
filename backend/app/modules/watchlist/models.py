@@ -35,12 +35,6 @@ class Watchlist(Base):
     # Relationships
     user = relationship("User", back_populates="watchlists")
     items = relationship("WatchlistItem", back_populates="watchlist", cascade="all, delete-orphan", lazy="selectin")
-    trading_signals = relationship("TradingSignal", back_populates="watchlist", cascade="all, delete-orphan")
-    alert_rules = relationship("AlertRule", back_populates="watchlist", cascade="all, delete-orphan")
-    positions = relationship("Position", back_populates="watchlist", cascade="all, delete-orphan")
-    portfolio_stats = relationship("PortfolioStats", back_populates="watchlist", cascade="all, delete-orphan")
-    risk_limits = relationship("RiskLimit", back_populates="watchlist", cascade="all, delete-orphan")
-    drawdown_records = relationship("DrawdownRecord", back_populates="watchlist", cascade="all, delete-orphan")
 
     @property
     def symbols(self) -> list[str]:

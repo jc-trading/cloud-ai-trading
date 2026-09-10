@@ -1,4 +1,4 @@
-"""The bar-store size gauge added to collect_system_metrics (方案 Phase 8)."""
+"""The bar-store size gauge (方案 Phase 8), surfaced by GET /system/bar-store."""
 
 import sys
 from pathlib import Path

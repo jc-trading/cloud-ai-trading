@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from quant import config
+from quant.data import calendar
 
 _SOURCE = "alpaca"
 _SCHEMA = """
@@ -28,6 +29,10 @@ CREATE TABLE IF NOT EXISTS corporate_actions (
     source       TEXT NOT NULL,
     UNIQUE(symbol, ex_date, action_type)
 );
+CREATE TABLE IF NOT EXISTS corporate_action_syncs (
+    symbol     TEXT PRIMARY KEY,
+    synced_at  TEXT NOT NULL          -- ISO date the provider was queried through
+);
 """
 
 
@@ -35,7 +40,7 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     path = db_path or config.ACTIONS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
-    conn.execute(_SCHEMA)
+    conn.executescript(_SCHEMA)
     return conn
 
 
@@ -141,9 +146,44 @@ def load_actions(symbol: str, *, db_path: Path | None = None) -> pd.DataFrame:
     return df
 
 
+def record_sync(symbols: list[str], synced_at: date, *,
+                db_path: Path | None = None) -> int:
+    """Watermark the last session the action feed is AUTHORITATIVE through.
+    Without it 'this symbol has no corporate actions' is indistinguishable from
+    'nobody ever asked', and the read-time RAW guard can never clear for a
+    genuinely action-free symbol."""
+    conn = _connect(db_path)
+    try:
+        conn.executemany(
+            "INSERT INTO corporate_action_syncs (symbol, synced_at) VALUES (?,?) "
+            "ON CONFLICT(symbol) DO UPDATE SET synced_at=excluded.synced_at",
+            [(s.upper(), synced_at.isoformat()) for s in symbols])
+        conn.commit()
+    finally:
+        conn.close()
+    return len(symbols)
+
+
+def load_synced_at(symbol: str, *, db_path: Path | None = None) -> date | None:
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT synced_at FROM corporate_action_syncs WHERE symbol = ?",
+            (symbol.upper(),)).fetchone()
+    finally:
+        conn.close()
+    return date.fromisoformat(row[0]) if row else None
+
+
 def sync_actions(symbols: list[str], start: date, end: date, *,
                  client=None, db_path: Path | None = None) -> int:
-    return store_actions(fetch_actions(symbols, start, end, client=client), db_path=db_path)
+    n = store_actions(fetch_actions(symbols, start, end, client=client), db_path=db_path)
+    # authoritative only THROUGH THE PREVIOUS session: signal_cycle syncs actions
+    # before it fetches `end`'s bars, so that session's split may not be in the
+    # feed yet. Stamping `end` would tell the RAW guard to skip the one bar that
+    # can carry an unsynced split.
+    record_sync(symbols, calendar.previous_session(end), db_path=db_path)
+    return n
 
 
 def count_symbols_with_actions(*, db_path: Path | None = None) -> int:
@@ -155,20 +195,23 @@ def count_symbols_with_actions(*, db_path: Path | None = None) -> int:
         conn.close()
 
 
-def sync_universe(*, chunk_size: int = 100, client=None,
-                  db_path: Path | None = None, progress=print) -> int:
+def sync_universe(symbols: list[str] | None = None, *, chunk_size: int = 100,
+                  client=None, db_path: Path | None = None, progress=print) -> int:
     """Sync corporate actions for the FULL backfilled universe (point-in-time
     S&P500 union + ETF whitelist) over the daily-history window. Review finding
     B1: only symbols synced here get adjusted prices — a partial sync silently
-    backtests the rest on RAW."""
+    backtests the rest on RAW. Pass `symbols` to sync just tonight's set; the
+    date window stays the full history because adjust() back-scales every bar
+    before an ex-date, so a truncated action list mis-adjusts old bars."""
     from datetime import timedelta
 
     from quant.data import universe
 
     end = date.today()
     start = end - timedelta(days=365 * config.DAILY_HISTORY_YEARS + 7)
-    symbols = sorted(set(universe.all_symbols_in_range(start, end))
-                     | set(config.ETF_WHITELIST))
+    if symbols is None:
+        symbols = sorted(set(universe.all_symbols_in_range(start, end))
+                         | set(config.ETF_WHITELIST))
     total = 0
     for i in range(0, len(symbols), chunk_size):
         chunk = symbols[i:i + chunk_size]

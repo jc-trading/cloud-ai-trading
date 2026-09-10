@@ -11,7 +11,6 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.config import get_settings
-from app.modules.system.logging_middleware import SystemLogMiddleware
 
 settings = get_settings()
 logger = logging.getLogger("cloud_ai_trading")
@@ -34,9 +33,6 @@ def setup_middleware(app: FastAPI) -> None:
     # Rate limit error handler
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-    # Persist request/response events for the System Monitoring log view.
-    app.add_middleware(SystemLogMiddleware)
 
     # Request logging middleware
     @app.middleware("http")

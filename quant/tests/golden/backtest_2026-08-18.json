@@ -1,0 +1,82 @@
+{
+  "config": {
+    "adv_window": 20,
+    "costs": {
+      "commission_per_share": 0.0,
+      "half_spread_bps": 3.0,
+      "slippage_bps": 5.0,
+      "spread_tiers_bps": [
+        [
+          500000000.0,
+          2.0
+        ],
+        [
+          100000000.0,
+          4.0
+        ],
+        [
+          0.0,
+          8.0
+        ]
+      ]
+    },
+    "daily_loss_pause_pct": 0.02,
+    "drawdown_halt_pct": 0.15,
+    "end": "2026-08-18",
+    "exits": {
+      "reversal_bars": 3,
+      "stagnation_bars": 30,
+      "stagnation_hurdle": 0.0,
+      "trailing_atr_mult": 3.0,
+      "trailing_start_r": 1.5
+    },
+    "funnel": {
+      "atr_pct_max": 0.08,
+      "atr_pct_min": 0.01,
+      "max_per_sector": 2,
+      "min_adv": 20000000.0,
+      "min_confidence": 65.0,
+      "min_price": 5.0,
+      "shortlist_max": 10
+    },
+    "halt_cooldown_sessions": 21,
+    "regime_ma": null,
+    "risk_pct": 0.03,
+    "start": "2024-01-01",
+    "starting_capital": 2000.0,
+    "strategy": {
+      "atr_period": 14,
+      "expected_move_atr_mult": 1.0,
+      "ma_fast": 5,
+      "ma_slow": 20,
+      "macd_fast": 12,
+      "macd_signal": 9,
+      "macd_slow": 26,
+      "rsi_overbought": 70.0,
+      "rsi_penalty_floor": 0.2,
+      "rsi_period": 14,
+      "stop_atr_mult": 2.0,
+      "zscore_window": 60
+    }
+  },
+  "metrics": {
+    "avg_r": 0.31710521234127936,
+    "beats_spy_return_over_maxdd": true,
+    "beats_spy_sharpe": true,
+    "cagr": 0.3841048880745177,
+    "final_equity": 4679.485876227867,
+    "max_drawdown": -0.17935208568270725,
+    "num_trades": 115,
+    "profit_factor": 1.9574232444382362,
+    "return_over_maxdd": 2.141624874962646,
+    "sharpe": 1.3882597930953051,
+    "sortino": 2.3523152397492395,
+    "spy_cagr": 0.21740226030599796,
+    "spy_max_drawdown": -0.18755308152693584,
+    "spy_return_over_maxdd": 1.1591505643951538,
+    "spy_sharpe": 1.3285272148519014,
+    "win_rate": 0.4434782608695652
+  },
+  "numpy": "2.5.3",
+  "session_date": "2026-08-18"
+}

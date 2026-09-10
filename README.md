@@ -1,317 +1,110 @@
-# ☁️ Cloud AI Trading System
+# ☁️ Cloud AI Trading (CAT)
 
-**一个实时的加密货币交易信号生成系统，基于技术分析和市场数据**
+**美股 / ETF 模拟推荐 + 学习平台。** 一个确定性 quant 引擎每天收盘后生成买卖建议，
+在模拟账本里记账（练习账户 vs 系统对照账户），用 Telegram 推送。
+
+**没有实盘下单**，也没有 crypto —— Binance/ccxt 数据面已在 R1-8 删除。
+架构地图和改代码前必须知道的铁律见 [`CLAUDE.md`](CLAUDE.md)。
 
 ---
 
-## 🚀 快速开始
+## 🚀 怎么跑
 
-### 启动系统
+前提：Docker Desktop 已就绪，`.env` 已按 `.env.example` 填好
+（`SECRET_KEY` · `ENCRYPTION_KEY` · `ANTHROPIC_API_KEY` · `REDIS_PASSWORD` 是必填）。
 
-**前提**：先启动 Docker Desktop，等它的 daemon 就绪。
-
-所有命令都从项目根目录 `cloud-ai-trading/` 开始。
-
-**① 启动后端栈**（postgres / redis / backend / celery-worker / celery-beat 五个容器）
-
-```bash
-cd cloud-ai-trading
-docker compose up -d
-```
-
-**② 启动前端**（另开一个终端窗口 —— 前端 dev server 会占着这个窗口）
+> **已有安装升级注意**：redis 现在要密码。下一条 `docker compose` 命令之前，先往
+> `.env` 加 `REDIS_PASSWORD=<openssl rand -hex 24>`，并把 host 的 `REDIS_URL` /
+> `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` 改成
+> `redis://:<密码>@localhost:6380/{0,1,2}` —— 否则 compose 会直接报缺变量退出。
+> 详见 [docs/setup/Deployment.md](docs/setup/Deployment.md)。
 
 ```bash
-cd cloud-ai-trading/frontend
-npm install        # 仅首次需要
-npm run dev        # 跑在 http://localhost:3000
+docker compose up -d          # postgres · redis · backend · celery worker/beat · market-stream
+cd frontend && npm install && npm run dev    # http://localhost:3000
 ```
-
-**③ 打开看板**
-
-浏览器访问 **http://localhost:3000** → 登录（或右下 Sign Up 注册）。落地页就是统一的 Decision Feed（可按 ALL / CRYPTO / EQUITY 切换）。
 
 **验证 / 排查**
 
 ```bash
-docker compose ps                      # 五个容器都应是 Up (healthy)
-curl http://localhost:8000/api/health  # 应返回 200
-docker compose logs -f backend         # 后端日志
-docker compose logs -f celery-beat     # 定时任务排程日志
-docker compose down                    # 停掉整套（数据保留）
+docker compose ps                                  # 六个容器都应是 Up
+docker compose exec -T backend python -c \
+  "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"
+docker compose logs -f celery-worker               # 引擎跑没跑
+docker compose logs -f market-stream               # 实时 1min bar 写入
+docker compose down                                # 停掉整套（数据保留）
 ```
 
-详见 [docs/setup/Quick-Start.md](docs/setup/Quick-Start.md)
+主机端口被本机原生服务占用，所以 compose 改发布：**PostgreSQL 5433** · **Redis 6380** ·
+backend 8000（8000 在 IPv4 上可能被本机 php 抢占，健康检查走容器内）。
 
----
-
-## 📊 系统架构
-
-### 核心组件
-
-| 组件 | 技术 | 功能 |
-|------|------|------|
-| **后端** | Python 3.12 + FastAPI | RESTful API + WebSocket 实时数据 |
-| **数据库** | PostgreSQL 16 | 存储行情、指标、信号、头寸 |
-| **缓存/队列** | Redis 7 | Celery 任务队列 + 缓存 |
-| **任务调度** | Celery 5.4 + Beat | 每分钟数据收集和信号生成 |
-| **前端** | Vue.js | 交易信号仪表板 |
-
-### 数据流
-
-```
-Binance WebSocket 
-    ↓
-OHLCV Candles (1分钟)
-    ↓
-Technical Indicators (RSI, MACD, Bollinger Bands)
-    ↓
-Trading Signal Generator (Momentum + Contrarian)
-    ↓
-Portfolio Manager (位置 + P&L 跟踪)
-    ↓
-Telegram Notifications (实时警报)
-```
-
-详见 [docs/project/System-Architecture.md](docs/project/System-Architecture.md)
+夜间观察期用 [`scripts/night-watch.sh`](scripts/night-watch.sh) 启停 + 看状态。
 
 ---
 
 ## 📁 项目结构
 
 ```
-CloudAiTrading/
-├── docs/                          # 📚 所有项目文档
-│   ├── project/                   # 项目规划和架构
-│   │   ├── System-Architecture.md
-│   │   ├── Functional-Spec.md
-│   │   └── Project-Progress.md
-│   ├── setup/                     # 部署和配置
-│   │   ├── Quick-Start.md
-│   │   ├── Installation.md
-│   │   └── Deployment.md
-│   ├── implementation/            # 实现细节
-│   │   ├── Frontend-Architecture.md
-│   │   └── backend/               # 后端具体文档
-│   ├── operations/                # 运营文档
-│   │   ├── Session-Summary.md
-│   │   └── Monitoring-Report.md
-│   └── audit/                     # 代码审计报告
-│       └── Code-Audit-Report.md
-│
-├── backend/                       # 🐍 Python FastAPI 后端
-│   ├── app/                       # 应用核心代码
-│   │   ├── api/                   # REST API endpoints
-│   │   ├── models/                # SQLAlchemy ORM
-│   │   ├── services/              # 业务逻辑
-│   │   └── tasks/                 # Celery 任务
-│   ├── migrations/                # 数据库迁移
-│   ├── tests/                     # 测试
-│   └── requirements.txt           # 依赖
-│
-├── frontend/                      # 🎨 Vue.js 前端
-│   ├── src/
-│   │   ├── components/            # Vue 组件
-│   │   ├── views/                 # 页面
-│   │   ├── api/                   # API 客户端
-│   │   └── stores/                # 状态管理
-│   └── public/
-│
-├── docker/                        # 🐳 Docker 配置
-│   ├── nginx/                     # Nginx 反向代理
-│   └── postgres/                  # PostgreSQL 初始化
-│
-├── scripts/                       # ⚙️ 运营脚本
-│   ├── deploy.sh                  # 部署脚本
-│   └── cleanup.sh                 # 清理脚本
-│
-├── docker-compose.yml             # Docker 编排配置
-├── .env                           # 环境变量（敏感信息）
-├── .env.example                   # 环境变量模板
-└── .gitignore
+cloud-ai-trading/
+├── quant/                  # 确定性引擎（framework-free）
+│   ├── data/               # fetch · store(Parquet) · registry · calendar · bars.get_bars()
+│   ├── engine/             # indicators · signal · strategy · funnel · sizing · exits（纯函数）
+│   ├── backtest/           # costs · simulator · metrics · walkforward · bias_checks
+│   └── research/           # r09 walk-forward 校准
+├── backend/
+│   ├── app/modules/        # simledger · market · watchlist · auth · llm · nightwatch
+│   │                       # · system(watchdog) · notifications · admin
+│   ├── app/tasks/          # quant_tasks · telegram_tasks
+│   ├── tasks/celery_app.py # Beat 排程
+│   └── migrations/         # Alembic
+├── frontend/               # Vue 3 + Vite
+├── docs/                   # 运营 + 部署；docs/archive/ 是 crypto 时代历史文档
+├── scripts/                # night-watch · deploy · cleanup
+└── docker-compose.yml
 ```
 
 ---
 
-## ✅ 当前开发阶段
+## ⏱️ Beat 排程（UTC）
 
-| 阶段 | 状态 | 说明 |
-|------|------|------|
-| **Phase 1:** 认证 & 用户管理 | ✅ 完成 | JWT, RBAC, Watchlists |
-| **Phase 2:** 市场数据 | ✅ 完成 | Binance WebSocket, 技术指标 |
-| **Phase 3:** 交易信号 | ✅ 完成 | 动量策略, 投资组合管理, Telegram 通知 |
-| **Phase 4:** 前端仪表板 | 🔄 进行中 | 实时信号和头寸显示 |
-| **Phase 5:** 自动交易执行 | ⏳ 计划中 | Binance 现货交易 API |
-
-详见 [docs/project/Project-Progress.md](docs/project/Project-Progress.md)
+| 任务 | 时间 | 作用 |
+|---|---|---|
+| `quant.signal_cycle` | 21:30 收盘后 | 同步日线 → 跑引擎 → 明日 recommendations + 每日 exit 管理 |
+| `quant.entry_cycle` | 每 15 min（任务内 gate 到 RTH） | 按建议为对照账户建仓 |
+| `quant.position_cycle` | 每 5 min（gate 到 RTH） | 盘中 stop 检查 |
+| `quant.heartbeat` · `quant.telegram_poll` | 每 1 min | 心跳 / Telegram 命令 |
+| `market.eod_correction` | 01:30 | 用 SIP 数据校正前一交易日的 1min bars |
 
 ---
 
-## 🔧 核心功能
-
-### ✨ 已实现
-- ✅ 实时市场数据收集（Binance WebSocket）
-- ✅ 技术指标计算（RSI, MACD, Bollinger Bands）
-- ✅ 交易信号生成（动量 + 反向策略）
-- ✅ 投资组合管理（头寸跟踪、P&L 计算）
-- ✅ Telegram 实时通知
-- ✅ RESTful API
-
-### 🚧 开发中
-- 🔄 Web 仪表板（Vue.js）
-- 🔄 更多交易策略
-
-### 📋 计划中
-- ⏳ 自动交易执行
-- ⏳ 高级风险管理
-- ⏳ 历史数据分析
-
----
-
-## 📚 文档导航
-
-### 快速参考
-- **首次部署？** → [docs/setup/Installation.md](docs/setup/Installation.md)
-- **启动现有系统？** → [docs/setup/Quick-Start.md](docs/setup/Quick-Start.md)
-- **想了解架构？** → [docs/project/System-Architecture.md](docs/project/System-Architecture.md)
-- **遇到问题？** → [docs/operations/Monitoring-Report.md](docs/operations/Monitoring-Report.md)
-- **代码审计？** → [docs/audit/Code-Audit-Report.md](docs/audit/Code-Audit-Report.md)
-
-### 详细文档
-- [项目规划](docs/project/) - 系统设计、功能规格、进度跟踪
-- [部署指南](docs/setup/) - 安装、配置、运维
-- [实现文档](docs/implementation/) - 架构细节、验证过程
-- [运营手册](docs/operations/) - 监控、故障排除、Session 总结
-- [审计报告](docs/audit/) - 代码质量、问题修复
-
----
-
-## 🎯 常用命令
+## 🧪 测试
 
 ```bash
-# 启动整个系统
-docker compose up -d
-
-# 查看服务状态
-docker compose ps
-
-# 查看日志
-docker compose logs -f backend
-docker compose logs -f celery_worker
-docker compose logs -f celery_beat
-
-# 重启服务
-docker compose restart backend
-docker compose restart celery_worker
-
-# 进入数据库
-docker compose exec postgres psql -U postgres -d cloudaitrading
-
-# 停止系统
-docker compose down
-
-# 完全清空（谨慎！）
-docker compose down -v
+make test            # backend + quant，跑在 host venv 上
+make test-backend
+make test-quant
+make test-docker     # 跑在容器里
+make lock            # requirements.in 改动后重新冻结 requirements.txt
 ```
 
 ---
 
-## 📊 监控面板
+## 📚 关键文档
 
-### 系统健康检查
-```bash
-# API 健康
-curl http://localhost:8000/api/health
-
-# 最近的交易信号
-curl http://localhost:8000/api/signals?limit=5
-
-# 当前投资组合
-curl http://localhost:8000/api/portfolio
-```
-
-### 数据库查询
-```bash
-# 最新 K 线
-SELECT * FROM ohlcv_candles ORDER BY created_at DESC LIMIT 10;
-
-# 最新信号
-SELECT * FROM trading_signals ORDER BY created_at DESC LIMIT 10;
-
-# 开仓头寸
-SELECT * FROM positions WHERE status = 'open';
-
-# 投资组合统计
-SELECT * FROM portfolio_stats ORDER BY updated_at DESC LIMIT 1;
-```
+- [`CLAUDE.md`](CLAUDE.md) — 架构地图 + 7 条铁律（改代码前先读）
+- [`docs/operations/HOW-CAT-OPERATES.md`](docs/operations/HOW-CAT-OPERATES.md) — 系统每天怎么运转
+- [`PROFESSIONAL_QUANT_SYSTEM_ASSESSMENT.md`](PROFESSIONAL_QUANT_SYSTEM_ASSESSMENT.md) — 专业度评估（OOS 口径、fail-closed gates）
+- [`quant/README.md`](quant/README.md) — quant 包 setup 与回测
+- [`docs/`](docs/README.md) — 部署与运营；[`docs/archive/`](docs/archive/README.md) 是历史文档，别照着实现
 
 ---
 
-## 🔐 环境变量配置
+## 🔐 环境变量
 
 ```bash
-# 复制模板
-cp .env.example .env
-
-# 编辑 .env 并填入：
-# - TELEGRAM_BOT_TOKEN
-# - TELEGRAM_CHAT_ID
-# - BINANCE_API_KEY / BINANCE_API_SECRET
-# - DATABASE_URL
-# - REDIS_URL
+cp .env.example .env     # 然后至少填 SECRET_KEY / ENCRYPTION_KEY /
+                         # ANTHROPIC_API_KEY / REDIS_PASSWORD / ALPACA_* / TELEGRAM_*
 ```
 
----
-
-## 🐛 故障排除
-
-| 问题 | 解决方案 |
-|------|---------|
-| API 不响应 | `docker compose restart backend` |
-| 没有收到 Telegram 通知 | 检查环境变量，查看 celery_worker 日志 |
-| 数据库连接错误 | 确保 PostgreSQL 容器运行，检查 DATABASE_URL |
-| Celery 任务未执行 | `docker compose restart celery_beat celery_worker` |
-| 性能下降 | 检查 Redis 内存，清理历史数据 |
-
-详见 [docs/operations/Monitoring-Report.md](docs/operations/Monitoring-Report.md)
-
----
-
-## 👨‍💻 开发
-
-### 后端开发
-```bash
-cd backend
-pip install -r requirements.txt
-python -m pytest tests/
-```
-
-### 前端开发
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
----
-
-## 📝 最后更新
-
-- **最后维护:** 2026-04-14
-- **当前版本:** 1.0.0 (Phase 3)
-- **系统状态:** ✅ 运行中 (实时数据收集和信号生成)
-
-详见 [docs/operations/Session-Summary.md](docs/operations/Session-Summary.md)
-
----
-
-## 📖 更多信息
-
-- [下一个 Session 快速启动](docs/operations/Next-Session-Quickstart.md)
-- [功能规格书](docs/project/Functional-Spec.md)
-- [后端快速开始](docs/setup/Backend-Quick-Start.md)
-- [部署清单](docs/operations/Ready-to-Deploy.md)
-
----
-
-**Made with ❤️ by Cloud AI Trading Team**
+secrets 只走 `.env`，永远不进 git。自助注册默认关闭（`ALLOW_REGISTER=false`，
+`/api/v1/auth/register` 返回 403）；开户走 API 或 psql。

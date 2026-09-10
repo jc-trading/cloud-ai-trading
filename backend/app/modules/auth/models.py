@@ -5,22 +5,12 @@ User model and role definitions.
 import uuid
 import enum
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from sqlalchemy import String, Boolean, DateTime, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-
-if TYPE_CHECKING:
-    from app.modules.exchange.models import ExchangeConnection  # noqa
-else:
-    # Ensure ExchangeConnection is imported at runtime for mapper initialization
-    try:
-        from app.modules.exchange.models import ExchangeConnection  # noqa
-    except ImportError:
-        pass
 
 
 class UserRole(str, enum.Enum):
@@ -69,7 +59,6 @@ class User(Base):
     )
 
     # Relationships
-    exchange_connections = relationship("ExchangeConnection", back_populates="user", lazy="selectin")
     watchlists = relationship("Watchlist", back_populates="user", lazy="selectin")
 
     def __repr__(self) -> str:

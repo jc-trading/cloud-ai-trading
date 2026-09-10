@@ -6,8 +6,21 @@ store/provider refactor can be proved to change neither (plan Phase 0):
   symbols.json              resolved golden symbol set + sector map (no DB needed)
   bars_<date>.parquet       the exact frames bars_fn feeds the engine (long form,
                             one 'symbol' column; UTC ts, store dtypes, row counts)
+  actions_<date>.parquet    the corporate actions the freeze adjusted with
   recs_<date>.json          cycles.build_recommendations output, every field
   backtest_<date>.json      simulator metrics under SIM_CONFIG + the resolved config
+
+Assertion (b) is actions-snapshot-pinned: it re-adjusts the live store with the FROZEN
+actions instead of the live cache, so signal_cycle's nightly corporate-action sync
+cannot move it — every new dividend used to break it.
+
+SESSION_DATE must be a session the bar store actually HAS bars for: build_recommendations
+skips any symbol whose newest bar predates it, so freezing on a bar-less day yields an
+empty — and therefore worthless — recs golden.
+
+The backtest golden is frozen IN THE CONTAINER and records the numpy it was frozen with;
+an environment on a different numpy skips that assertion, because a minor bump moves
+last-ULP rolling sums enough to flip a cash/pyramid comparison in the simulator.
 
 Regenerate — each part in the environment its assertion runs in (build_recommendations
 lives in backend/ and needs SQLAlchemy, which quant/ deliberately does not have):
@@ -30,16 +43,17 @@ from quant import config
 from quant.backtest import metrics, simulator
 from quant.backtest.costs import CostModel
 from quant.data import bars as qbars
-from quant.data import store
+from quant.data import corporate_actions, store
 from quant.engine.exits import ExitParams
 from quant.engine.funnel import FunnelParams
 from quant.engine.strategy import StrategyParams
 
-SESSION_DATE = date(2026, 8, 29)
+SESSION_DATE = date(2026, 8, 18)
 
 GOLDEN_DIR = Path(__file__).resolve().parent
 SYMBOLS_JSON = GOLDEN_DIR / "symbols.json"
 BARS_PARQUET = GOLDEN_DIR / f"bars_{SESSION_DATE}.parquet"
+ACTIONS_PARQUET = GOLDEN_DIR / f"actions_{SESSION_DATE}.parquet"
 RECS_JSON = GOLDEN_DIR / f"recs_{SESSION_DATE}.json"
 BACKTEST_JSON = GOLDEN_DIR / f"backtest_{SESSION_DATE}.json"
 
@@ -134,12 +148,52 @@ def load_symbols() -> tuple[list[str], dict[str, str]]:
     return payload["symbols"], payload["sectors"]
 
 
+# --- frozen corporate actions ---------------------------------------------
+
+ACTION_COLUMNS = ("symbol", "ex_date", "action_type", "ratio", "cash_amount")
+
+
+def freeze_actions(symbols: list[str]) -> pd.DataFrame:
+    """Snapshot the corporate actions the goldens were adjusted with. signal_cycle
+    syncs actions every night, so without this the store assertion re-adjusts with
+    a cache that has moved and fails on every new dividend."""
+    frames = [df for df in (corporate_actions.load_actions(s) for s in symbols)
+              if not df.empty]
+    out = (pd.concat(frames, ignore_index=True) if frames
+           else pd.DataFrame(columns=list(ACTION_COLUMNS)))
+    out = out[list(ACTION_COLUMNS)].copy()
+    out["ex_date"] = out["ex_date"].astype(str)
+    out.to_parquet(ACTIONS_PARQUET, compression=config.PARQUET_COMPRESSION, index=False)
+    return out
+
+
+def load_frozen_actions() -> dict[str, pd.DataFrame]:
+    df = pd.read_parquet(ACTIONS_PARQUET)
+    df["ex_date"] = pd.to_datetime(df["ex_date"]).dt.date
+    return {s: g.reset_index(drop=True) for s, g in df.groupby("symbol", sort=False)}
+
+
+_NO_ACTIONS = pd.DataFrame(columns=list(ACTION_COLUMNS))
+
+
+def bars_from_store(symbol: str, actions: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """get_bars' daily recipe with the actions pinned to the frozen snapshot:
+    full history -> adjust -> window. The ONE reader shared by the freeze and by
+    assertion (b), so the two can never drift apart."""
+    raw = store.read_bars(symbol, "daily", None, None)
+    if raw.empty:
+        return raw
+    adjusted = corporate_actions.adjust(raw, actions.get(symbol, _NO_ACTIONS),
+                                        mode="split_div")
+    return qbars._slice(adjusted, None, SESSION_DATE)
+
+
 # --- frozen bars -----------------------------------------------------------
 
-def freeze_bars(symbols: list[str]) -> pd.DataFrame:
+def freeze_bars(symbols: list[str], actions: dict[str, pd.DataFrame]) -> pd.DataFrame:
     frames = []
     for sym in symbols:
-        df = qbars.get_bars(sym, "1d", end=SESSION_DATE)
+        df = bars_from_store(sym, actions)
         if df.empty:
             continue
         df = df.copy()
@@ -179,10 +233,9 @@ def freeze_recs(symbols: list[str], sectors: dict[str, str]) -> list[dict]:
     from app.modules.simledger import cycles
 
     bars_fn = cycles.memoized_bars_fn(SESSION_DATE, get_bars=frozen_get_bars())
-    recs = cycles.build_recommendations(symbols, SESSION_DATE, bars_fn=bars_fn)
-    for r in recs:
-        r["features"]["sector"] = sectors.get(r["symbol"], "unknown")
-    recs = sorted(recs, key=lambda r: r["symbol"])
+    batch = cycles.build_recommendations(symbols, SESSION_DATE, bars_fn=bars_fn,
+                                         sectors=sectors)
+    recs = sorted(batch.rows, key=lambda r: r["symbol"])
     _write_json(RECS_JSON, {"session_date": str(SESSION_DATE),
                             "min_confidence": GOLDEN_MIN_CONFIDENCE,
                             "count": len(recs),
@@ -208,12 +261,13 @@ def freeze_backtest(symbols: list[str], sectors: dict[str, str]) -> dict:
     cfg = sim_config()
     summary = run_backtest(symbols, sectors, cfg, get_bars=frozen_get_bars())
     _write_json(BACKTEST_JSON, {"session_date": str(SESSION_DATE),
+                                "numpy": np.__version__,
                                 "config": config_dict(cfg),
                                 "metrics": summary})
     return summary
 
 
-PARTS = ("symbols", "bars", "recs", "backtest")
+PARTS = ("symbols", "actions", "bars", "recs", "backtest")
 
 
 def main(parts: list[str]) -> None:
@@ -221,8 +275,12 @@ def main(parts: list[str]) -> None:
         freeze_symbols()
     symbols, sectors = load_symbols()
     print(f"symbols: {len(symbols)}")
+    if "actions" in parts:
+        acts = freeze_actions(symbols)
+        print(f"actions: {len(acts)} rows, "
+              f"{acts['symbol'].nunique() if len(acts) else 0} symbols")
     if "bars" in parts:
-        frozen = freeze_bars(symbols)
+        frozen = freeze_bars(symbols, load_frozen_actions())
         print(f"bars: {len(frozen)} rows, {frozen['symbol'].nunique()} symbols, "
               f"{BARS_PARQUET.stat().st_size / 1e6:.1f} MB")
     if "recs" in parts:
@@ -239,7 +297,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="CAT Phase 0 golden baseline freeze")
-    ap.add_argument("--parts", default="symbols,bars,backtest",
+    ap.add_argument("--parts", default="symbols,actions,bars,backtest",
                     help=f"comma-separated subset of {','.join(PARTS)}")
     args = ap.parse_args()
     selected = [p.strip() for p in args.parts.split(",") if p.strip()]

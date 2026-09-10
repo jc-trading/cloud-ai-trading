@@ -24,7 +24,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterable
 
 from dotenv import dotenv_values
 
@@ -79,10 +79,12 @@ def _utc(dt: datetime | None) -> datetime | None:
 
 @lru_cache(maxsize=1)
 def _dsn() -> str:
-    # host runs read repo .env; inside the backend container the URL arrives as
-    # an ENV var instead (compose passthrough) and no .env is mounted
+    # inside the backend container the URL arrives as an ENV var (compose
+    # passthrough) and no .env is mounted; on the host it falls back to repo
+    # .env. The environment wins so a host run can target the compose postgres
+    # on 5433 without editing the shared secret file.
     cfg = dotenv_values(str(config.REPO_ROOT / ".env"))
-    dsn = cfg.get("DATABASE_URL_SYNC") or os.environ.get("DATABASE_URL_SYNC")
+    dsn = os.environ.get("DATABASE_URL_SYNC") or cfg.get("DATABASE_URL_SYNC")
     if not dsn:
         raise RuntimeError(
             "DATABASE_URL_SYNC missing from .env / environment — the bar file "
@@ -278,6 +280,37 @@ def watchlist_symbols(user_id) -> list[str]:
         fetch="all",
     )
     return [str(r[0]).upper() for r in rows]
+
+
+def resolve_stream_symbols(
+    source, *, cap: int | None = None, extra: Iterable[str] = (),
+) -> tuple[list[str], list[str]]:
+    """The subscription set every 1min path resolves the same way: the 对照账户's
+    open positions, then the enabled ``market_stream_symbols`` rows, then its
+    owner's stock watchlist, then ``extra`` (the EOD correction adds the day's
+    already-stored files). Deduped, uppercased, first occurrence wins.
+
+    ``source`` is the registry to read from — this module in production, a fake
+    in tests. Returns ``(kept, dropped)``; ``cap`` truncates and names what fell
+    off so the caller can log it. REST callers pass no cap: the 30-symbol limit
+    is counted per WebSocket connection, not per request.
+    """
+    held: list[str] = []
+    watch: list[str] = []
+    account = source.system_account()
+    if account is not None:
+        held = source.open_position_symbols(account.account_id)
+        watch = source.watchlist_symbols(account.user_id)
+    configured = [row.symbol for row in source.stream_symbols()]
+
+    ordered: list[str] = []
+    for symbol in (*held, *configured, *watch, *extra):
+        symbol = symbol.upper()
+        if symbol not in ordered:
+            ordered.append(symbol)
+    if cap is not None and len(ordered) > cap:
+        return ordered[:cap], ordered[cap:]
+    return ordered, []
 
 
 def beat(name: str, meta: dict | None = None) -> None:

@@ -30,21 +30,6 @@
         </div>
       </div>
     </div>
-
-    <!-- API Keys Card -->
-    <div class="jd-card">
-      <div class="jd-card-header">
-        <h2 class="jd-card-title">API Keys</h2>
-      </div>
-      <div class="jd-card-body">
-        <p style="font-size: 13px; color: var(--jd-text-muted); margin-bottom: 12px;">
-          Connect your Alpaca account for US stock market data.
-        </p>
-        <router-link to="/settings/exchange" class="jd-btn jd-btn-primary jd-btn-sm" style="display: inline-block; text-decoration: none;">
-          Manage API Keys
-        </router-link>
-      </div>
-    </div>
   </div>
 </template>
 

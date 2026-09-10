@@ -15,12 +15,12 @@ Guards still enforced end to end:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
 from quant import config
-from quant.data import providers, registry, store
+from quant.data import calendar, providers, registry, store
 from quant.data.providers.alpaca_rest import (  # re-exported: public API of this module
     drop_unclosed_daily,
     drop_unclosed_intraday,
@@ -29,6 +29,7 @@ from quant.data.providers.alpaca_rest import (  # re-exported: public API of thi
 logger = logging.getLogger(__name__)
 
 _TF = "daily"
+_OPEN_TF = "1min"
 
 
 def fetch_daily_multi(symbols: list[str], start: datetime, end: datetime | None = None, *,
@@ -94,7 +95,11 @@ def sync_daily_many(symbols: list[str], chunk_size: int = 200, *, client=None,
             for sym, last in zip(chunk, lasts):
                 df = frames.get(sym.upper())
                 if df is None:
-                    df = pd.DataFrame(columns=list(config.BAR_COLUMNS))
+                    # no frame from the provider is a MISS, not an empty sync —
+                    # counting it ok hid it from signal_cycle's fail-closed ratio
+                    logger.warning("sync_daily_many: no frame returned for %s", sym)
+                    failed.append(sym)
+                    continue
                 _store_daily_incremental(sym, df, last, now)
                 chunk_ok += 1
         except Exception:
@@ -112,3 +117,32 @@ def sync_daily_many(symbols: list[str], chunk_size: int = 200, *, client=None,
                     failed.append(sym)
         synced += chunk_ok
     return synced, failed
+
+
+def session_open_prices(symbols: list[str], session_date: date, *, client=None,
+                        now: datetime | None = None) -> dict[str, float]:
+    """Opening-minute price per symbol: the ``open`` of the 09:30 ET 1min bar,
+    read from the same SIP feed and RAW adjustment the daily store syncs with.
+
+    This is the open_once entry fill price. Read-only by design — nothing is
+    written to the store or the registry — and a symbol whose 09:30 bar has not
+    closed (or never arrived) is simply absent from the result, which is the
+    caller's fail-closed signal. The session open is 09:30 on a half day too, so
+    the calendar bounds handle early closes without a special case.
+    """
+    if not symbols or not calendar.is_trading_day(session_date):
+        return {}
+    now = now or datetime.now(timezone.utc)
+    open_ts, _ = calendar.rth_bounds(session_date)
+    frames = providers.get_historical().fetch_bars_multi(
+        sorted({s.upper() for s in symbols}), _OPEN_TF, open_ts.to_pydatetime(),
+        (open_ts + pd.Timedelta(minutes=1)).to_pydatetime(), client=client, now=now)
+    out: dict[str, float] = {}
+    for sym, df in frames.items():
+        bar = df[df["ts"] == open_ts]
+        if bar.empty:
+            continue
+        price = float(bar["open"].iloc[0])
+        if price > 0:
+            out[str(sym).upper()] = price
+    return out

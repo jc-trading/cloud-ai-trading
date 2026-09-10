@@ -8,13 +8,15 @@ BusinessDayConvention — never scatter ``+ timedelta(days=1)`` around the code.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
 import pandas as pd
 
 _CAL = xcals.get_calendar("XNYS")
+_ET = ZoneInfo("America/New_York")
 _SESSIONS = _CAL.sessions  # DatetimeIndex of all trading days (tz-naive, normalized)
 
 
@@ -66,6 +68,25 @@ def rth_bounds(d: date | str | pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp
     13:00 ET close on a half day."""
     ts = _ts(d)
     return _CAL.session_open(ts), _CAL.session_close(ts)
+
+
+# 拍板 2026-09-07: ONE extended-hours session window, shared by the WS writer,
+# the REST backfill and the EOD correction. A half day's after-hours tape stops
+# at 17:00 ET instead of 20:00.
+SESSION_OPEN_ET = time(4, 0)
+SESSION_CLOSE_ET = time(20, 0)
+EARLY_CLOSE_END_ET = time(17, 0)
+
+
+def session_bounds(d: date | str | pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """The EXTENDED session window [04:00, 20:00) ET of one calendar day, in UTC
+    — cut to 17:00 ET on an early close. The single definition the three writers
+    read, so their windows cannot drift apart."""
+    day = _ts(d).date()
+    end_et = EARLY_CLOSE_END_ET if is_early_close(day) else SESSION_CLOSE_ET
+    open_ts = pd.Timestamp.combine(day, SESSION_OPEN_ET).tz_localize(_ET)
+    close_ts = pd.Timestamp.combine(day, end_et).tz_localize(_ET)
+    return open_ts.tz_convert("UTC"), close_ts.tz_convert("UTC")
 
 
 def sessions_in_range(start, end) -> list[date]:

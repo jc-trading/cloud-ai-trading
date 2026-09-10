@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -41,6 +41,7 @@ import pandas as pd
 from quant import config
 from quant.data import calendar, store
 from quant.data.providers import get_historical
+from quant.data.registry import resolve_stream_symbols
 from quant.data.stream import SESSION_CLOSE_ET, SESSION_OPEN_ET
 
 logger = logging.getLogger(__name__)
@@ -49,8 +50,8 @@ _ET = ZoneInfo("America/New_York")
 TIMEFRAME = "1min"
 HOUR_TIMEFRAME = "1hour"
 # 拍板 2026-09-07: extended hours are part of the session, and a half day's
-# after-hours tape stops at 17:00 ET instead of 20:00
-EARLY_CLOSE_END_ET = time(17, 0)
+# after-hours tape stops at 17:00 ET instead of 20:00 (defined in calendar)
+EARLY_CLOSE_END_ET = calendar.EARLY_CLOSE_END_ET
 # A2 fail-closed: the same 20% judgement signal_cycle uses on bar sync
 FAIL_CLOSED_RATIO = 0.2
 MIN_RTH_COMPLETENESS = 0.99
@@ -64,13 +65,10 @@ def _ts(value) -> pd.Timestamp:
 
 
 def session_window(day: date) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """The [open, close) session window of one ET trading day, in UTC — the
-    same 04:00-20:00 window the WS writer and the REST backfill use, cut short
-    to 17:00 ET on early-close days."""
-    end_et = EARLY_CLOSE_END_ET if calendar.is_early_close(day) else SESSION_CLOSE_ET
-    open_et = pd.Timestamp.combine(day, SESSION_OPEN_ET).tz_localize(_ET)
-    close_et = pd.Timestamp.combine(day, end_et).tz_localize(_ET)
-    return open_et.tz_convert("UTC"), close_et.tz_convert("UTC")
+    """The [open, close) session window of one ET trading day, in UTC — the same
+    04:00-20:00 window the WS writer and the REST backfill use, cut short to
+    17:00 ET on early-close days. Thin alias over the one calendar definition."""
+    return calendar.session_bounds(day)
 
 
 def expected_minutes(day: date) -> int:
@@ -181,26 +179,11 @@ class CorrectionReport:
 
 
 def resolve_symbols(registry, period_key: str) -> list[str]:
-    """The stream's subscription set (open positions > configured stream rows >
-    the 对照账户 owner's watchlist) plus every symbol that already has a 1min
+    """The stream's subscription set plus every symbol that already has a 1min
     file for that day — a name unsubscribed mid-session still owns a half IEX
-    day that has to be corrected. No 30-symbol cap here: that is a per-stream
-    connection limit, REST has none."""
-    held: list[str] = []
-    watch: list[str] = []
-    account = registry.system_account()
-    if account is not None:
-        held = registry.open_position_symbols(account.account_id)
-        watch = registry.watchlist_symbols(account.user_id)
-    configured = [row.symbol.upper() for row in registry.stream_symbols()]
-    stored = registry.symbols_with_file(TIMEFRAME, period_key)
-
-    ordered: list[str] = []
-    for symbol in (*held, *configured, *watch, *stored):
-        symbol = symbol.upper()
-        if symbol not in ordered:
-            ordered.append(symbol)
-    return ordered
+    day that has to be corrected."""
+    return resolve_stream_symbols(
+        registry, extra=registry.symbols_with_file(TIMEFRAME, period_key))[0]
 
 
 def _liquid_symbols(registry) -> set[str]:

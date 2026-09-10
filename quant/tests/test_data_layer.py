@@ -180,3 +180,18 @@ def test_sync_daily_many_failed_chunk_falls_back_per_symbol(tmp_store):
     assert failed == ["BAD"]                            # only the bad one lost
     assert len(store.read_bars("GOOD", "daily")) == 2   # chunk-mate survived
     assert not store.bar_dir("BAD", "daily").exists()
+
+
+def test_sync_daily_many_missing_frame_counts_as_failed(tmp_store):
+    """Phase A #2: Alpaca returning no frame for a symbol is a MISS. Counting it
+    ok hid the symbol from signal_cycle's 20% fail-closed ratio."""
+    ts = ["2026-07-23T04:00:00Z", "2026-07-24T04:00:00Z"]
+
+    class _C:
+        def get_stock_bars(self, req):
+            return _Resp(_alpaca_df({"GOOD": ts}))      # MISSING absent entirely
+
+    synced, failed = fetch.sync_daily_many(["GOOD", "MISSING"], client=_C(), now=NOW)
+    assert synced == 1
+    assert failed == ["MISSING"]
+    assert not store.bar_dir("MISSING", "daily").exists()

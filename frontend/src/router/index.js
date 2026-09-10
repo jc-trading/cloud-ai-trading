@@ -69,11 +69,6 @@ const routes = [
         component: () => import('@/views/Settings.vue'),
       },
       {
-        path: 'settings/exchange',
-        name: 'ExchangeSettings',
-        component: () => import('@/views/ExchangeSettings.vue'),
-      },
-      {
         // Catch-all for deleted/unknown routes (/portfolio, /trading, ...):
         // lowest match score, so it only fires when nothing above matched.
         path: ':pathMatch(.*)*',

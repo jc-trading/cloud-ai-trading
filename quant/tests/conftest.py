@@ -58,6 +58,23 @@ class FakeRegistry:
         return max(stamps) if stamps else None
 
 
+class _NoRegistry:
+    def __getattr__(self, name):
+        raise AssertionError(
+            f"registry.{name}() reached the live PostgreSQL from a test — ask for "
+            "the tmp_store / fake_registry fixture instead of leaving rows in the "
+            "shared dev database"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_live_registry(monkeypatch) -> None:
+    """``store._registry`` resolves to the real module on first use, so a test
+    that writes bars without the fake would silently register them in the shared
+    dev DB. Autouse runs before the fixtures that inject the fake over it."""
+    monkeypatch.setattr(store, "_registry", _NoRegistry())
+
+
 @pytest.fixture
 def fake_registry(monkeypatch) -> FakeRegistry:
     reg = FakeRegistry()

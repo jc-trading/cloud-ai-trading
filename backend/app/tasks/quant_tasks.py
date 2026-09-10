@@ -19,27 +19,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from celery import shared_task
 from sqlalchemy import select
 
 from app.celery_database import CeleryAsyncSessionLocal
-from app.modules.fundamentals.finnhub_client import FinnhubClient
+from app.modules.market.finnhub_client import FinnhubClient
 from app.modules.notifications import TelegramNotifier
 from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, Recommendation
 from app.modules.simledger.service import SimLedgerService
+from app.modules.simledger.settings import effective_settings
 
 logger = logging.getLogger(__name__)
-async def _notify(message: str) -> None:
+async def _notify(message: str) -> bool:
     """Event notification — never lets a Telegram failure break the cycle."""
     try:
         # Plain text: messages carry dynamic names (signal_cycle, symbols)
         # whose _ would 400 Telegram's Markdown parser; no formatting is used.
-        await TelegramNotifier().send_message(message, parse_mode=None)
+        return bool(await TelegramNotifier().send_message(message, parse_mode=None))
     except Exception:
         logger.warning("telegram notify failed", exc_info=True)
+        return False
 
 
 def _run_async(coro):
@@ -79,6 +82,15 @@ async def _system_watchlist(db, account) -> set[str]:
     return {s.upper() for s in rows}
 
 
+async def _beat_meta(db, name: str) -> dict:
+    """The heartbeat row's last meta — read before _beat overwrites it, so a
+    once-a-day alert flag can survive across cycles without another table."""
+    row = (await db.execute(
+        select(HeartbeatRecord).where(HeartbeatRecord.name == name)
+    )).scalar_one_or_none()
+    return dict(row.meta or {}) if row is not None else {}
+
+
 async def _beat(db, name: str, **meta) -> None:
     row = (await db.execute(
         select(HeartbeatRecord).where(HeartbeatRecord.name == name)
@@ -89,6 +101,18 @@ async def _beat(db, name: str, **meta) -> None:
     else:
         row.last_beat_at = now
         row.meta = meta or None
+
+
+async def _stamp_open_price_alert(db, today) -> None:
+    """Record that today's missing-open-price alert was delivered. Its own tiny
+    commit so the flag is only ever written after a successful send."""
+    row = (await db.execute(
+        select(HeartbeatRecord).where(HeartbeatRecord.name == "entry_cycle")
+    )).scalar_one_or_none()
+    if row is None:
+        return
+    row.meta = {**(row.meta or {}), "open_price_alert": str(today)}
+    await db.commit()
 
 
 @shared_task(name="quant.heartbeat")
@@ -130,10 +154,17 @@ def position_cycle():
 
 @shared_task(name="quant.entry_cycle", soft_time_limit=500, time_limit=560)
 def entry_cycle():
-    """v3.1: runs every 15 min through RTH (not open-only). Each cycle re-checks
-    shortlisted-but-not-yet-held names and books the ones whose live price is a
-    good entry (run_entries' chase cap). One entry per symbol per day via the
-    idempotency key, so repeated cycles never double-book."""
+    """Books the 对照账户's shortlisted entries; the account's entry_mode picks
+    the semantics.
+
+    open_once (the default) acts once inside [open+16min, open+90min) and fills
+    at the session's 09:30 SIP open — the fixed_oos scoreboard's own semantics,
+    no live quote involved. A name whose 09:30 bar never arrived does not enter
+    today (fail-closed) and is alerted once. intraday_ladder keeps the v3.1
+    behaviour: every 15 min through RTH at the live quote, chase-capped. Either
+    way the idempotency key caps it at one entry per symbol per day."""
+    from quant.data import fetch as qfetch
+
     now_et = _now_et()
     if not _in_rth(now_et):
         return "skipped: outside RTH"
@@ -143,8 +174,18 @@ def entry_cycle():
             account = await _system_account(db)
             if account is None:
                 return "no system account"
+            today = now_et.date()
+            mode = cycles.account_entry_mode(account)
+            if mode == cycles.ENTRY_MODE_OPEN_ONCE \
+                    and not cycles.in_open_once_window(now_et):
+                # still beat: the beat runs every 15 min, so most RTH cycles land
+                # outside this window and the watchdog must not read the silence
+                # as a stalled entry cycle
+                await _beat(db, "entry_cycle", skipped="outside_open_once_window")
+                await db.commit()
+                return "skipped: outside the open_once window"
             state = await cycles.get_safety_state(db, account)
-            blocked = cycles.entries_blocked_reason(state, today=now_et.date())
+            blocked = cycles.entries_blocked_reason(state, today=today)
             if blocked:
                 logger.warning("entry_cycle blocked: %s", blocked)
                 return f"blocked: {blocked}"
@@ -154,19 +195,62 @@ def entry_cycle():
             # fail-closed once) to avoid ~26 alerts/day.
             any_rec = (await db.execute(
                 select(Recommendation.id)
-                .where(Recommendation.trade_date == now_et.date()).limit(1)
+                .where(Recommendation.trade_date == today).limit(1)
             )).scalar_one_or_none()
             if any_rec is None:
                 await _beat(db, "entry_cycle", fail_closed="no recommendations")
                 await db.commit()
                 logger.warning("entry_cycle fail-closed: no recommendations for %s",
-                               now_et.date())
+                               today)
                 return "fail-closed: no recommendations"
+
+            eff = await effective_settings(db)
+            prior = await _beat_meta(db, "entry_cycle")
+            open_prices = None
+            missing: list[str] = []
+            if mode == cycles.ENTRY_MODE_OPEN_ONCE:
+                wanted = await cycles.shortlist_symbols(db, today)
+                try:
+                    open_prices = await asyncio.to_thread(
+                        qfetch.session_open_prices, wanted, today)
+                except Exception:
+                    logger.exception("entry_cycle: 09:30 open prices unavailable "
+                                     "for %s — no entries this session", today)
+                    open_prices = {}
+                missing = [s for s in wanted if s not in open_prices]
+
             client = FinnhubClient()
-            booked = await cycles.run_entries(db, account, now_et.date(),
-                                             quote_fn=_quote_fn(client))
-            await _beat(db, "entry_cycle", booked=booked)
+            booked = await cycles.run_entries(
+                db, account, today, quote_fn=_quote_fn(client), entry_mode=mode,
+                open_prices=open_prices, risk_pct=eff.per_trade_risk_pct,
+                chase_cap=eff.intraday_entry_chase_cap,
+                max_slots=eff.max_concurrent_slots)
+
+            alerted_on = prior.get("open_price_alert")
+            meta = {"booked": booked, "mode": mode}
+            if alerted_on is not None:
+                # _beat replaces meta wholesale, so today's alert flag has to be
+                # carried forward or it survives exactly one cycle
+                meta["open_price_alert"] = alerted_on
+            if missing:
+                meta["missing_open"] = missing
+                logger.error("entry_cycle: no 09:30 open price for %s — not "
+                             "entered today", ", ".join(missing))
+            await _beat(db, "entry_cycle", **meta)
             await db.commit()
+
+            if eff.rejected:
+                await _notify("⚠️ master_settings 有非法行（只允许收紧）— 该项用常量: "
+                              + "; ".join(eff.rejected))
+            if missing and alerted_on != str(today):
+                # the once-a-day flag follows a send that actually LANDED
+                # (watchdog._alert's rule): stamping it first loses the whole
+                # day's alert to one failed send, which is when it matters most
+                sent = await _notify(
+                    "⛔ 对照账户 open_once fail-closed: 拿不到 09:30 开盘价, "
+                    f"今天不进这些票: {', '.join(missing)}")
+                if sent:
+                    await _stamp_open_price_alert(db, today)
             if booked:
                 await _notify(f"📈 对照账户 entries booked: {', '.join(booked)}")
             return f"booked: {booked}" if booked else "nothing to book"
@@ -184,6 +268,7 @@ def signal_cycle():
     system account, update protections, snapshot every sim account."""
     from quant import config as qconfig
     from quant.data import calendar as qcal
+    from quant.data import corporate_actions as qactions
     from quant.data import fetch as qfetch
     from quant.data import sectors as qsectors
     from quant.data import universe as quniverse
@@ -217,6 +302,16 @@ def signal_cycle():
     index_syms = set(quniverse.constituents_on(today))
     sync_set = sorted(index_syms | set(qconfig.ETF_WHITELIST)
                       | held_syms | watchlist_syms)
+    # corporate actions FIRST: get_bars adjusts on read, so bars synced before
+    # tonight's split is cached would be scored RAW (the HOOD 08-15 mode).
+    # Never fatal — build_recommendations fails closed per symbol on any name
+    # still showing an unadjusted jump.
+    try:
+        qactions.sync_universe(sync_set,
+                               progress=lambda m: logger.info("signal_cycle: %s", m))
+    except Exception:
+        logger.warning("signal_cycle: corporate action sync failed", exc_info=True)
+
     # review #1: batched sync — one Alpaca request per chunk; a failed chunk
     # falls back to per-symbol sync inside sync_daily_many
     synced, failed_syms = qfetch.sync_daily_many(sync_set)
@@ -247,16 +342,19 @@ def signal_cycle():
         async with CeleryAsyncSessionLocal() as db:
             # review #2: one bar read per symbol across recommendations + exits
             bars_fn = cycles.memoized_bars_fn(today)
+            eff = await effective_settings(db)
+            batch = cycles.RecommendationBatch()
             if sync_fail_closed:
                 recs, n = [], 0
                 logger.error("signal_cycle fail-closed: %d/%d symbols failed "
                              "bar sync — recommendations NOT published",
                              failed, len(symbols))
             else:
-                recs = cycles.build_recommendations(symbols, today,
-                                                    bars_fn=bars_fn)
-                for r in recs:
-                    r["features"]["sector"] = sectors.get(r["symbol"], "unknown")
+                batch = cycles.build_recommendations(
+                    symbols, today, bars_fn=bars_fn, sectors=sectors,
+                    funnel_params=replace(cycles.RECOMMENDED_FUNNEL,
+                                          min_confidence=eff.min_confidence))
+                recs = batch.rows
                 n = await cycles.store_recommendations(db, recs)
 
             # v3 explanation layer (LLM, explanation-only): a one-line read on
@@ -273,36 +371,82 @@ def signal_cycle():
                                    exc_info=True)
 
             account = await _system_account(db)
-            closed: list[str] = []
+            exits = cycles.ExitPass()
+            drift: list[str] = []
             if account is not None:
-                closed = await cycles.daily_exit_management(db, account, today,
-                                                            bars_fn=bars_fn)
-                # snapshot + protections on end-of-day marks (review #3/#5:
-                # concurrent quotes; positions/equity passed to snapshot).
-                # Post-close quotes are >15min old by design, so this keeps the
-                # price>0 check instead of the intraday staleness guard.
+                if cycles.account_entry_mode(account) == cycles.ENTRY_MODE_OPEN_ONCE:
+                    # sentinel: today's fills were priced off the SIP 09:30 1min
+                    # bar, so the stored daily open must agree with them
+                    drift = await cycles.open_fill_drift(db, account, today,
+                                                         bars_fn=bars_fn)
+                exits = await cycles.daily_exit_management(
+                    db, account, today, bars_fn=bars_fn)
+                # snapshot + protections on end-of-day marks: the session's own
+                # daily close (what the backtest marks equity at), quote as the
+                # fallback. The memo means the close costs no extra bar read.
                 positions = await SimLedgerService.get_open_positions(db, account.id)
                 client = FinnhubClient()
-                quote_map = await cycles.fetch_quotes(
-                    client, [p.symbol for p in positions])
-                quotes = {s: q.price for s, q in quote_map.items() if q.price > 0}
+                quotes = await cycles.closing_marks(
+                    positions, today, bars_fn=bars_fn, quote_fn=_quote_fn(client))
                 equity = SimLedgerService.equity(account, positions, quotes)
-                await cycles.update_protections(db, account, equity, today)
+                await cycles.update_protections(
+                    db, account, equity, today,
+                    pause_pct=eff.daily_loss_pause_pct,
+                    halt_pct=eff.portfolio_drawdown_halt_pct)
                 await SimLedgerService.snapshot(db, account, today, quotes,
                                                 positions=positions,
                                                 equity=equity)
+            closed = exits.closed
             meta = {"recs": n, "explained": explained, "closed": closed,
-                    "synced": synced, "failed": failed}
+                    "synced": synced, "failed": failed,
+                    "scanned": batch.scanned, "stale": batch.stale,
+                    "unadjusted": batch.unadjusted,
+                    "unmarked": exits.unadjusted}
+            if drift:
+                meta["fill_drift"] = drift
+            if eff.rejected:
+                meta["settings_rejected"] = list(eff.rejected)
             if sync_fail_closed:
                 meta["fail_closed"] = "bar sync failures"
+            # the guards are only protective if a bad night is LOUD: a cycle that
+            # scans 500 names and publishes none used to leave `recs: 0` and silence
+            rec_issues: list[str] = []
+            if not sync_fail_closed and batch.scanned:
+                if n == 0:
+                    rec_issues.append(
+                        f"0 recommendations published from {batch.scanned} scanned "
+                        f"({batch.stale} stale-bar, {batch.unadjusted} unadjusted)")
+                elif batch.excluded > 0.2 * batch.scanned:
+                    rec_issues.append(
+                        f"{batch.excluded}/{batch.scanned} symbols excluded "
+                        f"({batch.stale} stale-bar, {batch.unadjusted} unadjusted)")
+            if exits.unadjusted:
+                rec_issues.append("held positions NOT marked (RAW prices): "
+                                  + ", ".join(exits.unadjusted))
+            if rec_issues:
+                meta["fail_closed"] = "; ".join(rec_issues)
             await _beat(db, "signal_cycle", **meta)
             await db.commit()
             if sync_fail_closed:
                 await _notify("⛔ signal_cycle fail-closed: bar sync failed for "
                               f"{failed}/{len(sync_set)} symbols — no "
                               "recommendations published for the next session")
+            elif rec_issues:
+                await _notify("⛔ signal_cycle fail-closed: " + "; ".join(rec_issues))
+            if eff.rejected:
+                await _notify("⚠️ master_settings 有非法行（只允许收紧）— 该项用常量: "
+                              + "; ".join(eff.rejected))
+            if drift:
+                await _notify(
+                    f"⚠️ open_once 成交价对账超 {cycles.OPEN_FILL_DRIFT_BPS:.0f}bps"
+                    " — 09:30 bar 与日线 open 不一致: " + "; ".join(drift))
             if closed:
                 await _notify(f"📤 对照账户 daily exits: {', '.join(closed)}")
+            if exits.data_end:
+                await _notify(
+                    "⚠️ 对照账户 data_end 强平 — no new daily bar for "
+                    f"{cycles.DATA_END_STALE_SESSIONS}+ sessions, closed at the "
+                    f"last known close: {', '.join(exits.data_end)}")
             shortlist = [r["symbol"] for r in recs if r.get("shortlist_rank")]
             if shortlist:
                 await _notify("🔎 明日 shortlist: " + ", ".join(shortlist[:10]))

@@ -16,6 +16,11 @@ from app.modules.simledger.service import (InsufficientCash, SimLedgerService,
 NOW = datetime(2026, 7, 30, 14, 0, tzinfo=timezone.utc)
 
 
+async def _no_closes(db, account_id, session_date):
+    """run_entries also reads today's closed lots (exited_today / slot count)."""
+    return []
+
+
 def _q(price, age_s=0):
     return cycles.QuoteReading(price=price, at=NOW - timedelta(seconds=age_s))
 
@@ -66,6 +71,8 @@ def test_insufficient_cash_skips_symbol_not_cycle(monkeypatch):
 
     monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(_no_closes))
     db = _RecSession([_rec("AAA", 1), _rec("BBB", 2)])
     out = asyncio.run(cycles.run_entries(db, _acct(), date(2026, 7, 30),
                                          quote_fn=lambda s: _q(100.0), now=NOW))
@@ -87,6 +94,8 @@ def test_run_entries_sizes_on_cost_price(monkeypatch):
 
     monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(_no_closes))
     db = _RecSession([_rec("AAA", 1, stop_distance=5.0, adv=1e9)])
     asyncio.run(cycles.run_entries(db, _acct(cash=2000.0), date(2026, 7, 30),
                                    quote_fn=lambda s: _q(100.0), now=NOW))
@@ -165,7 +174,7 @@ def test_daily_exit_skips_stale_bars(monkeypatch):
 
     out = asyncio.run(cycles.daily_exit_management(
         None, _acct(), date(2026, 7, 30), bars_fn=stale_bars))
-    assert out == []
+    assert out.closed == [] and out.data_end == []          # 1 session late < N
     assert pos.bars_held == 7 and pos.reversal_count == 1   # NOT re-folded
 
 
@@ -281,6 +290,8 @@ def test_chase_cap_skips_gap_up_enters_at_ref(monkeypatch):
 
     monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(_no_closes))
 
     # rec reference price = 100; stop_distance 2, adv big
     def rec(sym):
@@ -326,6 +337,8 @@ def test_chase_cap_none_disables_gate(monkeypatch):
 
     monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(_no_closes))
 
     rec = Recommendation(id=uuid4(), symbol="AAA", trade_date=date(2026, 7, 30),
                          direction="up", confidence=_dec(70), shortlist_rank=1,

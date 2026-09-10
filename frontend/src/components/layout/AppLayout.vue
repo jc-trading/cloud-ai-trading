@@ -34,7 +34,6 @@
 
         <div class="jd-nav-section">
           <div class="jd-nav-label">Account</div>
-          <SidebarItem to="/settings/exchange" icon="pi-link" label="Exchanges" :isActive="route.path === '/settings/exchange'" />
           <SidebarItem to="/settings" icon="pi-cog" label="Settings" :isActive="route.path === '/settings'" />
         </div>
 
@@ -112,9 +111,6 @@
                   <router-link to="/settings" @click="showProfileMenu=false" class="dropdown-item">
                     <i class="pi pi-cog"></i> Settings
                   </router-link>
-                  <router-link to="/settings/exchange" @click="showProfileMenu=false" class="dropdown-item">
-                    <i class="pi pi-key"></i> API Keys
-                  </router-link>
                 </div>
                 <!-- Logout -->
                 <div style="padding:6px; border-top:1px solid var(--jd-border);">
@@ -169,7 +165,6 @@ const pageTitles = {
   'Market': 'Market Overview',
   'SymbolDetail': 'Market Detail',
   'Settings': 'Settings',
-  'ExchangeSettings': 'Exchange Connections',
 }
 
 const pageDescriptions = {
@@ -179,7 +174,6 @@ const pageDescriptions = {
   'Market': 'Live US stock prices',
   'SymbolDetail': 'In-depth market analysis',
   'Settings': 'Account preferences',
-  'ExchangeSettings': 'Connect exchanges via API',
 }
 
 const currentPageTitle       = computed(() => pageTitles[route.name]       || 'Recommendations')

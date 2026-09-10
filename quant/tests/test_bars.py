@@ -130,3 +130,53 @@ def test_session_filter(tmp_store):
     reg_et = reg["ts"].dt.tz_convert("America/New_York").dt.strftime("%H:%M").tolist()
     assert reg_et == ["09:30", "10:00"]          # pre/post dropped
     assert len(allh) == 4                        # all kept
+
+
+class _NoActionsClient:
+    """Alpaca stand-in whose corporate-action feed is empty — the HOOD case, and
+    the case where a split simply has not been published yet."""
+
+    def get_corporate_actions(self, req):
+        return {"forward_splits": [], "reverse_splits": [], "stock_dividends": [],
+                "cash_dividends": []}
+
+
+def _halving_bars(day_before: str, day: str, close_before=100.0, close=50.0):
+    ts = pd.DatetimeIndex([pd.Timestamp(f"{d} 00:00", tz="America/New_York")
+                           for d in (day_before, day)]).tz_convert("UTC")
+    return pd.DataFrame({
+        "ts": ts, "open": [close_before, close], "high": [close_before, close],
+        "low": [close_before, close], "close": [close_before, close],
+        "volume": [1, 1], "vwap": [close_before, close], "trade_count": [1, 1],
+    })
+
+
+def test_unsynced_split_on_the_sync_day_is_still_flagged(tmp_store):
+    """signal_cycle syncs actions and THEN the day's bars, so a split on session
+    D can land after the feed was read. Stamping the watermark at D would tell
+    the guard to skip D — exactly the bar that carries the split."""
+    store.write_frame("SPLITCO", "daily",
+                      _halving_bars("2026-08-17", "2026-08-18"), provider=_SIP)
+    # the production call shape: sync_universe passes end = date.today()
+    corporate_actions.sync_actions(["SPLITCO"], date(2016, 8, 18), date(2026, 8, 18),
+                                   client=_NoActionsClient())
+    assert corporate_actions.load_synced_at("SPLITCO") == date(2026, 8, 17)
+
+    df = bars.get_bars("SPLITCO", "1d", adjust="split_div")
+    assert df.attrs["unadjusted"] is True
+
+    # the regression this pins: stamping the sync day itself blinds the guard
+    raw = store.read_bars("SPLITCO", "daily")
+    assert bars.is_unadjusted("SPLITCO", raw, synced_at=date(2026, 8, 18)) is False
+    assert bars.is_unadjusted("SPLITCO", raw, synced_at=date(2026, 8, 17)) is True
+
+
+def test_exact_half_move_counts_as_split_sized(tmp_store):
+    """A clean 2:1 split is exactly -50%; the old strict `>` let it through —
+    the very case §2 #10 called out."""
+    raw = _halving_bars("2026-08-17", "2026-08-18", 100.0, 50.0)
+    assert raw["close"].pct_change().abs().iloc[-1] == 0.5
+    assert bars.is_unadjusted("X", raw, synced_at=date(2026, 8, 17)) is True
+    # just inside the threshold stays quiet
+    mild = _halving_bars("2026-08-17", "2026-08-18", 100.0, 50.5)
+    assert bars.is_unadjusted("X", mild, synced_at=date(2026, 8, 17)) is False

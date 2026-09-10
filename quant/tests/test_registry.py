@@ -1,9 +1,12 @@
 """market_data_files / market_stream_symbols registry against a live PostgreSQL.
 
 The constraints and the upsert semantics under test are server-side, so these
-run against the compose stack's DB and clean up their own rows (the registry is
-autocommit — there is no transaction to roll back). Skipped when PG is not
-reachable, which keeps the host research venv green without a database.
+run against the compose stack's DB — which is the shared dev database, so every
+symbol they touch carries the ``ZZREG`` prefix, the teardown deletes on that
+prefix rather than on the two names it happens to know, and it then asserts the
+prefix is gone. The registry is autocommit: there is no transaction to roll
+back, so the sweep is the only guarantee. Skipped when PG is not reachable,
+which keeps the host research venv green without a database.
 """
 
 from __future__ import annotations
@@ -15,17 +18,29 @@ import pytest
 
 from quant.data import registry
 
-SYM = "ZZREG"
-OTHER = "ZZREG2"
+PREFIX = "ZZREG"
+SYM = f"{PREFIX}A"
+OTHER = f"{PREFIX}B"
+_TABLES = ("_TABLE", "_STREAM_TABLE")
 
 FIRST_TS = datetime(2025, 1, 2, 5, 0, tzinfo=timezone.utc)
 LAST_TS = datetime(2025, 12, 31, 5, 0, tzinfo=timezone.utc)
 
 
-def _cleanup() -> None:
-    for sym in (SYM, OTHER):
-        registry._run(f"DELETE FROM {registry._TABLE} WHERE symbol = %s", (sym,))
-        registry._run(f"DELETE FROM {registry._STREAM_TABLE} WHERE symbol = %s", (sym,))
+def _purge() -> None:
+    for attr in _TABLES:
+        registry._run(f"DELETE FROM {getattr(registry, attr)} WHERE symbol LIKE %s",
+                      (f"{PREFIX}%",))
+
+
+def _leftovers() -> dict[str, int]:
+    counts = {}
+    for attr in _TABLES:
+        table = getattr(registry, attr)
+        n = registry._run(f"SELECT count(*) FROM {table} WHERE symbol LIKE %s",
+                          (f"{PREFIX}%",), fetch="one")
+        counts[table] = n[0]
+    return counts
 
 
 @pytest.fixture()
@@ -38,11 +53,13 @@ def pg():
         registry._run("SELECT 1", (), fetch="one")
     except RuntimeError as exc:
         pytest.skip(f"PostgreSQL unreachable: {exc}")
-    _cleanup()
+    _purge()
     try:
         yield
     finally:
-        _cleanup()
+        _purge()
+        left = _leftovers()
+        assert not any(left.values()), f"test rows left in the shared dev DB: {left}"
 
 
 def _upsert(period_key: str = "2025", **over) -> None:

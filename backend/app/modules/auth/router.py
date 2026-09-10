@@ -2,9 +2,10 @@
 Authentication API routes.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
 from app.dependencies import CurrentUser, AdminUser, DB
 from app.modules.auth.schemas import (
@@ -25,6 +26,8 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register", response_model=TokenResponse, status_code=201)
 async def register(data: UserRegister, db: DB):
     """Register a new user account."""
+    if not get_settings().ALLOW_REGISTER:
+        raise HTTPException(status_code=403, detail="Registration is disabled")
     user = await AuthService.register(db, data)
     tokens = AuthService.generate_tokens(user)
     return TokenResponse(

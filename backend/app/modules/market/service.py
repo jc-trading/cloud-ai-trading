@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.exceptions import NotFoundException
-from app.modules.fundamentals.finnhub_client import get_finnhub_client
+from app.modules.market.finnhub_client import get_finnhub_client
 from app.modules.market.models import MarketDataFile, MarketStreamSymbol
 
 logger = logging.getLogger("cloud_ai_trading.market")

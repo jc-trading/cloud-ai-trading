@@ -41,21 +41,27 @@ _last_alert_at: dict[str, float] = {}
 
 
 async def _alert(check: str, message: str) -> None:
-    """Log the problem and Telegram it, at most once per cooldown per check."""
+    """Log the problem and Telegram it, at most once per cooldown per check.
+
+    The cooldown is stamped only after a send that actually succeeded — the old
+    stamp-then-send order swallowed the next 6 hours of an outage whenever the
+    first attempt failed, which is exactly when the alert matters."""
     logger.error("WATCHDOG %s: %s", check, message)
     now = time.monotonic()
     last = _last_alert_at.get(check)
     if last is not None and now - last < ALERT_COOLDOWN_SECONDS:
         return
-    _last_alert_at[check] = now
     try:
         # Plain text (no parse_mode): alert bodies carry task names like
         # position_cycle whose underscores 400 Telegram's Markdown parser.
-        await TelegramNotifier().send_message(
+        sent = await TelegramNotifier().send_message(
             f"🚨 Pipeline watchdog — {check}\n{message}", parse_mode=None
         )
     except Exception as e:  # alerting must never take the watchdog down
         logger.error("Watchdog failed to send Telegram alert: %s", e)
+        return
+    if sent:
+        _last_alert_at[check] = time.monotonic()
 
 
 async def _check_queue_depth() -> None:
@@ -107,8 +113,26 @@ async def _check_quant_heartbeats() -> None:
             await db.execute(select(HeartbeatRecord))).scalars().all()}
 
     now = time.time()
+    try:
+        from quant.data import calendar as qcal
+        from app.modules.simledger.cycles import in_rth, now_et as _now_et
+        now_et = _now_et()
+        in_session = in_rth(now_et, open_grace_min=10)
+    except Exception:
+        now_et, in_session = None, False
+
     worker = rows.get("worker")
-    if worker is not None and now - worker.last_beat_at.timestamp() > WORKER_HEARTBEAT_STALE:
+    if worker is None:
+        # a row that was never written is not evidence of health: if the worker
+        # died before its first beat, `worker is not None` alerted on nothing
+        if in_session:
+            await _alert(
+                "worker heartbeat stale",
+                "quant.heartbeat has NEVER written a row and the market is open — "
+                "the worker is wedged or down. This is the 07-01 failure mode; "
+                "restart cat_celery_worker.",
+            )
+    elif now - worker.last_beat_at.timestamp() > WORKER_HEARTBEAT_STALE:
         await _alert(
             "worker heartbeat stale",
             f"quant.heartbeat last wrote {(now - worker.last_beat_at.timestamp()) / 60:.0f}m "
@@ -116,16 +140,11 @@ async def _check_quant_heartbeats() -> None:
             f"down. This is the 07-01 failure mode; restart cat_celery_worker.",
         )
 
-    try:
-        from quant.data import calendar as qcal
-        from app.modules.simledger.cycles import in_rth, now_et as _now_et
-        now_et = _now_et()
-        trading_day = qcal.is_trading_day(now_et.date())
-    except Exception:
+    if now_et is None:
         return  # calendar unavailable — heartbeat ages alone still covered above
 
     # 10-min open grace: the first position_cycle beat lands ~09:35-09:40 ET
-    if in_rth(now_et, open_grace_min=10):
+    if in_session:
         pc = rows.get("position_cycle")
         if pc is None or now - pc.last_beat_at.timestamp() > POSITION_CYCLE_STALE_RTH:
             age = "never" if pc is None else f"{(now - pc.last_beat_at.timestamp()) / 60:.0f}m ago"

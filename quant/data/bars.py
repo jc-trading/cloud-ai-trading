@@ -37,26 +37,38 @@ _REGULAR_CLOSE = (16, 0)  # ET (exclusive)
 _slice = store.slice_range
 
 
-_SUSPICIOUS_JUMP = 0.5   # |1-day close move| beyond this with zero actions -> warn
+_SUSPICIOUS_JUMP = 0.5   # |1-day close move| at/beyond this with zero actions -> RAW
+_RECENT_JUMP_SESSIONS = 90   # scan window when the symbol was never CA-synced
 
 
-def _warn_if_unadjusted(symbol: str, df: pd.DataFrame, actions: pd.DataFrame) -> None:
-    """Review B1 guard: adjustment requested but this symbol has ZERO cached
-    corporate actions AND its series contains a split-sized single-day jump —
-    almost certainly an unsynced action. Warn instead of silently returning RAW."""
+class UnadjustedBarsWarning(UserWarning):
+    """Adjustment was requested but the returned prices are RAW. Human-facing
+    only — consumers must read the ``unadjusted`` frame attr, never this
+    warning: a memoizing bars_fn emits it once and every later reader sees a
+    silently RAW frame."""
+
+
+def is_unadjusted(symbol: str, df: pd.DataFrame, *, actions: pd.DataFrame | None = None,
+                  synced_at: date | None = None) -> bool:
+    """Review B1 guard: True when `df` is still RAW because a corporate action is
+    missing. A cached action clears it outright. Otherwise a split-sized single-day
+    jump is only evidence of a MISSING action inside the window the provider could
+    not have covered — after the session the feed is authoritative through, or the most recent
+    _RECENT_JUMP_SESSIONS bars for a symbol never synced. Without that window a
+    legitimate historical move (HOOD 2021-08-04, +50%) excludes the symbol forever,
+    because a genuinely action-free name can never produce the action that clears it."""
     if actions is not None and not actions.empty:
-        return
+        return False
     closes = df["close"]
     if len(closes) < 2:
-        return
+        return False
     jumps = closes.pct_change().abs()
-    if (jumps > _SUSPICIOUS_JUMP).any():
-        worst = float(jumps.max())
-        warnings.warn(
-            f"{symbol}: adjust requested but no corporate actions are cached and the "
-            f"daily series has a {worst:.0%} single-day jump — actions likely not "
-            f"synced (run python -m quant.data.corporate_actions); prices are RAW",
-            stacklevel=3)
+    if synced_at is not None:
+        after = df["ts"].dt.tz_convert(_ET).dt.date > synced_at
+        jumps = jumps[after]
+    else:
+        jumps = jumps.tail(_RECENT_JUMP_SESSIONS)
+    return bool((jumps >= _SUSPICIOUS_JUMP).any())
 
 
 def _regular_session_filter(df: pd.DataFrame) -> pd.DataFrame:
@@ -98,6 +110,10 @@ def get_bars(symbol: str, timeframe: str = "1d", start: date | str | None = None
     adjust : 'split_div' (default) | 'split' | 'none'
     session: 'regular' (09:30-16:00 ET) | 'all' (include pre/post) — intraday only.
 
+    The returned frame carries ``attrs['unadjusted']``: True means a corporate
+    action is missing and the prices are RAW, so the caller must fail closed on
+    that symbol rather than score or mark a position against them.
+
     Intraday timeframes are RAW only: corporate_actions.adjust derives each
     dividend factor from the last close before the ex-date *inside the frame it
     is given*, which a windowed intraday read cannot supply. Requesting an
@@ -130,12 +146,25 @@ def get_bars(symbol: str, timeframe: str = "1d", start: date | str | None = None
         raise ValueError(f"unsupported timeframe {timeframe!r}")
 
     if raw.empty:
+        raw.attrs["unadjusted"] = False
         return raw
 
     # read-time adjustment (RAW on disk -> adjusted)
+    unadjusted = False
     if adjust != "none":
         actions = corporate_actions.load_actions(symbol)
-        _warn_if_unadjusted(symbol, raw, actions)
+        unadjusted = is_unadjusted(
+            symbol, raw, actions=actions,
+            synced_at=corporate_actions.load_synced_at(symbol))
+        if unadjusted:
+            warnings.warn(
+                f"{symbol}: adjust requested but no corporate actions are cached and "
+                f"the daily series has a recent split-sized jump — actions likely not "
+                f"synced (run python -m quant.data.corporate_actions); prices are RAW",
+                UnadjustedBarsWarning, stacklevel=2)
         raw = corporate_actions.adjust(raw, actions, mode=adjust)
 
-    return _slice(raw, start, end)
+    out = _slice(raw, start, end)
+    # the signal callers act on: a warning is invisible behind a memoizing bars_fn
+    out.attrs["unadjusted"] = unadjusted
+    return out

@@ -42,3 +42,16 @@ def test_advance_days_with_convention():
 def test_sessions_in_range():
     days = cal.sessions_in_range("2026-07-20", "2026-07-24")
     assert days == [date(2026, 7, d) for d in (20, 21, 22, 23, 24)]
+
+
+def test_session_bounds_is_the_one_extended_window():
+    """stream.py, the REST backfill and eod_correction all read this — the
+    '三处窗口一致' rule needs a single definition, not three copies."""
+    from quant.data import eod_correction, stream
+
+    for day, close_hh in ((date(2026, 8, 18), 20), (date(2025, 11, 28), 17)):
+        open_ts, close_ts = cal.session_bounds(day)
+        assert open_ts.tz_convert("America/New_York").hour == 4
+        assert close_ts.tz_convert("America/New_York").hour == close_hh
+        assert eod_correction.session_window(day) == (open_ts, close_ts)
+        assert stream.session_bounds(open_ts) == (open_ts, close_ts)

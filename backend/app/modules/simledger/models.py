@@ -47,6 +47,7 @@ class SimAccount(Base):
     is_system = Column(Boolean(), nullable=False, server_default=text("false"))
     starting_capital = Column(Numeric(18, 2), nullable=False, server_default=text("2000"))
     cash = Column(Numeric(18, 2), nullable=False, server_default=text("2000"))
+    entry_mode = Column(String(20), nullable=False, server_default=text("'open_once'"))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(),
                         onupdate=func.now(), nullable=False)

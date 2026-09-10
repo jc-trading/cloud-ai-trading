@@ -26,6 +26,7 @@ import pandas as pd
 from quant import config
 from quant.data import fetch, registry, store, universe
 from quant.data.providers import get_historical
+from quant.data.registry import resolve_stream_symbols
 from quant.data.stream import SESSION_CLOSE_ET, SESSION_OPEN_ET
 
 _ET = ZoneInfo("America/New_York")
@@ -159,23 +160,7 @@ class IntradayStats:
 
 
 def resolve_intraday_symbols(registry) -> list[str]:
-    """The stream's subscription set — the 对照账户's open positions, then the
-    enabled ``market_stream_symbols`` rows, then its owner's stock watchlist.
-    No 30-symbol cap here: that is a per-stream-connection limit, REST has none."""
-    held: list[str] = []
-    watch: list[str] = []
-    account = registry.system_account()
-    if account is not None:
-        held = registry.open_position_symbols(account.account_id)
-        watch = registry.watchlist_symbols(account.user_id)
-    configured = [row.symbol.upper() for row in registry.stream_symbols()]
-
-    ordered: list[str] = []
-    for symbol in (*held, *configured, *watch):
-        symbol = symbol.upper()
-        if symbol not in ordered:
-            ordered.append(symbol)
-    return ordered
+    return resolve_stream_symbols(registry)[0]
 
 
 def _windows(start: datetime, end: datetime):

@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.modules.fundamentals.finnhub_client import FinnhubClient
+from app.modules.market.finnhub_client import FinnhubClient
 
 
 class _FakeResponse:

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
 
     # Auth / JWT
+    # Self-service /auth/register is closed by default: this is a single-operator
+    # system, and an open endpoint on a public host is a free account factory.
+    ALLOW_REGISTER: bool = False
     SECRET_KEY: str = "change-this-to-a-secure-random-string"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
@@ -39,20 +42,26 @@ class Settings(BaseSettings):
     # Encryption (for API keys)
     ENCRYPTION_KEY: str = "change-this-to-a-fernet-key"
 
-    # AI Provider Configuration
-    AI_PROVIDER: str = "claude"  # Options: "claude", "deepseek", "openai"
+    # AI Provider Configuration — which backend app.modules.llm.client talks to.
+    AI_PROVIDER: str = "claude"  # Options: "claude", "deepseek"
+
+    @field_validator("AI_PROVIDER")
+    @classmethod
+    def _validate_ai_provider(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("claude", "deepseek"):
+            raise ValueError("AI_PROVIDER must be 'claude' or 'deepseek'")
+        return v
 
     # Claude API
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"  # Changed to cheaper Haiku model
 
-    # OpenAI API
-    OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"  # Very cheap and capable
-
-    # DeepSeek API
+    # DeepSeek API — reached through its Anthropic-compatible endpoint, so the
+    # same `anthropic` SDK drives both providers.
     DEEPSEEK_API_KEY: str = ""
-    DEEPSEEK_MODEL: str = "deepseek-chat"  # Or "deepseek-coder"
+    DEEPSEEK_MODEL: str = "deepseek-v4-flash"  # Or "deepseek-v4-pro"
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/anthropic"
 
     # Celery
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
@@ -111,15 +120,6 @@ class Settings(BaseSettings):
     # HALT sentinel: its EXISTENCE refuses all sim entries even when the DB is
     # down. Env-overridable so host-run dev/tests don't need /app (review #11).
     HALT_SENTINEL_PATH: str = "/app/runtime/HALT"
-
-    # System Monitoring
-    SYSTEM_METRICS_COLLECTION_INTERVAL_SECONDS: int = 60  # Collect metrics every 60 seconds
-    SYSTEM_TASK_HEALTH_CHECK_INTERVAL_SECONDS: int = 300  # Check task health every 5 minutes
-    SYSTEM_LOG_RETENTION_DAYS: int = 30  # Keep logs for 30 days
-    SYSTEM_METRICS_RETENTION_DAYS: int = 30  # Keep metrics for 30 days
-    SYSTEM_CPU_WARNING_THRESHOLD: float = 80.0  # CPU % threshold for warnings
-    SYSTEM_MEMORY_WARNING_THRESHOLD: float = 85.0  # Memory % threshold for warnings
-    SYSTEM_DISK_CRITICAL_THRESHOLD: float = 90.0  # Disk % threshold for critical alerts
 
     model_config = {
         "env_file": ".env",

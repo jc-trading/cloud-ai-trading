@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.dependencies import DB, CurrentUser
-from app.modules.fundamentals.finnhub_client import FinnhubClient
+from app.modules.market.finnhub_client import FinnhubClient
 from app.modules.simledger.models import AccountSnapshot, Recommendation
 from app.modules.simledger.service import (InsufficientCash, SimLedgerService,
                                            SimLedgerError)
