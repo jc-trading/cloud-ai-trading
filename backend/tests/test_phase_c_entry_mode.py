@@ -536,6 +536,38 @@ def test_outside_the_window_still_beats(wired, monkeypatch):
     assert db.committed
 
 
+def test_entry_cycle_records_a_stale_sizing_base(wired, monkeypatch):
+    """open_once sizes on the previous close. When the snapshot for that session
+    is missing the base silently slides back in time — the fill semantics stay
+    as they are (moving them forks the scoreboard), but the night must say so."""
+    async def stale(db, account_id, today):
+        return date(2026, 7, 28)
+
+    monkeypatch.setattr(cycles, "stale_sizing_base", stale)
+    monkeypatch.setattr(quant_tasks, "_now_et", _at(9, 50))
+    db = _FakeDb(recs=[_rec("AAA")])
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", _Factory([db]))
+    _wire_open_prices(monkeypatch, {"AAA": 100.0})
+
+    quant_tasks.entry_cycle()
+    assert _beats(db)[0].meta["stale_sizing_base"] == "2026-07-28"
+
+
+def test_entry_cycle_is_quiet_when_the_sizing_base_is_the_previous_session(
+        wired, monkeypatch):
+    async def fresh(db, account_id, today):
+        return None
+
+    monkeypatch.setattr(cycles, "stale_sizing_base", fresh)
+    monkeypatch.setattr(quant_tasks, "_now_et", _at(9, 50))
+    db = _FakeDb(recs=[_rec("AAA")])
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", _Factory([db]))
+    _wire_open_prices(monkeypatch, {"AAA": 100.0})
+
+    quant_tasks.entry_cycle()
+    assert "stale_sizing_base" not in _beats(db)[0].meta
+
+
 def test_rejected_settings_alert_from_the_entry_cycle(wired, monkeypatch):
     from app.modules.simledger import settings as settings_mod
 
@@ -587,9 +619,11 @@ def test_snapshot_marks_at_the_sessions_daily_close(caplog):
     """The backtest marks equity at D's close; a post-close Finnhub quote is
     >15 min stale by design and was silently the primary source."""
     caplog.set_level(logging.INFO)
-    marks = _marks([_pos("AAA")], {"AAA": _daily(123.0)},
-                   quote_fn=lambda s: cycles.QuoteReading(price=999.0, at=NOW))
-    assert marks == {"AAA": 123.0}
+    cm = _marks([_pos("AAA")], {"AAA": _daily(123.0)},
+                quote_fn=lambda s: cycles.QuoteReading(price=999.0, at=NOW))
+    assert cm.marks == {"AAA": 123.0}
+    assert cm.from_close == ["AAA"]
+    assert cm.stale_close == [] and cm.raw_or_missing == []
     assert "daily close: ['AAA']" in caplog.text
 
 
@@ -601,15 +635,71 @@ def test_snapshot_falls_back_to_the_quote_then_to_cost(caplog):
     def quote_fn(sym):
         return cycles.QuoteReading(price=77.0, at=NOW) if sym == "STALE" else None
 
-    marks = _marks(positions, frames, quote_fn=quote_fn)
-    assert marks == {"STALE": 77.0}                # GONE is left to avg_cost
+    cm = _marks(positions, frames, quote_fn=quote_fn)
+    assert cm.marks == {"STALE": 77.0}             # GONE is left to avg_cost
+    assert cm.from_quote == ["STALE"]              # a live quote beats an old close
+    assert cm.stale_close == [] and cm.raw_or_missing == ["GONE"]
     assert "quote: ['STALE']" in caplog.text and "avg_cost: ['GONE']" in caplog.text
 
 
 def test_snapshot_ignores_raw_prices():
     frame = _daily(50.0)
     frame.attrs["unadjusted"] = True               # an unsynced split
-    assert _marks([_pos("AAA")], {"AAA": frame}) == {}
+    cm = _marks([_pos("AAA")], {"AAA": frame})
+    assert cm.marks == {}
+    # an unsynced split makes EVERY close in the frame wrong, not just today's,
+    # so its last close is not a usable fallback either
+    assert cm.raw_or_missing == ["AAA"] and cm.last_close == {}
+
+
+def test_snapshot_reports_every_position_at_cost(caplog):
+    """2026-09-18's shape: no session close, no quote (DNS down) — every lot
+    falls to avg_cost, so the equity built from these marks is fiction and the
+    caller must be able to see it without parsing the log."""
+    caplog.set_level(logging.INFO)
+    positions = [_pos("AMD"), _pos("CRWD"), _pos("MOS")]
+    cm = _marks(positions, {}, quote_fn=lambda s: None)
+    assert cm.marks == {}
+    assert cm.raw_or_missing == ["AMD", "CRWD", "MOS"]
+    assert cm.from_close == [] and cm.from_quote == [] and cm.stale_close == []
+    assert "avg_cost: ['AMD', 'CRWD', 'MOS']" in caplog.text
+
+
+def test_snapshot_reports_a_partial_fallback():
+    """One of three at cost is treated exactly like all three: equity is a
+    scalar, so there is no 2/3-correct version of it."""
+    positions = [_pos("GOOD"), _pos("QUOTED"), _pos("GONE")]
+    frames = {"GOOD": _daily(40.0)}
+
+    def quote_fn(sym):
+        return cycles.QuoteReading(price=12.0, at=NOW) if sym == "QUOTED" else None
+
+    cm = _marks(positions, frames, quote_fn=quote_fn)
+    assert cm.marks == {"GOOD": 40.0, "QUOTED": 12.0}
+    assert cm.from_close == ["GOOD"] and cm.from_quote == ["QUOTED"]
+    assert cm.raw_or_missing == ["GONE"]
+
+
+def test_snapshot_keeps_the_last_known_close_when_this_session_is_missing():
+    """The 09-18 shape per symbol: the store has the name's history, it is just
+    missing THIS session's bar, and the quote leg is down too. That older close
+    is a real adjusted market price — worth keeping separately from a name with
+    no price at all, because the protections may lean on it and avg_cost."""
+    positions = [_pos("CRWD"), _pos("GONE")]
+    frames = {"CRWD": _daily(240.0, day=date(2026, 7, 29), close=237.65)}
+
+    cm = _marks(positions, frames, quote_fn=lambda s: None)
+    assert cm.marks == {}                          # the curve may not use it
+    assert cm.stale_close == ["CRWD"]
+    assert cm.last_close == {"CRWD": 237.65}
+    assert cm.raw_or_missing == ["GONE"]
+
+
+def test_a_raw_frame_is_never_promoted_to_the_last_known_close():
+    stale_raw = _daily(240.0, day=date(2026, 7, 29), close=237.65)
+    stale_raw.attrs["unadjusted"] = True
+    cm = _marks([_pos("HOOD")], {"HOOD": stale_raw}, quote_fn=lambda s: None)
+    assert cm.last_close == {} and cm.raw_or_missing == ["HOOD"]
 
 
 # --- the reconciliation sentinel --------------------------------------------

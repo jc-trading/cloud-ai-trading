@@ -29,8 +29,8 @@ client.interceptors.response.use(
     const originalRequest = error.config
 
     // Requests that opt out of the refresh flow (auth endpoints pass
-    // { skipAuthRefresh: true } in their axios config): a 401 from login /
-    // register / refresh itself (bad password, expired refresh) must surface
+    // { skipAuthRefresh: true } in their axios config): a 401 from login or
+    // refresh itself (bad password, expired refresh) must surface
     // to the caller — routing it into the refresh flow ends in a
     // window.location redirect that reloads the page and eats the error
     // message (QA finding #2).

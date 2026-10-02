@@ -390,6 +390,10 @@ body {
   color: var(--jd-cyan);
 }
 
+/* Mobile-only drawer controls — shown by the <=768px block below */
+.jd-sidebar-toggle,
+.jd-sidebar-backdrop { display: none; }
+
 /* ── Main content ───────────────────────────────────────────── */
 .jd-main {
   flex: 1;
@@ -1023,7 +1027,29 @@ body {
 }
 @media (max-width: 768px) {
   .jd-content { padding: 16px; }
-  .jd-sidebar { display: none; }
+  .jd-sidebar {
+    position: fixed;
+    left: 0;
+    height: 100dvh;
+    transform: translateX(-100%);
+    transition: transform var(--jd-trans);
+    box-shadow: var(--jd-shadow-modal);
+  }
+  .jd-sidebar.open { transform: none; }
+  .jd-sidebar-toggle { display: flex; flex-shrink: 0; }
+  .jd-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 4, 10, 0.62);
+    z-index: 39;
+  }
+  .jd-page-title,
+  .jd-page-desc {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .jd-stat-value { font-size: 20px; }
   .jd-metrics { grid-template-columns: repeat(2, 1fr); }
 }

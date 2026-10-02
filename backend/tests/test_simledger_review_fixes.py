@@ -2,6 +2,7 @@
 Each test pins one CONFIRMED finding so it cannot regress silently."""
 
 import asyncio
+import logging
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -232,6 +233,7 @@ def test_protections_never_shorten_manual_pause(monkeypatch):
             # execute #1 -> state row; #2 -> prev snapshot
             class _Snap:
                 equity = _dec(2000)
+                snapshot_date = date(2026, 7, 29)
             self._results = [state, _Snap()]
             self.added = []
 
@@ -255,6 +257,114 @@ def test_protections_never_shorten_manual_pause(monkeypatch):
     out = asyncio.run(cycles.update_protections(_S(), acct, 1900.0,  # -5% day
                                                 date(2026, 7, 30)))
     assert out.paused_until == manual_until       # 30d manual pause survives
+
+
+# --- 2026-09-21: the daily-loss test needs the PREVIOUS SESSION's snapshot ---
+
+def _protections_db(state, snapshot_date):
+    class _Snap:
+        equity = _dec(2000)
+
+    _Snap.snapshot_date = snapshot_date
+
+    class _S:
+        def __init__(self):
+            self._results = [state, _Snap()]
+
+        async def execute(self, stmt):
+            v = self._results.pop(0) if self._results else None
+
+            class _R:
+                def scalar_one_or_none(self):
+                    return v
+            return _R()
+
+        def add(self, obj):
+            pass
+
+        async def flush(self):
+            pass
+
+    return _S()
+
+
+def test_protections_pause_on_the_previous_sessions_snapshot():
+    acct = _acct()
+    state = SafetyState(scope=str(acct.id), halted=False, peak_equity=_dec(2000))
+    out = asyncio.run(cycles.update_protections(
+        _protections_db(state, date(2026, 7, 29)), acct, 1900.0,   # -5% day
+        date(2026, 7, 30)))
+    assert out.paused_until == date(2026, 7, 31)
+
+
+def test_protections_skip_the_daily_loss_test_across_a_snapshot_gap():
+    """A night whose snapshot is missing (worker down, or an equity the cycle
+    refused to trust) leaves the newest snapshot two sessions back. Reading that
+    multi-session return as one day would pause the next session's entries on a
+    loss that never happened — the scoreboard forks on a bookkeeping gap."""
+    acct = _acct()
+    state = SafetyState(scope=str(acct.id), halted=False, peak_equity=_dec(2000))
+    out = asyncio.run(cycles.update_protections(
+        _protections_db(state, date(2026, 7, 28)), acct, 1900.0,   # -5% over 2d
+        date(2026, 7, 30)))
+    assert out.paused_until is None
+    # the halt branch is a LEVEL test and must still run on the same equity
+    assert out.halted is False and float(out.peak_equity) == 2000.0
+
+
+def test_protections_halt_still_fires_across_a_snapshot_gap():
+    acct = _acct()
+    state = SafetyState(scope=str(acct.id), halted=False, peak_equity=_dec(2000))
+    out = asyncio.run(cycles.update_protections(
+        _protections_db(state, date(2026, 7, 28)), acct, 1500.0,   # -25% from peak
+        date(2026, 7, 30)))
+    assert out.halted is True and out.paused_until is None
+
+
+# --- 2026-09-21: the open_once sizing base must not go stale in silence ------
+
+def _snapshot_db(snapshot_date, equity=2000.0):
+    class _Snap:
+        pass
+
+    _Snap.equity = _dec(equity)
+    _Snap.snapshot_date = snapshot_date
+
+    class _S:
+        async def execute(self, stmt):
+            class _R:
+                def scalar_one_or_none(self):
+                    return _Snap()
+            return _R()
+
+    return _S()
+
+
+def test_stale_sizing_base_names_the_gap_and_stays_quiet_otherwise():
+    acct = _acct()
+    today = date(2026, 7, 30)
+    assert asyncio.run(cycles.stale_sizing_base(
+        _snapshot_db(date(2026, 7, 29)), acct.id, today)) is None
+    assert asyncio.run(cycles.stale_sizing_base(
+        _snapshot_db(date(2026, 7, 28)), acct.id, today)) == date(2026, 7, 28)
+
+
+def test_a_snapshot_gap_does_not_change_what_a_fill_is_sized_on(caplog):
+    """Reporting only. The simulator sizes on equity_curve[prev_session], so a
+    gap IS a divergence — but changing the base live would fork the scoreboard,
+    which this work unit may not do. It has to be loud instead of silent."""
+    acct = _acct()
+    today = date(2026, 7, 30)
+    caplog.set_level(logging.ERROR)
+    fresh = asyncio.run(cycles._equity_at_prior_close(
+        _snapshot_db(date(2026, 7, 29)), acct, today,
+        open_positions=[], quote_fn=None, now=NOW))
+    gapped = asyncio.run(cycles._equity_at_prior_close(
+        _snapshot_db(date(2026, 7, 28)), acct, today,
+        open_positions=[], quote_fn=None, now=NOW))
+    assert fresh == gapped == 2000.0             # behaviour is unchanged
+    assert "sizing base is the 2026-07-28 snapshot" in caplog.text
+    assert caplog.text.count("sizing base is the") == 1   # and only for the gap
 
 
 # --- #31: system account = stable is_system lookup --------------------------

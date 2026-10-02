@@ -173,7 +173,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import DataTable from '@/components/common/DataTable.vue'
 import Modal from '@/components/common/Modal.vue'
@@ -198,6 +198,8 @@ const showAdd = ref(false)
 const searchInput = ref(null)
 const q = ref('')
 const suggestions = ref([])
+let searchTimer = null
+let searchSeq = 0
 
 const columns = [
   { key: 'symbol', header: 'Symbol', sortable: true },
@@ -275,21 +277,33 @@ function openAdd() {
   showAdd.value = true
   q.value = ''
   suggestions.value = []
+  searching.value = false
   addError.value = null
+  clearTimeout(searchTimer)
+  searchSeq++
   nextTick(() => searchInput.value?.focus())
 }
 
-async function onSearch() {
+function onSearch() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(runSearch, 300)
+}
+
+// Debounced; the sequence guard drops responses that arrive after a newer query,
+// so a slow "NV" result cannot overwrite the "NVDA" one.
+async function runSearch() {
   const query = q.value?.trim()
-  if (!query) { suggestions.value = []; return }
+  const seq = ++searchSeq
+  if (!query) { suggestions.value = []; searching.value = false; return }
   searching.value = true
   try {
     const res = await marketApi.searchStocks(query)
+    if (seq !== searchSeq) return
     suggestions.value = (res.data || []).slice(0, 12)
   } catch {
-    suggestions.value = []
+    if (seq === searchSeq) suggestions.value = []
   } finally {
-    searching.value = false
+    if (seq === searchSeq) searching.value = false
   }
 }
 
@@ -335,6 +349,7 @@ async function removeSymbol(item) {
 }
 
 onMounted(loadWatchlist)
+onBeforeUnmount(() => clearTimeout(searchTimer))
 </script>
 
 <style scoped>

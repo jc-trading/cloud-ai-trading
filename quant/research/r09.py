@@ -236,7 +236,7 @@ def main(quick: bool = False, regime_ma: int | None = None) -> None:
     log(f"done in {results['wall_clock_seconds']}s -> {out_dir}/results.json")
 
 
-def _experiment_stamp() -> dict:
+def experiment_stamp() -> dict:
     """Immutable experiment record (assessment P0.5): code SHA + data
     fingerprints, so a result can always be tied to what produced it."""
     import hashlib
@@ -259,6 +259,48 @@ def _experiment_stamp() -> dict:
     return stamp
 
 
+def fixed_oos_inputs(start: str = START, end: str = END, *,
+                     progress=lambda *_: None) -> tuple[dict, dict, simulator.SimConfig]:
+    """Universe + sector map + prepared feature frames for a fixed-OOS run.
+    Shared with the sensitivity driver so a perturbed run and the baseline are
+    built by the exact same code path, never two drifting copies."""
+    syms = sorted(set(universe.all_symbols_in_range(start, end)) | set(config.ETF_WHITELIST))
+    sectors = sectorsmod.load_sectors()
+    base_cfg = simulator.SimConfig(
+        start=start, end=end,
+        membership_on=lambda d: universe.constituents_set_on(d))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        feats = simulator.prepare_features(syms, sectors, base_cfg, progress=progress)
+    return feats, sectors, base_cfg
+
+
+def stitched_run(feats: dict, sectors: dict, base_cfg: simulator.SimConfig, params: dict, *,
+                 progress=lambda *_: None) -> tuple[dict, list, list]:
+    """Run `params` FIXED across every walk-forward OOS window and stitch the
+    per-window equity curves into one continuous return series. Returns the
+    stitched summary, the pooled OOS trades, and the per-window audit rows."""
+    windows = walk_forward_windows(base_cfg.start, base_cfg.end,
+                                   is_years=3, oos_years=1, step_years=1)
+    all_trades, window_rows, stitched_rets = [], [], []
+    for wi, win in enumerate(windows, 1):
+        oos_feats = slice_features(feats, win.oos_start, win.oos_end)
+        cfg = with_knobs(base_cfg, params, win.oos_start.date(), win.oos_end.date())
+        res = simulator.run(list(oos_feats), sectors, cfg, features=oos_feats)
+        s = metrics.summary(res.equity, res.trades, res.benchmark)
+        window_rows.append({"window": wi, "oos": f"{win.oos_start.date()}..{win.oos_end.date()}",
+                            "summary": s})
+        all_trades += res.trades
+        stitched_rets.append(res.equity.pct_change().dropna())
+        progress(f"fixed-OOS window {wi}: PF {s['profit_factor']:.2f}, "
+                 f"sharpe {s['sharpe']:.2f}, final ${s['final_equity']:.0f}")
+
+    rets = pd.concat(stitched_rets, ignore_index=True)
+    stitched = 2000.0 * (1.0 + rets).cumprod()
+    stitched = pd.concat([pd.Series([2000.0]), stitched], ignore_index=True)
+    return metrics.summary(stitched, all_trades), all_trades, window_rows
+
+
 def fixed_oos() -> None:
     """A1 (assessment P0.1/P0.2): the honest number for the DEPLOYED config —
     run the consensus params FIXED across every walk-forward OOS window (no
@@ -271,36 +313,11 @@ def fixed_oos() -> None:
     params = base["recommended_params"]
     log(f"fixed-OOS with deployed params: {params}")
 
-    syms = sorted(set(universe.all_symbols_in_range(START, END)) | set(config.ETF_WHITELIST))
-    sectors = sectorsmod.load_sectors()
-    base_cfg = simulator.SimConfig(
-        start=START, end=END,
-        membership_on=lambda d: universe.constituents_set_on(d))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        feats = simulator.prepare_features(syms, sectors, base_cfg, progress=log)
-
-    windows = walk_forward_windows(START, END, is_years=3, oos_years=1, step_years=1)
-    all_trades, window_rows, stitched_rets = [], [], []
-    for wi, win in enumerate(windows, 1):
-        oos_feats = slice_features(feats, win.oos_start, win.oos_end)
-        cfg = with_knobs(base_cfg, params, win.oos_start.date(), win.oos_end.date())
-        res = simulator.run(list(oos_feats), sectors, cfg, features=oos_feats)
-        s = metrics.summary(res.equity, res.trades, res.benchmark)
-        window_rows.append({"window": wi, "oos": f"{win.oos_start.date()}..{win.oos_end.date()}",
-                            "summary": s})
-        all_trades += res.trades
-        stitched_rets.append(res.equity.pct_change().dropna())
-        log(f"fixed-OOS window {wi}: PF {s['profit_factor']:.2f}, "
-            f"sharpe {s['sharpe']:.2f}, final ${s['final_equity']:.0f}")
-
-    rets = pd.concat(stitched_rets, ignore_index=True)
-    stitched = 2000.0 * (1.0 + rets).cumprod()
-    stitched = pd.concat([pd.Series([2000.0]), stitched], ignore_index=True)
-    summary = metrics.summary(stitched, all_trades)
+    feats, sectors, base_cfg = fixed_oos_inputs(progress=log)
+    summary, _, window_rows = stitched_run(feats, sectors, base_cfg, params, progress=log)
     out = {
         "generated_for": {"start": START, "end": END, "mode": "fixed_oos_stitched",
-                          "params": params, **_experiment_stamp()},
+                          "params": params, **experiment_stamp()},
         "per_window": window_rows,
         "stitched": summary,
         "badge": {

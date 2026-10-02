@@ -4,7 +4,6 @@ import client from './client'
 // must surface to the caller instead of entering the token-refresh flow —
 // see the response interceptor in client.js.
 export const authApi = {
-  register: (data) => client.post('/auth/register', data, { skipAuthRefresh: true }),
   login: (data) => client.post('/auth/login', data, { skipAuthRefresh: true }),
   refresh: (refreshToken) =>
     client.post('/auth/refresh', { refresh_token: refreshToken }, { skipAuthRefresh: true }),

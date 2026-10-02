@@ -11,8 +11,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from app.modules.simledger import cycles
-from app.modules.simledger.models import (HeartbeatRecord, Recommendation,
-                                          SimAccount, SimPosition)
+from app.modules.simledger.models import (AccountSnapshot, HeartbeatRecord,
+                                          Recommendation, SimAccount, SimPosition)
 from app.modules.simledger.service import SimLedgerService, _dec
 from app.tasks import quant_tasks
 
@@ -186,9 +186,14 @@ class _FakeDb:
 
     def __init__(self):
         self.added = []
+        self.executed = []
+        self.events = []          # ordered, so a test can pin WHEN, not just IF
         self.committed = False
 
     async def execute(self, stmt):
+        self.executed.append(str(stmt))
+        self.events.append(f"execute:{stmt}")
+
         class _R:
             def scalar_one_or_none(self):
                 return None
@@ -198,12 +203,16 @@ class _FakeDb:
 
             def all(self):
                 return []
+
+            def first(self):
+                return ("claimed",)     # the signal_cycle attempt claim
         return _R()
 
     def add(self, obj):
         self.added.append(obj)
 
     async def commit(self):
+        self.events.append("commit")
         self.committed = True
 
 
@@ -273,6 +282,17 @@ def test_entry_cycle_fails_closed_without_recommendations(monkeypatch):
     assert notes == []
 
 
+def _beat_db(factory):
+    """signal_cycle opens three sessions (context lookup, the cycle itself, the
+    claim release), so the heartbeat is not necessarily in the last one."""
+    return next(db for db in factory.dbs
+                if any(isinstance(o, HeartbeatRecord) for o in db.added))
+
+
+def _beats(factory):
+    return [o for o in _beat_db(factory).added if isinstance(o, HeartbeatRecord)]
+
+
 # --- A2 fail-closed: signal cycle with mass bar-sync failure ----------------
 
 def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
@@ -323,9 +343,8 @@ def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
     out = quant_tasks.signal_cycle()
     assert out.startswith("recs=0")
     assert built == [] and stored == []             # NOTHING published
-    db = factory.dbs[-1]
-    assert db.committed
-    beats = [o for o in db.added if isinstance(o, HeartbeatRecord)]
+    assert _beat_db(factory).committed
+    beats = _beats(factory)
     assert len(beats) == 1 and beats[0].name == "signal_cycle"
     assert beats[0].meta["fail_closed"] == "bar sync failures"
     assert beats[0].meta["recs"] == 0
@@ -386,7 +405,8 @@ def test_signal_cycle_syncs_corporate_actions_before_bars(monkeypatch):
 
 # --- QA 1: guard exclusions must reach Telegram, not just the log -----------
 
-def _signal_cycle_with(monkeypatch, batch, *, exits=None):
+def _signal_cycle_with(monkeypatch, batch, *, exits=None, marks=None,
+                       positions=(), record=None, factories=None):
     from quant.data import corporate_actions as qactions
     from quant.data import fetch as qfetch
     from quant.data import sectors as qsectors
@@ -414,16 +434,26 @@ def _signal_cycle_with(monkeypatch, batch, *, exits=None):
         return None if exits is None else _acct()
 
     async def fake_positions(db, account_id):
-        return []
+        return list(positions)
 
     async def fake_quotes(client, symbols):
         return {}
 
     async def fake_protections(db, account, equity, today, **kw):
+        if record is not None:
+            record.setdefault("protections", []).append(equity)
         return None
 
     async def fake_snapshot(db, account, day, quotes, **kw):
+        if record is not None:
+            record.setdefault("snapshots", []).append(kw.get("equity"))
         return None
+
+    if marks is not None:
+        async def fake_marks(pos, day, **kw):
+            return marks
+
+        monkeypatch.setattr(cycles, "closing_marks", fake_marks)
 
     monkeypatch.setattr(cycles, "store_recommendations", fake_store)
     monkeypatch.setattr(cycles, "daily_exit_management", fake_exits)
@@ -439,9 +469,9 @@ def _signal_cycle_with(monkeypatch, batch, *, exits=None):
 
     monkeypatch.setattr(quant_tasks, "_notify", fake_notify)
     quant_tasks.signal_cycle()
-    db = factory.dbs[-1]
-    beat = [o for o in db.added if isinstance(o, HeartbeatRecord)][0]
-    return notes, beat
+    if factories is not None:
+        factories.append(factory)
+    return notes, _beats(factory)[0]
 
 
 def test_zero_recommendations_alerts(monkeypatch):
@@ -479,4 +509,167 @@ def test_unmarked_positions_reach_the_same_alert(monkeypatch):
     alert = [n for n in notes if "fail-closed" in n]
     assert len(alert) == 1
     assert "held positions NOT marked (RAW prices): HOOD" in alert[0]
-    assert beat.meta["unmarked"] == ["HOOD"]
+    assert beat.meta["exits_unadjusted"] == ["HOOD"]
+
+
+def test_the_attempt_mutex_is_released_inside_the_heartbeats_transaction(monkeypatch):
+    """Not after the Telegram block: a catch-up slot landing in those seconds
+    would read a finished attempt, book seq+1, and have the claim refuse it —
+    then sit out NOT_STARTED_DEAD_AFTER. Same transaction makes that race
+    impossible rather than narrow."""
+    factories = []
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    _signal_cycle_with(monkeypatch, batch, factories=factories)
+    db = _beat_db(factories[0])
+    # the point of the fix is WHERE the release sits, not that it happens: after
+    # the commit it is a separate transaction again and the race is back
+    released_at = next(i for i, e in enumerate(db.events)
+                       if e.startswith("execute:") and "UPDATE heartbeats" in e)
+    assert released_at < db.events.index("commit")
+    assert db.committed
+
+
+# --- 2026-09-18: an equity partly marked at avg_cost is not persisted -------
+
+def _cm(**kw):
+    return cycles.ClosingMarks(**kw)
+
+
+def test_unpriced_positions_skip_snapshot_and_protections(monkeypatch):
+    """The 09-18 shape: no close, no quote, nothing left but avg_cost. The
+    snapshot point would be fiction and peak_equity is a sticky ratchet that
+    never comes back down, so neither may be written from it."""
+    record = {}
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    notes, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(raw_or_missing=["AMD", "CRWD", "MOS"]), record=record)
+    assert record == {}                             # neither consumer ran
+    assert beat.meta["marks_raw_or_missing"] == ["AMD", "CRWD", "MOS"]
+    assert "RAW or missing" in beat.meta["fail_closed"]
+    assert "SKIPPED" in beat.meta["fail_closed"]
+    alert = [n for n in notes if "fail-closed" in n]
+    assert len(alert) == 1 and "AMD, CRWD, MOS" in alert[0]
+
+
+def test_one_unpriced_position_is_enough_to_skip(monkeypatch):
+    record = {}
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    _, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(marks={"AAA": 120.0}, from_close=["AAA"],
+                  raw_or_missing=["GONE"]), record=record)
+    assert record == {}
+    assert beat.meta["marks_raw_or_missing"] == ["GONE"]
+
+
+def test_a_stale_close_still_guards_but_never_publishes(monkeypatch):
+    """One lot missing only THIS session's bar: its last adjusted close is a
+    real market price, so the drawdown halt and the peak ratchet may use it —
+    but the published curve point must be this session's own close or nothing.
+    Guard equity = cash 2000 + 5 * 90.00, not the 5 * 100.00 avg_cost fallback."""
+    record = {}
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    notes, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(last_close={"AAA": 90.0}), record=record)
+    assert record == {"protections": [2450.0]}      # ran, and NOT on avg_cost
+    assert "snapshots" not in record
+    assert beat.meta["marks_stale_close"] == ["AAA"]
+    assert "marks_raw_or_missing" not in beat.meta
+    assert "protections still ran" in beat.meta["fail_closed"]
+    assert [n for n in notes if "fail-closed" in n]
+
+
+def _kept(monkeypatch, row):
+    async def fake(db, account_id, day):
+        return row
+
+    monkeypatch.setattr(cycles, "snapshot_on", fake)
+
+
+def test_a_skipped_snapshot_names_the_row_that_survives_it(monkeypatch):
+    """Declining to write is not the same as leaving the date empty: nothing in
+    this codebase deletes an AccountSnapshot, so an earlier row — 2026-09-21's
+    was written 00:37 ET off pre-market quotes — stays the published point while
+    the heartbeat honestly says SKIPPED."""
+    row = AccountSnapshot(account_id=uuid4(), snapshot_date=date(2026, 9, 21),
+                          equity=_dec(1891.02), cash=_dec(100),
+                          open_positions=3,
+                          created_at=datetime(2026, 9, 21, 4, 37,
+                                              tzinfo=timezone.utc))
+    _kept(monkeypatch, row)
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    notes, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(raw_or_missing=["CRWD"]))
+    assert ("snapshot SKIPPED but the 2026-09-21 row (created 00:37 ET, "
+            "equity 1891.02) stands") in beat.meta["fail_closed"]
+    assert any("1891.02" in n for n in notes)
+
+
+def test_a_skipped_snapshot_is_quiet_when_the_date_is_really_empty(monkeypatch):
+    _kept(monkeypatch, None)
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    _, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(raw_or_missing=["CRWD"]))
+    assert "stands" not in beat.meta["fail_closed"]
+
+
+def test_a_night_that_writes_its_snapshot_does_not_look_for_survivors(monkeypatch):
+    called = []
+
+    async def fake(db, account_id, day):
+        called.append(day)
+        return None
+
+    monkeypatch.setattr(cycles, "snapshot_on", fake)
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    _signal_cycle_with(monkeypatch, batch, exits=cycles.ExitPass(),
+                       positions=[_pos("AAA")],
+                       marks=_cm(marks={"AAA": 120.0}, from_close=["AAA"]))
+    assert called == []
+
+
+def test_one_unpriced_position_outranks_a_stale_close(monkeypatch):
+    """Mixed night: the worst bucket decides, so nothing is written at all."""
+    record = {}
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    _, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(last_close={"AAA": 90.0}, raw_or_missing=["HOOD"]),
+        record=record)
+    assert record == {}
+    assert beat.meta["marks_stale_close"] == ["AAA"]
+    assert beat.meta["marks_raw_or_missing"] == ["HOOD"]
+    assert "RAW or missing" in beat.meta["fail_closed"]
+
+
+def test_a_normal_night_still_writes_the_same_equity(monkeypatch):
+    """The no-new-dividing-line control: with every lot marked at its session
+    close, protections and the snapshot see the byte-identical equity they saw
+    before this change — cash 2000 + 5 shares * 120.00."""
+    record = {}
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    _, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(marks={"AAA": 120.0}, from_close=["AAA"]),
+        record=record)
+    assert record == {"protections": [2600.0], "snapshots": [2600.0]}
+    assert "marks_at_cost" not in beat.meta
+    assert "fail_closed" not in beat.meta
+
+
+def test_a_quote_fallback_is_still_trusted(monkeypatch):
+    """Deliberately unchanged: only the avg_cost fallback is untrusted. Making
+    a quote-marked night untrusted too would move the curve on ordinary nights,
+    which is exactly the dividing line this work unit may not create."""
+    record = {}
+    batch = cycles.RecommendationBatch(rows=[{"symbol": "AAA"}], scanned=100)
+    _, beat = _signal_cycle_with(
+        monkeypatch, batch, exits=cycles.ExitPass(), positions=[_pos("AAA")],
+        marks=_cm(marks={"AAA": 110.0}, from_quote=["AAA"]),
+        record=record)
+    assert record == {"protections": [2550.0], "snapshots": [2550.0]}
+    assert "fail_closed" not in beat.meta

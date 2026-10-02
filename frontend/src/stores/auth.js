@@ -36,12 +36,6 @@ export const useAuthStore = defineStore('auth', () => {
     return response
   }
 
-  const register = async (data) => {
-    const response = await authApi.register(data)
-    setSession(response.data)
-    return response
-  }
-
   const fetchUser = async () => {
     if (!token.value) return null
     const response = await authApi.getMe()
@@ -59,7 +53,6 @@ export const useAuthStore = defineStore('auth', () => {
     setSession,
     logout,
     login,
-    register,
     fetchUser,
   }
 })

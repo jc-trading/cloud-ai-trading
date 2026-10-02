@@ -2,10 +2,10 @@
   <div class="jd-layout">
 
     <!-- ── Sidebar ─────────────────────────────────────────── -->
-    <aside class="jd-sidebar">
+    <aside class="jd-sidebar" :class="{ open: showSidebar }">
 
       <!-- Logo -->
-      <router-link to="/" class="jd-sidebar-logo">
+      <router-link to="/" class="jd-sidebar-logo" @click="showSidebar = false">
         <div class="jd-logo-icon">
           <i class="pi pi-chart-line"></i>
         </div>
@@ -16,7 +16,7 @@
       </router-link>
 
       <!-- Nav -->
-      <nav class="jd-sidebar-nav">
+      <nav class="jd-sidebar-nav" @click="showSidebar = false">
 
         <div class="jd-nav-section">
           <div class="jd-nav-label">Overview</div>
@@ -41,7 +41,7 @@
 
       <!-- User profile -->
       <div class="jd-sidebar-user">
-        <div class="jd-user-card" @click="router.push('/settings')">
+        <div class="jd-user-card" @click="goToSettings">
           <div class="jd-user-avatar">
             {{ authStore.user?.name?.charAt(0)?.toUpperCase() || 'U' }}
           </div>
@@ -60,8 +60,17 @@
 
       <!-- Topbar -->
       <header class="jd-topbar">
+        <!-- Mobile nav toggle -->
+        <button
+          class="jd-topbar-btn jd-sidebar-toggle"
+          aria-label="Open navigation"
+          @click="showSidebar = true"
+        >
+          <i class="pi pi-bars"></i>
+        </button>
+
         <!-- Left: page title -->
-        <div style="flex:1;">
+        <div style="flex:1; min-width:0;">
           <div class="jd-page-title">{{ currentPageTitle }}</div>
           <div class="jd-page-desc">{{ currentPageDescription }}</div>
         </div>
@@ -135,11 +144,14 @@
     <!-- Backdrop to close dropdown -->
     <div v-if="showProfileMenu" class="fixed inset-0 z-40" @click="showProfileMenu=false"></div>
 
+    <!-- Backdrop to close the mobile sidebar drawer -->
+    <div v-if="showSidebar" class="jd-sidebar-backdrop" @click="showSidebar=false"></div>
+
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import SidebarItem from './SidebarItem.vue'
@@ -155,12 +167,15 @@ const route  = useRoute()
 const authStore = useAuthStore()
 
 const showProfileMenu = ref(false)
+const showSidebar = ref(false)
 const currentTime = ref('')
 let timeTimer = null
 
 const pageTitles = {
   'Recommendations': 'Recommendations',
   'SimAccount': 'Sim Accounts',
+  'NightWatch': 'Night Watch',
+  'LlmLog': 'LLM Log',
   'Watchlist': 'Watchlist',
   'Market': 'Market Overview',
   'SymbolDetail': 'Market Detail',
@@ -170,6 +185,8 @@ const pageTitles = {
 const pageDescriptions = {
   'Recommendations': 'Daily stock recommendations and why',
   'SimAccount': 'Simulation accounts & positions',
+  'NightWatch': 'Overnight paper-observation runs',
+  'LlmLog': 'Every LLM call, tokens and cost',
   'Watchlist': 'Track your favorite assets',
   'Market': 'Live US stock prices',
   'SymbolDetail': 'In-depth market analysis',
@@ -180,6 +197,13 @@ const currentPageTitle       = computed(() => pageTitles[route.name]       || 'R
 const currentPageDescription = computed(() => pageDescriptions[route.name] || '')
 
 const toggleProfileMenu = () => { showProfileMenu.value = !showProfileMenu.value }
+
+const goToSettings = () => {
+  showSidebar.value = false
+  router.push('/settings')
+}
+
+watch(() => route.fullPath, () => { showSidebar.value = false })
 
 const handleLogout = () => {
   showProfileMenu.value = false

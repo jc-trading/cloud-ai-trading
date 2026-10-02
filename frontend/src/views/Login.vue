@@ -41,10 +41,6 @@
           {{ loading ? 'Signing in…' : 'Sign In' }}
         </button>
       </form>
-
-      <div class="auth-footer">
-        <p>Don't have an account? <router-link to="/register" class="link">Sign Up</router-link></p>
-      </div>
     </div>
   </div>
 </template>
@@ -105,8 +101,4 @@ const handleLogin = async () => {
   padding: 4px 8px; font-size: 14px;
 }
 .pw-toggle:hover { color: var(--jd-cyan); }
-.auth-footer { text-align: center; border-top: 1px solid var(--jd-border); padding-top: 20px; }
-.auth-footer p { margin: 0; font-size: 13px; color: var(--jd-text-muted); }
-.link { color: var(--jd-cyan); text-decoration: none; font-weight: 600; margin-left: 4px; }
-.link:hover { text-decoration: underline; }
 </style>

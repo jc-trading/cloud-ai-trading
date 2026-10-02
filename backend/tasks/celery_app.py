@@ -104,6 +104,14 @@ celery_app.conf.beat_schedule.update({
         "schedule": crontab(hour=21, minute=30),   # post-close in both regimes
         "options": {"expires": 3300},
     },
+    # Catch-up for a signal_cycle that died or fail-closed on data. Every slot
+    # re-decides from the heartbeat rows (the task holds no state), and stops
+    # itself well before the ET date rolls over.
+    "quant-signal-cycle-retry": {
+        "task": "quant.signal_cycle_retry",
+        "schedule": crontab(minute="0,30", hour="22,23,0,1,2,3"),
+        "options": {"expires": 1500},
+    },
 })
 
 

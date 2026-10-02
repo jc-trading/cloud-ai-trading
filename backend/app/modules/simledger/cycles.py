@@ -26,7 +26,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 from sqlalchemy import delete, select
@@ -87,6 +87,30 @@ class ExitPass:
     closed: list[str] = field(default_factory=list)
     data_end: list[str] = field(default_factory=list)
     unadjusted: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ClosingMarks:
+    """closing_marks' output plus WHICH source each mark came from, because the
+    two consumers need different amounts of trust (2026-09-18: three lots at
+    avg_cost, and the fabricated equity fed both the snapshot curve and the
+    protections).
+
+    ``marks`` holds only what the published curve may use: this session's own
+    close, or a live quote. Everything else splits by how wrong it can be —
+    ``last_close`` is a REAL adjusted market price from an earlier session, so
+    the error is a few days of drift in no particular direction, while
+    ``raw_or_missing`` has no usable price at all (an unsynced split reads as a
+    -50% day; a missing frame leaves avg_cost, whose sign follows the P&L)."""
+    marks: dict[str, float] = field(default_factory=dict)
+    from_close: list[str] = field(default_factory=list)
+    from_quote: list[str] = field(default_factory=list)
+    last_close: dict[str, float] = field(default_factory=dict)
+    raw_or_missing: list[str] = field(default_factory=list)
+
+    @property
+    def stale_close(self) -> list[str]:
+        return sorted(self.last_close)
 
 
 def finnhub_quote(client, symbol: str) -> QuoteReading | None:
@@ -239,6 +263,147 @@ def memoized_bars_fn(end: date, *, get_bars=qbars.get_bars):
         return cache[symbol]
 
     return bars_fn
+
+
+# --- signal cycle catch-up (2026-09-21) ------------------------------------
+
+# seq doubles as the attempt counter: the beat run is seq 0 and every catch-up
+# adds exactly one, so capping seq caps the attempts.
+RETRY_MAX_ATTEMPTS = 6
+# How long a STARTED attempt may be silent before it counts as dead. celery's
+# own time_limit does NOT bound this: on 2026-09-18 the body ran 121 minutes
+# inside the pool child with no TimeLimitExceeded and no SIGKILL, so the only
+# honest bound is the measured runtime itself. 150 > 121. The claim in
+# quant_tasks reuses this exact value as its mutex-release window — both are the
+# same measured number, and lowering it re-opens concurrent cycles.
+STARTED_DEAD_AFTER = timedelta(minutes=150)
+# An attempt that never started is only sitting in the broker queue, and the
+# beat publishes signal_cycle with expires=3300 (55 min) — past that celery
+# discards the message, so it will never run at all. 55 + one 30-minute catch-up
+# slot. This branch exists for the case where the beat container itself died.
+NOT_STARTED_DEAD_AFTER = timedelta(minutes=85)
+# ET hours in which a catch-up is still worth dispatching: after the 17:30 ET
+# main run, and stopping before the session date rolls over at ET midnight.
+RETRY_ET_HOURS = range(16, 24)
+
+
+@dataclass
+class RetryDecision:
+    dispatch: bool
+    seq: int | None
+    reason: str
+    exhausted: bool = False
+
+
+def _attempt_key(meta: dict | None) -> tuple[str, int]:
+    m = meta or {}
+    return str(m.get("session") or ""), int(m.get("seq") or 0)
+
+
+def _parse_utc(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+
+
+def signal_cycle_data_failure(meta: dict | None) -> str | None:
+    """Was that cycle's fail-closed caused by DATA, i.e. is re-running it worth
+    a full index sync? A night that read its bars fine and published nothing
+    because the funnel filtered everything out is a real answer, not a fault —
+    six retries would reach the same one.
+
+    The counters below describe the RECOMMENDATION scan; the mark buckets
+    describe the HELD positions, and the two are independent. One lot with a
+    vendor lag can cost the night its snapshot while `failed` stays 0, so a
+    retry has to look at both or that point is lost for good."""
+    m = meta or {}
+    if not m.get("fail_closed"):
+        return None
+    failed = int(m.get("failed") or 0)
+    stale = int(m.get("stale") or 0)
+    scanned = int(m.get("scanned") or 0)
+    unmarked = list(m.get("marks_raw_or_missing") or []) \
+        + list(m.get("marks_stale_close") or [])
+    if failed > 0:
+        return f"{failed} symbols failed bar sync"
+    if unmarked:
+        return f"{len(unmarked)} position(s) without this session's close"
+    if stale > 0.2 * scanned:
+        return f"{stale}/{scanned} symbols on stale bars"
+    return None
+
+
+def signal_cycle_retry_decision(*, now_utc: datetime, now_et: datetime,
+                                session_date: date, scheduled_at: datetime,
+                                finished_meta: dict | None,
+                                started_meta: dict | None,
+                                started_at: datetime | None,
+                                retry_meta: dict | None) -> RetryDecision:
+    """Should the catch-up beat dispatch another signal_cycle attempt tonight?
+
+    Pure: no clock, no DB, no I/O. Every slot re-derives the whole answer from
+    the three heartbeat rows, so nothing depends on worker or beat state
+    surviving — the worker is the thing that dies (4 stalls in 10 days), which
+    is why this is not celery's own retry/countdown.
+
+    In-flight is decided by comparing STATE, never elapsed time: the attempt
+    last dispatched has either written its completion heartbeat or it has not.
+    Time only answers the second question — whether an attempt that has NOT
+    landed is dead — because a task's runtime is unknowable from outside
+    (09-18: 121 minutes between the broker's `received` and `succeeded`, which
+    itself reported 133 seconds)."""
+    if not qcal.is_trading_day(session_date):
+        return RetryDecision(False, None, "not a session")
+    if now_et.hour not in RETRY_ET_HOURS:
+        return RetryDecision(False, None,
+                             f"outside the catch-up window ({now_et:%H:%M} ET)")
+    if now_utc < scheduled_at:
+        return RetryDecision(False, None, "before tonight's scheduled run")
+
+    meta = retry_meta or {}
+    if str(meta.get("session") or "") == str(session_date):
+        last_seq = int(meta.get("seq") or 0)
+        dispatched_at = _parse_utc(meta.get("dispatched_at")) or scheduled_at
+    else:
+        # no catch-up tonight yet: the beat run IS attempt 0, dispatched at its
+        # own schedule time
+        last_seq, dispatched_at = 0, scheduled_at
+    last = (str(session_date), last_seq)
+
+    if _attempt_key(finished_meta) != last:
+        if _attempt_key(started_meta) == last and started_at is not None:
+            if (started_meta or {}).get("done"):
+                # it handed the claim back without writing a completion
+                # heartbeat: the body is over and it failed. Waiting out
+                # STARTED_DEAD_AFTER on first-hand evidence of death would cost
+                # two thirds of the night's attempts.
+                reason = f"attempt {last_seq} released its claim without landing"
+            elif now_utc - started_at <= STARTED_DEAD_AFTER:
+                return RetryDecision(False, None,
+                                     f"attempt {last_seq} started and still running")
+            else:
+                reason = (f"attempt {last_seq} started {started_at:%H:%MZ} and never "
+                          "landed")
+        else:
+            if now_utc - dispatched_at <= NOT_STARTED_DEAD_AFTER:
+                return RetryDecision(False, None,
+                                     f"attempt {last_seq} dispatched, not started yet")
+            reason = f"attempt {last_seq} never started after {NOT_STARTED_DEAD_AFTER}"
+    else:
+        failure = signal_cycle_data_failure(finished_meta)
+        if failure is None:
+            return RetryDecision(False, None, f"attempt {last_seq} landed on good data")
+        reason = f"attempt {last_seq} fail-closed: {failure}"
+
+    if last_seq >= RETRY_MAX_ATTEMPTS:
+        return RetryDecision(False, None,
+                             f"exhausted after {last_seq} attempts — {reason}",
+                             exhausted=True)
+    return RetryDecision(True, last_seq + 1, reason)
 
 
 def build_recommendations(symbols: list[str], session_date: date, *,
@@ -499,18 +664,58 @@ class _EntrySource:
     chase_cap: float | None = None
 
 
+async def prior_close_snapshot(db: AsyncSession, account_id, today: date):
+    """THE 'equity as of the previous close' row. It is the NEWEST snapshot
+    strictly before today, which is not necessarily the previous SESSION's — a
+    night that could not snapshot leaves a gap, and every reader of this row has
+    to decide for itself what to do about that."""
+    return (await db.execute(
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id == account_id,
+               AccountSnapshot.snapshot_date < today)
+        .order_by(AccountSnapshot.snapshot_date.desc()).limit(1)
+    )).scalar_one_or_none()
+
+
+async def snapshot_on(db: AsyncSession, account_id, snapshot_date: date):
+    """The curve point already published for that date, if any. Nothing in this
+    codebase ever DELETES an AccountSnapshot, so declining to write one does not
+    leave the date empty — it leaves whatever is there, whoever wrote it."""
+    return (await db.execute(
+        select(AccountSnapshot).where(
+            AccountSnapshot.account_id == account_id,
+            AccountSnapshot.snapshot_date == snapshot_date)
+    )).scalar_one_or_none()
+
+
+async def stale_sizing_base(db: AsyncSession, account_id, today: date) -> date | None:
+    """The sizing-base snapshot's date when it is NOT the previous session, else
+    None. Reporting only — open_once keeps sizing on whatever base it finds,
+    because moving it would fork the scoreboard — but the divergence from the
+    simulator (equity_curve[prev_session], never 'the latest one there is') must
+    not be silent."""
+    snap = await prior_close_snapshot(db, account_id, today)
+    if snap is None:
+        return None
+    return None if snap.snapshot_date == qcal.previous_session(today) else snap.snapshot_date
+
+
 async def _equity_at_prior_close(db: AsyncSession, account: SimAccount, today: date, *,
                                  open_positions, quote_fn, now: datetime) -> float:
     """D-1 closing equity — the backtest's sizing base (simulator's
     equity_curve[prev]). A missing snapshot is a degradation, not a mode: it
     falls back to a live mark and says so."""
-    snap = (await db.execute(
-        select(AccountSnapshot)
-        .where(AccountSnapshot.account_id == account.id,
-               AccountSnapshot.snapshot_date < today)
-        .order_by(AccountSnapshot.snapshot_date.desc()).limit(1)
-    )).scalar_one_or_none()
+    snap = await prior_close_snapshot(db, account.id, today)
     if snap is not None and float(snap.equity) > 0:
+        prev_session = qcal.previous_session(today)
+        if snap.snapshot_date != prev_session:
+            # the simulator sizes on equity_curve[prev_session]; a snapshot gap
+            # silently moves this base days back. Behaviour is deliberately
+            # unchanged — changing what a fill is sized on IS a new dividing
+            # line in the scoreboard — but it must be visible.
+            logger.error("entry_cycle: sizing base is the %s snapshot, not the "
+                         "previous session %s — equity is stale",
+                         snap.snapshot_date, prev_session)
         return float(snap.equity)
     logger.error("entry_cycle: no account snapshot before %s — sizing on a live "
                  "mark instead of D-1 close equity", today)
@@ -690,42 +895,59 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
 
 
 async def closing_marks(positions, session_date: date, *,
-                        bars_fn=qbars.get_bars, quote_fn=None) -> dict[str, float]:
+                        bars_fn=qbars.get_bars, quote_fn=None) -> ClosingMarks:
     """End-of-day marks for the equity snapshot and the protections read.
 
     The backtest marks equity at D's daily CLOSE (simulator's equity_curve[D]),
     so the store's own close for THIS session is the primary source. A live
     quote is only the fallback — post-close Finnhub quotes are >15 min stale by
     design and a thin name may have none — and SimLedgerService.equity falls
-    back to avg_cost for whatever is still missing."""
+    back to avg_cost for whatever is still missing. The returned ClosingMarks
+    splits that remainder into what can still be marked at a real (if older)
+    close and what cannot be marked at all, so the caller can decide per
+    consumer rather than distrusting the whole night."""
     marks: dict[str, float] = {}
     unmarked: list[str] = []
+    prior_close: dict[str, float] = {}
     for sp in positions:
         try:
             b = bars_fn(sp.symbol, "1d", end=session_date)
         except Exception:
             logger.warning("snapshot: bars failed for %s", sp.symbol, exc_info=True)
             b = None
+        adjusted = b is not None and not b.empty and not b.attrs.get("unadjusted")
         close = None
-        if b is not None and not b.empty and not b.attrs.get("unadjusted") \
+        if adjusted \
                 and b["ts"].iloc[-1].tz_convert("America/New_York").date() == session_date:
             close = float(b["close"].iloc[-1])
         if close is not None and close > 0:
             marks[sp.symbol] = close
         else:
             unmarked.append(sp.symbol)
+            # the store's newest adjusted bar: stale by days, but a real price.
+            # RAW frames are excluded on purpose — an unsynced split makes every
+            # close in the frame wrong, not just today's.
+            if adjusted and float(b["close"].iloc[-1]) > 0:
+                prior_close[sp.symbol] = float(b["close"].iloc[-1])
     from_close = sorted(marks)
     from_quote: list[str] = []
     if unmarked and quote_fn is not None:
         quote_map = await _gather_quotes(quote_fn, unmarked)
         for sym, q in quote_map.items():
+            # deliberately NOT quote_is_usable: that 15-minute window is the
+            # intraday rule, and post-close the last print IS the close (17:30
+            # ET reads a 16:00 ET trade). Applying it here would reject every
+            # post-close quote and push those lots into stale_close instead.
             if q.price > 0:
                 marks[sym] = q.price
                 from_quote.append(sym)
     at_cost = sorted(set(unmarked) - set(from_quote))
     logger.info("snapshot marks — daily close: %s | quote: %s | avg_cost: %s",
                 from_close or "-", sorted(from_quote) or "-", at_cost or "-")
-    return marks
+    last_close = {s: p for s, p in prior_close.items() if s in at_cost}
+    return ClosingMarks(marks=marks, from_close=from_close,
+                        from_quote=sorted(from_quote), last_close=last_close,
+                        raw_or_missing=[s for s in at_cost if s not in last_close])
 
 
 OPEN_FILL_DRIFT_BPS = 10.0
@@ -799,14 +1021,25 @@ async def update_protections(db: AsyncSession, account: SimAccount, equity: floa
     state.peak_equity = _dec(peak)
 
     if prev_snap is not None and float(prev_snap.equity) > 0:
-        day_ret = equity / float(prev_snap.equity) - 1.0
-        if day_ret <= -pause_pct:
-            # review #35: EXTEND only, never shorten — a manual /pause (30d)
-            # must not be silently cut to one session by an automatic pause
-            candidate = qcal.next_session(today)
-            if state.paused_until is None or candidate > state.paused_until:
-                state.paused_until = candidate
-                state.reason = f"daily loss {day_ret:.1%} on {today}"
+        prev_session = qcal.previous_session(today)
+        if prev_snap.snapshot_date != prev_session:
+            # a DAILY-loss test needs yesterday's close; the newest snapshot
+            # before today can be older (a stalled worker, or a cycle that
+            # refused to persist an untrusted equity), and a multi-session
+            # return read as one day pauses entries on a loss that never
+            # happened. The halt branch below is a level test and needs no gap.
+            logger.warning("protections: latest snapshot is %s, not the previous "
+                           "session %s — daily-loss check skipped for %s",
+                           prev_snap.snapshot_date, prev_session, today)
+        else:
+            day_ret = equity / float(prev_snap.equity) - 1.0
+            if day_ret <= -pause_pct:
+                # review #35: EXTEND only, never shorten — a manual /pause (30d)
+                # must not be silently cut to one session by an automatic pause
+                candidate = qcal.next_session(today)
+                if state.paused_until is None or candidate > state.paused_until:
+                    state.paused_until = candidate
+                    state.reason = f"daily loss {day_ret:.1%} on {today}"
 
     if not state.halted and equity <= peak * (1.0 - halt_pct):
         state.halted = True
