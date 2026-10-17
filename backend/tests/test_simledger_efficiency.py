@@ -15,6 +15,7 @@ from app.modules.simledger.models import (AccountSnapshot, HeartbeatRecord,
                                           Recommendation, SimAccount, SimPosition)
 from app.modules.simledger.service import SimLedgerService, _dec
 from app.tasks import quant_tasks
+from tests._groups import groups_loader, runtime_for
 
 NOW = datetime(2026, 7, 30, 14, 0, tzinfo=timezone.utc)
 ET = ZoneInfo("America/New_York")
@@ -150,7 +151,7 @@ def test_run_entries_quotes_each_symbol_once(monkeypatch):
         return _q(100.0)
 
     db = _RecSession([_rec("HH", 1), _rec("AAA", 2)])
-    asyncio.run(cycles.run_entries(db, acct, date(2026, 7, 30),
+    asyncio.run(cycles.run_entries(db, acct, date(2026, 7, 30), group_id=uuid4(),
                                    quote_fn=quote_fn, now=NOW))
     # held symbol used to be quoted twice (equity mark + entry attempt)
     assert counts == {"HH": 1, "AAA": 1}
@@ -242,11 +243,7 @@ def test_entry_cycle_fails_closed_without_recommendations(monkeypatch):
                         lambda: datetime(2026, 7, 30, 9, 50, tzinfo=ET))
     acct = _acct()
 
-    async def fake_system_account(db):
-        return acct
-
-    monkeypatch.setattr(SimLedgerService, "system_account",
-                        staticmethod(fake_system_account))
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(runtime_for(acct)))
 
     async def fake_state(db, account, **kw):
         return None
@@ -315,11 +312,16 @@ def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
 
     monkeypatch.setattr(qfetch, "sync_daily_many", fake_sync_many)
 
-    async def fake_system_account(db):
-        return None                                 # skip exits/snapshot block
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(runtime_for(_acct())))
 
-    monkeypatch.setattr(SimLedgerService, "system_account",
-                        staticmethod(fake_system_account))
+    async def fake_positions(db, account_id):
+        return []
+
+    async def fake_protections(db, account, equity, today, **kw):
+        return None
+
+    monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(cycles, "update_protections", fake_protections)
 
     built, stored = [], []
 
@@ -327,7 +329,7 @@ def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
         built.append(a)
         return cycles.RecommendationBatch()
 
-    async def fake_store(db, recs):
+    async def fake_store(db, recs, *, group_id):
         stored.append(recs)
         return len(recs)
 
@@ -380,16 +382,20 @@ def test_signal_cycle_syncs_corporate_actions_before_bars(monkeypatch):
         seen.update(kw)
         return cycles.RecommendationBatch(scanned=len(symbols))
 
-    async def fake_store(db, recs):
+    async def fake_store(db, recs, *, group_id):
         return 0
 
-    async def fake_system_account(db):
+    async def fake_positions(db, account_id):
+        return []
+
+    async def fake_protections(db, account, equity, today, **kw):
         return None
 
     monkeypatch.setattr(cycles, "build_recommendations", fake_build)
     monkeypatch.setattr(cycles, "store_recommendations", fake_store)
-    monkeypatch.setattr(SimLedgerService, "system_account",
-                        staticmethod(fake_system_account))
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(runtime_for(_acct())))
+    monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(cycles, "update_protections", fake_protections)
 
     async def fake_notify(msg):
         pass
@@ -424,14 +430,11 @@ def _signal_cycle_with(monkeypatch, batch, *, exits=None, marks=None,
                         lambda symbols, *a, **kw: (len(symbols), []))
     monkeypatch.setattr(cycles, "build_recommendations", lambda *a, **kw: batch)
 
-    async def fake_store(db, recs):
+    async def fake_store(db, recs, *, group_id):
         return len(recs)
 
     async def fake_exits(db, account, today, **kw):
         return exits or cycles.ExitPass()
-
-    async def fake_account(db):
-        return None if exits is None else _acct()
 
     async def fake_positions(db, account_id):
         return list(positions)
@@ -459,7 +462,7 @@ def _signal_cycle_with(monkeypatch, batch, *, exits=None, marks=None,
     monkeypatch.setattr(cycles, "daily_exit_management", fake_exits)
     monkeypatch.setattr(cycles, "fetch_quotes", fake_quotes)
     monkeypatch.setattr(cycles, "update_protections", fake_protections)
-    monkeypatch.setattr(SimLedgerService, "system_account", staticmethod(fake_account))
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(runtime_for(_acct())))
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
     monkeypatch.setattr(SimLedgerService, "snapshot", staticmethod(fake_snapshot))
     notes = []

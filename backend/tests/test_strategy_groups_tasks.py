@@ -1,0 +1,438 @@
+"""P1 strategy groups in the celery tasks: signal / entry / position cycles with
+two groups, zero groups, a paused group and a refused group. The single-group
+path is pinned by the pre-existing cycle tests (byte-identical meta, messages
+and return strings)."""
+
+import asyncio
+from dataclasses import replace
+from datetime import date, datetime
+from types import SimpleNamespace
+from uuid import uuid4
+from zoneinfo import ZoneInfo
+
+import pytest
+from sqlalchemy.dialects import postgresql
+
+import app.models_registry  # noqa: F401
+from quant import config as qconfig
+from quant.engine.strategies import V1_COMPOSITE_KEY, get_spec
+
+from app.modules.llm import explain as explain_mod
+from app.modules.simledger import cycles
+from app.modules.simledger.models import HeartbeatRecord, Recommendation, SimAccount
+from app.modules.simledger.service import SimLedgerService, _dec
+from app.modules.strategy_groups import service as group_service
+from app.modules.strategy_groups.service import GroupRuntime, validate_group
+from app.tasks import quant_tasks
+from tests._groups import group_for, groups_loader
+
+ET = ZoneInfo("America/New_York")
+SESSION = date(2026, 7, 30)
+# constituents AAA/BBB + the ETF whitelist = what every group scans and syncs
+N_SYMS = len({"AAA", "BBB"} | set(qconfig.ETF_WHITELIST))
+
+
+def _acct(cash=2000.0):
+    return SimAccount(id=uuid4(), user_id=uuid4(), name=f"sys-{uuid4().hex[:6]}",
+                      is_system=True, starting_capital=_dec(2000), cash=_dec(cash))
+
+
+def _runtime(name, status="active", **params):
+    acct = _acct()
+    spec = get_spec(V1_COMPOSITE_KEY)
+    p = spec.default_params()
+    for section, values in params.items():
+        p[section] = {**p[section], **values}
+    group = group_for(acct, name=name, status=status, params_json=p)
+    return GroupRuntime(group, acct, validate_group(group))
+
+
+class _List(list):
+    def all(self):
+        return list(self)
+
+
+class _Db:
+    """Answers the cycles' reads from per-group recommendation lists, choosing
+    the list by the group id that appears in the compiled SQL — so a query that
+    forgot its group filter sees nothing."""
+
+    def __init__(self, recs_by_group=None):
+        self.recs_by_group = recs_by_group or {}
+        self.added = []
+        self.committed = 0
+
+    def _group_recs(self, sql):
+        for gid, recs in self.recs_by_group.items():
+            if str(gid) in sql:
+                return recs
+        return []
+
+    async def execute(self, stmt):
+        try:
+            sql = str(stmt.compile(dialect=postgresql.dialect(),
+                                   compile_kwargs={"literal_binds": True}))
+        except Exception:
+            sql = str(stmt)
+        cols = getattr(stmt, "column_descriptions", None) or []
+        entity = cols[0].get("entity") if cols else None
+        rows, one = [], None
+        if entity is Recommendation:
+            recs = self._group_recs(sql)
+            name = cols[0].get("name")
+            if name == "id":
+                one = recs[0].id if recs else None
+            elif name == "symbol":
+                rows = [r.symbol for r in recs]
+            else:
+                rows = recs
+
+        class _R:
+            def scalars(self):
+                return _List(rows)
+
+            def scalar_one_or_none(self):
+                return one
+
+            def all(self):
+                return []
+
+            def first(self):
+                return ("claimed",)
+        return _R()
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        self.committed += 1
+
+
+class _Factory:
+    def __init__(self, db_fn=_Db):
+        self.db_fn = db_fn
+        self.dbs = []
+
+    def __call__(self):
+        db = self.db_fn()
+        self.dbs.append(db)
+
+        class _Ctx:
+            async def __aenter__(self_inner):
+                return db
+
+            async def __aexit__(self_inner, *a):
+                return False
+        return _Ctx()
+
+
+def _beats(factory, name):
+    return [o for db in factory.dbs for o in db.added
+            if isinstance(o, HeartbeatRecord) and o.name == name]
+
+
+@pytest.fixture
+def notes(monkeypatch):
+    out = []
+
+    async def fake_notify(msg):
+        out.append(msg)
+        return True
+
+    monkeypatch.setattr(quant_tasks, "_notify", fake_notify)
+    return out
+
+
+# --- signal_cycle -------------------------------------------------------------
+
+@pytest.fixture
+def signal_world(monkeypatch):
+    from quant.data import corporate_actions as qactions
+    from quant.data import fetch as qfetch
+    from quant.data import sectors as qsectors
+    from quant.data import universe as quniverse
+
+    calls = SimpleNamespace(build=[], store=[], explain=[], exits=[], protections=[])
+    factory = _Factory()
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    monkeypatch.setattr(quant_tasks, "_now_et",
+                        lambda: datetime(2026, 7, 30, 17, 30, tzinfo=ET))
+    monkeypatch.setattr(quniverse, "constituents_on", lambda d: ["AAA", "BBB"])
+    monkeypatch.setattr(quniverse, "top_liquid", lambda syms, **kw: list(syms))
+    monkeypatch.setattr(qsectors, "load_sectors", lambda: {})
+    monkeypatch.setattr(qactions, "sync_universe", lambda *a, **kw: 0)
+    monkeypatch.setattr(qfetch, "sync_daily_many",
+                        lambda symbols, *a, **kw: (len(symbols), []))
+
+    def fake_build(symbols, session_date, **kw):
+        calls.build.append(kw)
+        return cycles.RecommendationBatch(
+            rows=[{"symbol": "AAA", "trade_date": date(2026, 7, 31),
+                   "shortlist_rank": 1}], scanned=len(symbols))
+
+    async def fake_store(db, recs, *, group_id):
+        calls.store.append(group_id)
+        return len(recs)
+
+    async def fake_explain(db, trade_date, *, group_id, top_n=10):
+        calls.explain.append(group_id)
+        return 1
+
+    async def fake_exits(db, account, today, **kw):
+        calls.exits.append((account.id, kw["exit_params"], kw["strategy_params"]))
+        return cycles.ExitPass(closed=[f"X{len(calls.exits)}"])
+
+    async def fake_drift(db, account, today, **kw):
+        return []
+
+    async def fake_positions(db, account_id):
+        return []
+
+    async def fake_protections(db, account, equity, today, **kw):
+        calls.protections.append(account.id)
+
+    async def fake_snapshot(*a, **kw):
+        return None
+
+    monkeypatch.setattr(cycles, "build_recommendations", fake_build)
+    monkeypatch.setattr(cycles, "store_recommendations", fake_store)
+    monkeypatch.setattr(explain_mod, "explain_recommendations", fake_explain)
+    monkeypatch.setattr(cycles, "daily_exit_management", fake_exits)
+    monkeypatch.setattr(cycles, "open_fill_drift", fake_drift)
+    monkeypatch.setattr(cycles, "update_protections", fake_protections)
+    monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
+    monkeypatch.setattr(SimLedgerService, "snapshot", staticmethod(fake_snapshot))
+    return SimpleNamespace(calls=calls, factory=factory, monkeypatch=monkeypatch)
+
+
+def test_two_groups_publish_with_their_own_params_and_group_ids(signal_world, notes):
+    a = _runtime("alpha")
+    b = _runtime("beta", strategy={"ma_fast": 7}, funnel={"min_confidence": 80.0},
+                 exits={"reversal_bars": 4})
+    p = _runtime("parked", status="paused")
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b, p))
+
+    out = quant_tasks.signal_cycle()
+    calls = signal_world.calls
+
+    assert [kw["strategy_params"] for kw in calls.build] == [a.config.strategy,
+                                                             b.config.strategy]
+    assert [kw["funnel_params"].min_confidence for kw in calls.build] == [65.0, 80.0]
+    assert calls.store == [a.group.id, b.group.id]          # paused publishes nothing
+    assert calls.explain == [a.group.id, b.group.id]
+    assert [e[0] for e in calls.exits] == [a.account.id, b.account.id, p.account.id]
+    assert calls.exits[1][1] == replace(a.config.exits, reversal_bars=4)
+    assert calls.protections == [a.account.id, b.account.id, p.account.id]
+
+    beat = _beats(signal_world.factory, "signal_cycle")[0]
+    assert beat.meta["recs"] == 2 and beat.meta["scanned"] == 2 * N_SYMS
+    assert beat.meta["closed"] == ["X1", "X2", "X3"]
+    assert set(beat.meta["groups"]) == {"alpha", "beta", "parked"}
+    assert beat.meta["groups"]["parked"]["recs"] == 0
+    assert beat.meta["groups"]["beta"]["closed"] == ["X2"]
+    assert "fail_closed" not in beat.meta
+    assert "[alpha] 🔎 明日 shortlist: AAA" in notes
+    assert "[parked] 📤 对照账户 daily exits: X3" in notes
+    assert out.startswith("recs=2 closed=['X1', 'X2', 'X3']")
+
+
+def test_platform_min_confidence_only_tightens_a_group(signal_world, notes):
+    signal_world.monkeypatch.setattr(
+        quant_tasks, "effective_settings",
+        lambda db: _async(SimpleNamespace(
+            min_confidence=70.0, rejected=(), daily_loss_pause_pct=0.02,
+            portfolio_drawdown_halt_pct=0.15)))
+    a = _runtime("alpha")
+    b = _runtime("beta", funnel={"min_confidence": 80.0})
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+    quant_tasks.signal_cycle()
+    assert [kw["funnel_params"].min_confidence
+            for kw in signal_world.calls.build] == [70.0, 80.0]
+
+
+async def _async(value):
+    return value
+
+
+def test_a_refused_group_is_loud_and_publishes_nothing(signal_world, notes):
+    a = _runtime("alpha")
+    signal_world.monkeypatch.setattr(
+        quant_tasks, "load_groups",
+        groups_loader(a, refused=["bad: timeframe '1m' is not supported"]))
+    quant_tasks.signal_cycle()
+    beat = _beats(signal_world.factory, "signal_cycle")[0]
+    assert signal_world.calls.store == [a.group.id]
+    assert beat.meta["groups_refused"] == ["bad: timeframe '1m' is not supported"]
+    assert ("strategy group refused: bad: timeframe '1m' is not supported"
+            in beat.meta["fail_closed"])
+    assert any(n.startswith("⛔ signal_cycle fail-closed:") and "refused" in n
+               for n in notes)
+
+
+def test_signal_cycle_with_no_groups_still_lands(signal_world, notes):
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader())
+    out = quant_tasks.signal_cycle()
+    beat = _beats(signal_world.factory, "signal_cycle")[0]
+    assert beat.meta == {"session": "2026-07-30", "seq": 0, "synced": N_SYMS,
+                         "failed": 0, "recs": 0, "scanned": 0, "groups": 0}
+    assert signal_world.calls.build == [] and signal_world.calls.exits == []
+    assert out == f"no strategy groups: synced={N_SYMS}/{N_SYMS}"
+
+
+def test_load_groups_refuses_without_raising(monkeypatch):
+    ok_acct, bad_acct = _acct(), _acct()
+    ok = group_for(ok_acct, name="ok")
+    bad = group_for(bad_acct, name="bad", timeframe="1m")
+
+    class _RowsDb:
+        async def execute(self, stmt):
+            return SimpleNamespace(all=lambda: [(ok, ok_acct), (bad, bad_acct)])
+
+    runtimes, refused = asyncio.run(group_service.load_groups(_RowsDb(), ("active",)))
+    assert [rt.group.name for rt in runtimes] == ["ok"]
+    assert runtimes[0].account is ok_acct
+    assert refused == ["bad: timeframe '1m' is not supported"]
+
+
+# --- entry_cycle ----------------------------------------------------------------
+
+def _rec(symbol, group_id):
+    return Recommendation(id=uuid4(), group_id=group_id, symbol=symbol,
+                          trade_date=SESSION, direction="up", confidence=_dec(70),
+                          shortlist_rank=1, phase="up", phase_reason="",
+                          features={"stop_distance": 2.0, "adv": 5e7, "price": 100.0})
+
+
+@pytest.fixture
+def entry_world(monkeypatch):
+    from quant.data import fetch as qfetch
+
+    keys = []
+
+    async def fake_open(db, account, **kw):
+        keys.append(kw["idempotency_key"])
+        return object()
+
+    async def no_positions(db, account_id, *a):
+        return []
+
+    monkeypatch.setattr(quant_tasks, "_now_et",
+                        lambda: datetime(2026, 7, 30, 9, 50, tzinfo=ET))
+    monkeypatch.setattr(quant_tasks, "FinnhubClient", lambda *a, **kw: object())
+    monkeypatch.setattr(qfetch, "session_open_prices",
+                        lambda symbols, day, **kw: {s: 100.0 for s in symbols})
+    monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
+    monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(no_positions))
+    monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
+                        staticmethod(no_positions))
+    monkeypatch.setattr(cycles, "entries_blocked_reason",
+                        lambda state, *, today, **kw: state)
+    return SimpleNamespace(keys=keys, monkeypatch=monkeypatch)
+
+
+def test_two_groups_book_into_their_own_accounts(entry_world, notes):
+    a, b = _runtime("alpha"), _runtime("beta")
+    recs = {a.group.id: [_rec("AAA", a.group.id)], b.group.id: [_rec("BBB", b.group.id)]}
+    factory = _Factory(lambda: _Db(recs))
+    entry_world.monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    entry_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+
+    async def no_state(db, account, **kw):
+        return None
+
+    entry_world.monkeypatch.setattr(cycles, "get_safety_state", no_state)
+
+    out = quant_tasks.entry_cycle()
+    assert entry_world.keys == [f"entry:{a.account.id}:AAA:2026-07-30",
+                                f"entry:{b.account.id}:BBB:2026-07-30"]
+    beat = _beats(factory, "entry_cycle")[0]
+    assert beat.meta == {"groups": {"alpha": {"booked": ["AAA"], "mode": "open_once"},
+                                    "beta": {"booked": ["BBB"], "mode": "open_once"}}}
+    assert out == "[alpha] booked: ['AAA']; [beta] booked: ['BBB']"
+    assert notes == ["[alpha] 📈 对照账户 entries booked: AAA",
+                     "[beta] 📈 对照账户 entries booked: BBB"]
+
+
+def test_a_blocked_or_empty_group_does_not_stop_the_other(entry_world, notes):
+    a, b, c = _runtime("alpha"), _runtime("beta"), _runtime("gamma")
+    recs = {a.group.id: [_rec("AAA", a.group.id)], b.group.id: [_rec("BBB", b.group.id)]}
+    factory = _Factory(lambda: _Db(recs))
+    entry_world.monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    entry_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b, c))
+
+    async def state_for(db, account, **kw):
+        return "halted: drawdown" if account is a.account else None
+
+    entry_world.monkeypatch.setattr(cycles, "get_safety_state", state_for)
+
+    out = quant_tasks.entry_cycle()
+    assert entry_world.keys == [f"entry:{b.account.id}:BBB:2026-07-30"]
+    beat = _beats(factory, "entry_cycle")[0]
+    assert beat.meta["groups"]["alpha"] == {"blocked": "halted: drawdown"}
+    assert beat.meta["groups"]["gamma"] == {"fail_closed": "no recommendations"}
+    assert out == ("[alpha] blocked: halted: drawdown; [beta] booked: ['BBB']; "
+                   "[gamma] fail-closed: no recommendations")
+
+
+def test_paused_groups_book_nothing(entry_world, notes):
+    p = _runtime("parked", status="paused")
+    factory = _Factory()
+    entry_world.monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    entry_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(p))
+    assert quant_tasks.entry_cycle() == "no active strategy groups"
+    assert _beats(factory, "entry_cycle") == []
+    assert entry_world.keys == []
+
+
+def test_open_price_alert_flag_is_kept_per_group(monkeypatch):
+    row = HeartbeatRecord(name="entry_cycle",
+                          meta={"groups": {"alpha": {"booked": []}, "beta": {}}})
+
+    class _RowDb:
+        async def execute(self, stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: row)
+
+        async def commit(self):
+            pass
+
+    asyncio.run(quant_tasks._stamp_open_price_alert(_RowDb(), SESSION, "beta"))
+    assert row.meta == {"groups": {"alpha": {"booked": []},
+                                   "beta": {"open_price_alert": "2026-07-30"}}}
+
+
+# --- position_cycle ---------------------------------------------------------------
+
+def test_two_groups_check_stops_on_both_accounts(monkeypatch, notes):
+    a, b = _runtime("alpha"), _runtime("beta", status="paused")
+    factory = _Factory()
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    monkeypatch.setattr(quant_tasks, "_in_rth", lambda *a, **kw: True)
+    monkeypatch.setattr(quant_tasks, "FinnhubClient", lambda *a, **kw: object())
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+    seen = []
+
+    async def fake_stops(db, account, *, quote_fn):
+        seen.append(account.id)
+        return ["KDP"] if account is b.account else []
+
+    monkeypatch.setattr(cycles, "check_stops", fake_stops)
+    out = quant_tasks.position_cycle()
+    assert seen == [a.account.id, b.account.id]
+    beat = _beats(factory, "position_cycle")[0]
+    assert beat.meta == {"closed": ["KDP"],
+                         "groups": {"alpha": {"closed": []}, "beta": {"closed": ["KDP"]}}}
+    assert notes == ["[beta] 🛑 对照账户 stop exit: KDP"]
+    assert out == "[alpha] no breaches; [beta] closed: ['KDP']"
+
+
+def test_position_cycle_with_no_groups_still_beats(monkeypatch, notes):
+    factory = _Factory()
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    monkeypatch.setattr(quant_tasks, "_in_rth", lambda *a, **kw: True)
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader())
+    assert quant_tasks.position_cycle() == "no strategy groups"
+    assert [b.meta for b in _beats(factory, "position_cycle")] == [{"closed": []}]
+    assert factory.dbs[0].committed == 1

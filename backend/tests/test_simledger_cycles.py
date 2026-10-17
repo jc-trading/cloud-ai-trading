@@ -135,7 +135,7 @@ def test_run_entries_books_and_skips_stale(monkeypatch):
                         staticmethod(_no_closes))
     quotes = {"AAA": _q(100.0), "BBB": _q(100.0, age_s=20 * 60)}  # BBB stale
     db = _RecSession([_rec("AAA", 1), _rec("BBB", 2)])
-    out = asyncio.run(cycles.run_entries(db, _acct(), date(2026, 7, 30),
+    out = asyncio.run(cycles.run_entries(db, _acct(), date(2026, 7, 30), group_id=uuid4(),
                                          quote_fn=lambda s: quotes[s], now=NOW))
     assert out == ["AAA"]
     assert booked == ["AAA"]
@@ -163,6 +163,7 @@ def test_run_entries_respects_stock_slots(monkeypatch):
                         staticmethod(_no_closes))
     db = _RecSession([_rec("NEW", 1)])
     out = asyncio.run(cycles.run_entries(db, _acct(cash=500), date(2026, 7, 30),
+                                         group_id=uuid4(),
                                          quote_fn=lambda s: _q(100.0), now=NOW))
     assert out == [] and called == []       # no free stock slot -> nothing booked
 

@@ -275,6 +275,7 @@ def _entries(monkeypatch, recs, *, open_positions=(), closed_today=()):
     monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
                         staticmethod(fake_closed_on))
     out = asyncio.run(cycles.run_entries(_RecSession(recs), _acct(), SESSION,
+                                         group_id=uuid4(),
                                          quote_fn=lambda s: _q(100.0), now=NOW))
     return out, booked
 

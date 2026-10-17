@@ -27,6 +27,7 @@ from app.modules.simledger.models import (AccountSnapshot, HeartbeatRecord,
                                           SimPosition)
 from app.modules.simledger.service import SimLedgerService, _dec, entry_cost_price
 from app.tasks import quant_tasks
+from tests._groups import groups_loader, runtime_for
 
 ET = ZoneInfo("America/New_York")
 SESSION = date(2026, 7, 30)
@@ -150,7 +151,7 @@ def _run(session, account, *, monkeypatch, open_prices, positions=(), closed=(),
     monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
                         staticmethod(fake_closed_on))
     out = asyncio.run(cycles.run_entries(
-        session, account, SESSION, now=NOW,
+        session, account, SESSION, group_id=uuid4(), now=NOW,
         entry_mode=cycles.ENTRY_MODE_OPEN_ONCE, open_prices=open_prices, **kwargs))
     return out, booked
 
@@ -203,7 +204,8 @@ def test_unknown_entry_mode_is_refused(monkeypatch):
                         staticmethod(fake_closed_on))
     with pytest.raises(ValueError, match="unknown entry_mode"):
         asyncio.run(cycles.run_entries(_Session(recs=[_rec("AAA")]), _acct(),
-                                       SESSION, now=NOW, entry_mode="teleport"))
+                                       SESSION, group_id=uuid4(), now=NOW,
+                                       entry_mode="teleport"))
 
 
 # --- #1 fill price: the injected 09:30 open, through the cost model ----------
@@ -379,7 +381,7 @@ def test_ladder_mode_still_prices_off_the_quote(monkeypatch):
     monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
                         staticmethod(fake_closed_on))
     out = asyncio.run(cycles.run_entries(
-        _Session(recs=[_rec("AAA")]), _acct(), SESSION, now=NOW,
+        _Session(recs=[_rec("AAA")]), _acct(), SESSION, group_id=uuid4(), now=NOW,
         quote_fn=lambda s: cycles.QuoteReading(price=101.0, at=NOW),
         entry_mode=cycles.ENTRY_MODE_LADDER, open_prices={"AAA": 1.0}))
     assert out == ["AAA"] and booked[0]["raw_price"] == 101.0
@@ -432,9 +434,6 @@ def wired(monkeypatch):
     account = _acct()
     notes = []
 
-    async def fake_system_account(db):
-        return account
-
     async def fake_state(db, acct, **kw):
         return None
 
@@ -445,8 +444,7 @@ def wired(monkeypatch):
     async def fake_run_entries(*a, **kw):
         return []
 
-    monkeypatch.setattr(SimLedgerService, "system_account",
-                        staticmethod(fake_system_account))
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(runtime_for(account)))
     monkeypatch.setattr(cycles, "get_safety_state", fake_state)
     monkeypatch.setattr(cycles, "entries_blocked_reason",
                         lambda state, *, today, **kw: None)

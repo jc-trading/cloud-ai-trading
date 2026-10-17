@@ -62,16 +62,18 @@ async def explain_recommendations(
     db: AsyncSession,
     trade_date: date,
     *,
+    group_id,
     top_n: int = 10,
     context: str = "recommendation_explanation",
 ) -> int:
-    """Write an LLM explanation onto the top-N (by confidence) recommendations
-    for ``trade_date``. Rows/calls are added to ``db``; the caller commits.
+    """Write an LLM explanation onto the group's top-N (by confidence)
+    recommendations for ``trade_date``. Rows/calls are added to ``db``; the caller commits.
     Returns how many got an explanation. call_llm never raises, so a provider
     outage just leaves ``llm_explanation`` null (and books failed rows)."""
     rows = (await db.execute(
         select(Recommendation)
-        .where(Recommendation.trade_date == trade_date)
+        .where(Recommendation.group_id == group_id,
+               Recommendation.trade_date == trade_date)
         .order_by(Recommendation.confidence.desc())
         .limit(top_n)
     )).scalars().all()

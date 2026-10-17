@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -34,6 +34,8 @@ from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, Recommendation
 from app.modules.simledger.service import SimLedgerService
 from app.modules.simledger.settings import effective_settings
+from app.modules.strategy_groups.models import MANAGED_STATUSES, SIGNAL_STATUSES
+from app.modules.strategy_groups.service import load_groups
 
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
@@ -66,12 +68,6 @@ def _quote_fn(client: FinnhubClient):
     def quote(symbol: str) -> cycles.QuoteReading | None:
         return cycles.finnhub_quote(client, symbol)
     return quote
-
-
-async def _system_account(db):
-    """Stable 对照账户 resolution (review #31: the is_system row wins, always —
-    logic owned by SimLedgerService.system_account)."""
-    return await SimLedgerService.system_account(db)
 
 
 async def _system_watchlist(db, account) -> set[str]:
@@ -170,16 +166,31 @@ async def _release_signal_cycle(session: str, seq: int) -> None:
         await db.commit()
 
 
-async def _stamp_open_price_alert(db, today) -> None:
+async def _stamp_open_price_alert(db, today, group_name: str | None = None) -> None:
     """Record that today's missing-open-price alert was delivered. Its own tiny
-    commit so the flag is only ever written after a successful send."""
+    commit so the flag is only ever written after a successful send. With more
+    than one group the flag lives under that group's entry in meta["groups"]."""
     row = (await db.execute(
         select(HeartbeatRecord).where(HeartbeatRecord.name == "entry_cycle")
     )).scalar_one_or_none()
     if row is None:
         return
-    row.meta = {**(row.meta or {}), "open_price_alert": str(today)}
+    meta = dict(row.meta or {})
+    if group_name is None:
+        meta["open_price_alert"] = str(today)
+    else:
+        groups = dict(meta.get("groups") or {})
+        groups[group_name] = {**(groups.get(group_name) or {}),
+                              "open_price_alert": str(today)}
+        meta["groups"] = groups
+    row.meta = meta
     await db.commit()
+
+
+def _label(runtimes, rt) -> str:
+    """Message/result prefix naming the group — empty while there is only one,
+    so a single-group install reads byte-for-byte like the pre-group system."""
+    return "" if len(runtimes) == 1 else f"[{rt.group.name}] "
 
 
 @shared_task(name="quant.heartbeat")
@@ -196,27 +207,57 @@ def heartbeat():
 
 @shared_task(name="quant.position_cycle", soft_time_limit=240, time_limit=280)
 def position_cycle():
-    """5-min intraday stop pass on the system account."""
+    """5-min intraday stop pass on every managed (active or paused) group's
+    account."""
     if not _in_rth():
         return "skipped: outside RTH"
 
     async def _do():
         async with CeleryAsyncSessionLocal() as db:
-            account = await _system_account(db)
-            if account is None:
-                return "no system account"
+            runtimes, _ = await load_groups(db, MANAGED_STATUSES)
+            if not runtimes:
+                # still beat: an empty install must not read as a stalled cycle
+                await _beat(db, "position_cycle", closed=[])
+                await db.commit()
+                return "no strategy groups"
             client = FinnhubClient()
-            closed = await cycles.check_stops(db, account, quote_fn=_quote_fn(client))
-            await _beat(db, "position_cycle", closed=closed)
+            per_group = []
+            for rt in runtimes:
+                per_group.append((rt, await cycles.check_stops(
+                    db, rt.account, quote_fn=_quote_fn(client))))
+            if len(runtimes) == 1:
+                await _beat(db, "position_cycle", closed=per_group[0][1])
+            else:
+                await _beat(db, "position_cycle",
+                            closed=[s for _, closed in per_group for s in closed],
+                            groups={rt.group.name: {"closed": closed}
+                                    for rt, closed in per_group})
             await db.commit()
-            if closed:
-                await _notify(f"🛑 对照账户 stop exit: {', '.join(closed)}")
-            return f"closed: {closed}" if closed else "no breaches"
+            results = []
+            for rt, closed in per_group:
+                label = _label(runtimes, rt)
+                if closed:
+                    await _notify(f"{label}🛑 对照账户 stop exit: {', '.join(closed)}")
+                results.append(label + (f"closed: {closed}" if closed else "no breaches"))
+            return "; ".join(results)
     try:
         return _run_async(_do())
     except Exception:
         logger.exception("quant.position_cycle failed")
         return "error"
+
+
+@dataclass
+class _EntryOutcome:
+    """One group's entry_cycle result: the return text, the heartbeat meta
+    (silent_when_single = the single-group path writes no beat, as blocked never
+    did), and what still has to be announced after the commit."""
+    result: str
+    meta: dict
+    silent_when_single: bool = False
+    booked: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    alerted_on: str | None = None
 
 
 @shared_task(name="quant.entry_cycle", soft_time_limit=500, time_limit=560)
@@ -238,103 +279,171 @@ def entry_cycle():
 
     async def _do():
         async with CeleryAsyncSessionLocal() as db:
-            account = await _system_account(db)
-            if account is None:
-                return "no system account"
+            runtimes, _ = await load_groups(db, SIGNAL_STATUSES)
+            if not runtimes:
+                return "no active strategy groups"
             today = now_et.date()
-            mode = cycles.account_entry_mode(account)
-            if mode == cycles.ENTRY_MODE_OPEN_ONCE \
-                    and not cycles.in_open_once_window(now_et):
-                # still beat: the beat runs every 15 min, so most RTH cycles land
-                # outside this window and the watchdog must not read the silence
-                # as a stalled entry cycle
-                await _beat(db, "entry_cycle", skipped="outside_open_once_window")
+            single = len(runtimes) == 1
+            # read on first need, once per cycle — the tests pin WHEN these happen
+            memo: dict = {}
+
+            async def eff():
+                if "eff" not in memo:
+                    memo["eff"] = await effective_settings(db)
+                return memo["eff"]
+
+            async def prior_alert(group_name: str):
+                if "prior" not in memo:
+                    memo["prior"] = await _beat_meta(db, "entry_cycle")
+                prior = memo["prior"]
+                if single:
+                    return prior.get("open_price_alert")
+                return ((prior.get("groups") or {}).get(group_name)
+                        or {}).get("open_price_alert")
+
+            async def one_group(rt) -> _EntryOutcome:
+                account = rt.account
+                mode = cycles.account_entry_mode(account)
+                if mode == cycles.ENTRY_MODE_OPEN_ONCE \
+                        and not cycles.in_open_once_window(now_et):
+                    # still beat: the beat runs every 15 min, so most RTH cycles
+                    # land outside this window and the watchdog must not read the
+                    # silence as a stalled entry cycle
+                    return _EntryOutcome("skipped: outside the open_once window",
+                                         {"skipped": "outside_open_once_window"})
+                state = await cycles.get_safety_state(db, account)
+                blocked = cycles.entries_blocked_reason(state, today=today)
+                if blocked:
+                    logger.warning("entry_cycle blocked: %s", blocked)
+                    return _EntryOutcome(f"blocked: {blocked}", {"blocked": blocked},
+                                         silent_when_single=True)
+                # A2 fail-closed: ZERO Recommendation rows for today means last
+                # night's signal cycle failed or was gated — book NOTHING. Runs
+                # every 15 min now, so LOG only (signal_cycle already Telegrams
+                # the fail-closed once) to avoid ~26 alerts/day.
+                any_rec = (await db.execute(
+                    select(Recommendation.id)
+                    .where(Recommendation.group_id == rt.group.id,
+                           Recommendation.trade_date == today).limit(1)
+                )).scalar_one_or_none()
+                if any_rec is None:
+                    logger.warning("entry_cycle fail-closed: no recommendations for %s",
+                                   today)
+                    return _EntryOutcome("fail-closed: no recommendations",
+                                         {"fail_closed": "no recommendations"})
+
+                settings = await eff()
+                alerted_on = await prior_alert(rt.group.name)
+                open_prices = None
+                missing: list[str] = []
+                stale_base = None
+                if mode == cycles.ENTRY_MODE_OPEN_ONCE:
+                    # open_once sizes on the previous close; a missing snapshot
+                    # silently pushes that base back. run_entries keeps using it
+                    # (moving it would fork the scoreboard) — this only makes it
+                    # visible on the Night Watch panel, which renders every
+                    # heartbeat's meta. The watchdog reads four names and not this.
+                    stale_base = await cycles.stale_sizing_base(db, account.id, today)
+                    wanted = await cycles.shortlist_symbols(db, today,
+                                                            group_id=rt.group.id)
+                    try:
+                        open_prices = await asyncio.to_thread(
+                            qfetch.session_open_prices, wanted, today)
+                    except Exception:
+                        logger.exception("entry_cycle: 09:30 open prices unavailable "
+                                         "for %s — no entries this session", today)
+                        open_prices = {}
+                    missing = [s for s in wanted if s not in open_prices]
+
+                client = FinnhubClient()
+                booked = await cycles.run_entries(
+                    db, account, today, group_id=rt.group.id,
+                    quote_fn=_quote_fn(client), entry_mode=mode,
+                    open_prices=open_prices, risk_pct=settings.per_trade_risk_pct,
+                    chase_cap=settings.intraday_entry_chase_cap,
+                    max_slots=settings.max_concurrent_slots)
+
+                meta = {"booked": booked, "mode": mode}
+                if alerted_on is not None:
+                    # _beat replaces meta wholesale, so today's alert flag has to
+                    # be carried forward or it survives exactly one cycle
+                    meta["open_price_alert"] = alerted_on
+                if stale_base is not None:
+                    meta["stale_sizing_base"] = str(stale_base)
+                if missing:
+                    meta["missing_open"] = missing
+                    logger.error("entry_cycle: no 09:30 open price for %s — not "
+                                 "entered today", ", ".join(missing))
+                return _EntryOutcome(f"booked: {booked}" if booked else "nothing to book",
+                                     meta, booked=booked, missing=missing,
+                                     alerted_on=alerted_on)
+
+            outcomes = [(rt, await one_group(rt)) for rt in runtimes]
+            if single:
+                out = outcomes[0][1]
+                if not out.silent_when_single:
+                    await _beat(db, "entry_cycle", **out.meta)
+                    await db.commit()
+            else:
+                await _beat(db, "entry_cycle",
+                            groups={rt.group.name: out.meta for rt, out in outcomes})
                 await db.commit()
-                return "skipped: outside the open_once window"
-            state = await cycles.get_safety_state(db, account)
-            blocked = cycles.entries_blocked_reason(state, today=today)
-            if blocked:
-                logger.warning("entry_cycle blocked: %s", blocked)
-                return f"blocked: {blocked}"
-            # A2 fail-closed: ZERO Recommendation rows for today means last
-            # night's signal cycle failed or was gated — book NOTHING. Runs
-            # every 15 min now, so LOG only (signal_cycle already Telegrams the
-            # fail-closed once) to avoid ~26 alerts/day.
-            any_rec = (await db.execute(
-                select(Recommendation.id)
-                .where(Recommendation.trade_date == today).limit(1)
-            )).scalar_one_or_none()
-            if any_rec is None:
-                await _beat(db, "entry_cycle", fail_closed="no recommendations")
-                await db.commit()
-                logger.warning("entry_cycle fail-closed: no recommendations for %s",
-                               today)
-                return "fail-closed: no recommendations"
 
-            eff = await effective_settings(db)
-            prior = await _beat_meta(db, "entry_cycle")
-            open_prices = None
-            missing: list[str] = []
-            stale_base = None
-            if mode == cycles.ENTRY_MODE_OPEN_ONCE:
-                # open_once sizes on the previous close; a missing snapshot
-                # silently pushes that base back. run_entries keeps using it
-                # (moving it would fork the scoreboard) — this only makes it
-                # visible on the Night Watch panel, which renders every
-                # heartbeat's meta. The watchdog reads four names and not this.
-                stale_base = await cycles.stale_sizing_base(db, account.id, today)
-                wanted = await cycles.shortlist_symbols(db, today)
-                try:
-                    open_prices = await asyncio.to_thread(
-                        qfetch.session_open_prices, wanted, today)
-                except Exception:
-                    logger.exception("entry_cycle: 09:30 open prices unavailable "
-                                     "for %s — no entries this session", today)
-                    open_prices = {}
-                missing = [s for s in wanted if s not in open_prices]
-
-            client = FinnhubClient()
-            booked = await cycles.run_entries(
-                db, account, today, quote_fn=_quote_fn(client), entry_mode=mode,
-                open_prices=open_prices, risk_pct=eff.per_trade_risk_pct,
-                chase_cap=eff.intraday_entry_chase_cap,
-                max_slots=eff.max_concurrent_slots)
-
-            alerted_on = prior.get("open_price_alert")
-            meta = {"booked": booked, "mode": mode}
-            if alerted_on is not None:
-                # _beat replaces meta wholesale, so today's alert flag has to be
-                # carried forward or it survives exactly one cycle
-                meta["open_price_alert"] = alerted_on
-            if stale_base is not None:
-                meta["stale_sizing_base"] = str(stale_base)
-            if missing:
-                meta["missing_open"] = missing
-                logger.error("entry_cycle: no 09:30 open price for %s — not "
-                             "entered today", ", ".join(missing))
-            await _beat(db, "entry_cycle", **meta)
-            await db.commit()
-
-            if eff.rejected:
+            settings = memo.get("eff")
+            if settings is not None and settings.rejected:
                 await _notify("⚠️ master_settings 有非法行（只允许收紧）— 该项用常量: "
-                              + "; ".join(eff.rejected))
-            if missing and alerted_on != str(today):
-                # the once-a-day flag follows a send that actually LANDED
-                # (watchdog._alert's rule): stamping it first loses the whole
-                # day's alert to one failed send, which is when it matters most
-                sent = await _notify(
-                    "⛔ 对照账户 open_once fail-closed: 拿不到 09:30 开盘价, "
-                    f"今天不进这些票: {', '.join(missing)}")
-                if sent:
-                    await _stamp_open_price_alert(db, today)
-            if booked:
-                await _notify(f"📈 对照账户 entries booked: {', '.join(booked)}")
-            return f"booked: {booked}" if booked else "nothing to book"
+                              + "; ".join(settings.rejected))
+            for rt, out in outcomes:
+                label = _label(runtimes, rt)
+                if out.missing and out.alerted_on != str(today):
+                    # the once-a-day flag follows a send that actually LANDED
+                    # (watchdog._alert's rule): stamping it first loses the whole
+                    # day's alert to one failed send, which is when it matters most
+                    sent = await _notify(
+                        f"{label}⛔ 对照账户 open_once fail-closed: 拿不到 09:30 开盘价, "
+                        f"今天不进这些票: {', '.join(out.missing)}")
+                    if sent:
+                        await _stamp_open_price_alert(
+                            db, today, None if single else rt.group.name)
+                if out.booked:
+                    await _notify(f"{label}📈 对照账户 entries booked: "
+                                  f"{', '.join(out.booked)}")
+            return "; ".join(_label(runtimes, rt) + out.result for rt, out in outcomes)
     try:
         return _run_async(_do())
     except Exception:
         logger.exception("quant.entry_cycle failed")
         return "error"
+
+
+@dataclass
+class _SignalRun:
+    """One group's share of a signal_cycle: what it published, closed and could
+    not mark, plus its fail-closed issues (unlabelled)."""
+    batch: cycles.RecommendationBatch = field(default_factory=cycles.RecommendationBatch)
+    recs: list[dict] = field(default_factory=list)
+    n: int = 0
+    explained: int = 0
+    exits: cycles.ExitPass = field(default_factory=cycles.ExitPass)
+    drift: list[str] = field(default_factory=list)
+    marks_stale_close: list[str] = field(default_factory=list)
+    marks_raw_or_missing: list[str] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+
+    def meta(self) -> dict:
+        meta = {"recs": self.n, "explained": self.explained,
+                "closed": self.exits.closed, "scanned": self.batch.scanned,
+                "stale": self.batch.stale, "unadjusted": self.batch.unadjusted,
+                "exits_unadjusted": self.exits.unadjusted}
+        if self.drift:
+            meta["fill_drift"] = self.drift
+        if self.marks_stale_close:
+            meta["marks_stale_close"] = self.marks_stale_close
+        if self.marks_raw_or_missing:
+            meta["marks_raw_or_missing"] = self.marks_raw_or_missing
+        if self.issues:
+            meta["fail_closed"] = "; ".join(self.issues)
+        return meta
 
 
 @shared_task(name="quant.signal_cycle", soft_time_limit=1500, time_limit=1700)
@@ -377,20 +486,27 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
         # otherwise their bars freeze and the exit pass manages ghosts).
         held_syms: set[str] = set()
         watchlist_syms: set[str] = set()
+        # group id -> (held, watchlist): each group scans its own names
+        group_syms: dict = {}
 
         async def _context():
             async with CeleryAsyncSessionLocal() as db:
-                account = await _system_account(db)
-                held = watch = set()
-                if account is not None:
+                runtimes, _ = await load_groups(db, MANAGED_STATUSES)
+                out = {}
+                for rt in runtimes:
                     held = {p.symbol for p in
-                            await SimLedgerService.get_open_positions(db, account.id)}
-                    watch = await _system_watchlist(db, account)
-                return held, watch
+                            await SimLedgerService.get_open_positions(db, rt.account.id)}
+                    watch = (await _system_watchlist(db, rt.account)
+                             if rt.group.status in SIGNAL_STATUSES else set())
+                    out[rt.group.id] = (held, watch)
+                return out
         try:
-            held_syms, watchlist_syms = _run_async(_context())
+            group_syms = _run_async(_context())
         except Exception:
             logger.warning("signal_cycle: context lookup failed", exc_info=True)
+        for held, watch in group_syms.values():
+            held_syms |= held
+            watchlist_syms |= watch
 
         index_syms = set(quniverse.constituents_on(today))
         sync_set = sorted(index_syms | set(qconfig.ETF_WHITELIST)
@@ -435,48 +551,72 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
             async with CeleryAsyncSessionLocal() as db:
                 # review #2: one bar read per symbol across recommendations + exits
                 bars_fn = cycles.memoized_bars_fn(today)
+                runtimes, refused = await load_groups(db, MANAGED_STATUSES)
                 eff = await effective_settings(db)
-                batch = cycles.RecommendationBatch()
+                refused_issues = [f"strategy group refused: {m}" for m in refused]
+                if not runtimes:
+                    meta = {"session": str(today), "seq": retry_seq, "synced": synced,
+                            "failed": failed, "recs": 0, "scanned": 0, "groups": 0}
+                    issues = (["bar sync failures"] if sync_fail_closed else []) \
+                        + refused_issues
+                    if refused:
+                        meta["groups_refused"] = list(refused)
+                    if issues:
+                        meta["fail_closed"] = "; ".join(issues)
+                    await _beat(db, "signal_cycle", **meta)
+                    await db.execute(release_signal_cycle_stmt(str(today), retry_seq))
+                    await db.commit()
+                    if sync_fail_closed:
+                        await _notify("⛔ signal_cycle fail-closed: bar sync failed for "
+                                      f"{failed}/{len(sync_set)} symbols — no "
+                                      "recommendations published for the next session")
+                    elif refused_issues:
+                        await _notify("⛔ signal_cycle fail-closed: "
+                                      + "; ".join(refused_issues))
+                    return f"no strategy groups: synced={synced}/{len(sync_set)}"
                 if sync_fail_closed:
-                    recs, n = [], 0
                     logger.error("signal_cycle fail-closed: %d/%d symbols failed "
                                  "bar sync — recommendations NOT published",
                                  failed, len(symbols))
-                else:
-                    batch = cycles.build_recommendations(
-                        symbols, today, bars_fn=bars_fn, sectors=sectors,
-                        funnel_params=replace(cycles.RECOMMENDED_FUNNEL,
-                                              min_confidence=eff.min_confidence))
-                    recs = batch.rows
-                    n = await cycles.store_recommendations(db, recs)
 
-                # v3 explanation layer (LLM, explanation-only): a one-line read on
-                # the top-N names, booked into llm_calls. Never blocks the cycle —
-                # call_llm swallows provider errors and leaves llm_explanation null.
-                explained = 0
-                if recs:
-                    from app.modules.llm.explain import explain_recommendations
-                    try:
-                        explained = await explain_recommendations(
-                            db, recs[0]["trade_date"], top_n=10)
-                    except Exception:
-                        logger.warning("signal_cycle: explanation layer failed",
-                                       exc_info=True)
+                async def one_group(rt) -> _SignalRun:
+                    run = _SignalRun()
+                    held, watch = group_syms.get(rt.group.id, (set(), set()))
+                    group_symbols = sorted(liquid | set(qconfig.ETF_WHITELIST)
+                                           | watch | held)
+                    if rt.group.status in SIGNAL_STATUSES and not sync_fail_closed:
+                        funnel = replace(rt.config.funnel, min_confidence=max(
+                            rt.config.funnel.min_confidence, eff.min_confidence))
+                        run.batch = cycles.build_recommendations(
+                            group_symbols, today, bars_fn=bars_fn, sectors=sectors,
+                            funnel_params=funnel, strategy_params=rt.config.strategy)
+                        run.recs = run.batch.rows
+                        run.n = await cycles.store_recommendations(
+                            db, run.recs, group_id=rt.group.id)
 
-                account = await _system_account(db)
-                exits = cycles.ExitPass()
-                drift: list[str] = []
-                marks_stale_close: list[str] = []
-                marks_raw_or_missing: list[str] = []
-                kept_snapshot = None
-                if account is not None:
+                    # v3 explanation layer (LLM, explanation-only): a one-line read
+                    # on the top-N names, booked into llm_calls. Never blocks the
+                    # cycle — call_llm swallows provider errors and leaves
+                    # llm_explanation null.
+                    if run.recs:
+                        from app.modules.llm.explain import explain_recommendations
+                        try:
+                            run.explained = await explain_recommendations(
+                                db, run.recs[0]["trade_date"], group_id=rt.group.id,
+                                top_n=10)
+                        except Exception:
+                            logger.warning("signal_cycle: explanation layer failed",
+                                           exc_info=True)
+
+                    account = rt.account
                     if cycles.account_entry_mode(account) == cycles.ENTRY_MODE_OPEN_ONCE:
                         # sentinel: today's fills were priced off the SIP 09:30 1min
                         # bar, so the stored daily open must agree with them
-                        drift = await cycles.open_fill_drift(db, account, today,
-                                                             bars_fn=bars_fn)
-                    exits = await cycles.daily_exit_management(
-                        db, account, today, bars_fn=bars_fn)
+                        run.drift = await cycles.open_fill_drift(db, account, today,
+                                                                 bars_fn=bars_fn)
+                    run.exits = await cycles.daily_exit_management(
+                        db, account, today, bars_fn=bars_fn,
+                        exit_params=rt.config.exits, strategy_params=rt.config.strategy)
                     # snapshot + protections on end-of-day marks: the session's own
                     # daily close (what the backtest marks equity at), quote as the
                     # fallback. The memo means the close costs no extra bar read.
@@ -485,11 +625,11 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                     cm = await cycles.closing_marks(
                         positions, today, bars_fn=bars_fn, quote_fn=_quote_fn(client))
                     equity = SimLedgerService.equity(account, positions, cm.marks)
-                    marks_stale_close = cm.stale_close
-                    marks_raw_or_missing = cm.raw_or_missing
+                    run.marks_stale_close = cm.stale_close
+                    run.marks_raw_or_missing = cm.raw_or_missing
+                    kept_snapshot = None
                     if cm.stale_close or cm.raw_or_missing:
-                        kept_snapshot = await cycles.snapshot_on(db, account.id,
-                                                                 today)
+                        kept_snapshot = await cycles.snapshot_on(db, account.id, today)
                     if not cm.raw_or_missing:
                         if cm.stale_close:
                             # the store's own earlier close is a real market
@@ -518,59 +658,76 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                                                             cm.marks,
                                                             positions=positions,
                                                             equity=equity)
-                closed = exits.closed
+
+                    # the guards are only protective if a bad night is LOUD: a cycle
+                    # that scans 500 names and publishes none used to leave
+                    # `recs: 0` and silence
+                    batch = run.batch
+                    if not sync_fail_closed and batch.scanned:
+                        if run.n == 0:
+                            run.issues.append(
+                                f"0 recommendations published from {batch.scanned} "
+                                f"scanned ({batch.stale} stale-bar, "
+                                f"{batch.unadjusted} unadjusted)")
+                        elif batch.excluded > 0.2 * batch.scanned:
+                            run.issues.append(
+                                f"{batch.excluded}/{batch.scanned} symbols excluded "
+                                f"({batch.stale} stale-bar, {batch.unadjusted} unadjusted)")
+                    if run.exits.unadjusted:
+                        run.issues.append("held positions NOT marked (RAW prices): "
+                                          + ", ".join(run.exits.unadjusted))
+                    if run.marks_raw_or_missing:
+                        run.issues.append(
+                            f"equity untrusted — {len(run.marks_raw_or_missing)} "
+                            f"position(s) with RAW or missing prices: "
+                            f"{', '.join(run.marks_raw_or_missing)}"
+                            " — snapshot + protections SKIPPED")
+                    elif run.marks_stale_close:
+                        run.issues.append(
+                            f"snapshot SKIPPED — {len(run.marks_stale_close)} position(s) "
+                            f"marked at an earlier session's close: "
+                            f"{', '.join(run.marks_stale_close)} (protections still ran)")
+                    if kept_snapshot is not None:
+                        # the date is not left empty: whatever row is already there
+                        # stays the published point, and it may not be a real close
+                        # (2026-09-21 was written 00:37 ET off pre-market quotes)
+                        created = kept_snapshot.created_at
+                        stamp = (created.astimezone(_ET).strftime("%H:%M")
+                                 if created is not None else "?")
+                        run.issues.append(
+                            f"snapshot SKIPPED but the {kept_snapshot.snapshot_date} row "
+                            f"(created {stamp} ET, equity "
+                            f"{float(kept_snapshot.equity):.2f}) stands")
+                    return run
+
+                runs = [(rt, await one_group(rt)) for rt in runtimes]
+                n = sum(run.n for _, run in runs)
+                closed = [s for _, run in runs for s in run.exits.closed]
                 meta = {"session": str(today), "seq": retry_seq,
-                        "recs": n, "explained": explained, "closed": closed,
+                        "recs": n, "explained": sum(run.explained for _, run in runs),
+                        "closed": closed,
                         "synced": synced, "failed": failed,
-                        "scanned": batch.scanned, "stale": batch.stale,
-                        "unadjusted": batch.unadjusted,
-                        "exits_unadjusted": exits.unadjusted}
-                if drift:
-                    meta["fill_drift"] = drift
-                if marks_stale_close:
-                    meta["marks_stale_close"] = marks_stale_close
-                if marks_raw_or_missing:
-                    meta["marks_raw_or_missing"] = marks_raw_or_missing
+                        "scanned": sum(run.batch.scanned for _, run in runs),
+                        "stale": sum(run.batch.stale for _, run in runs),
+                        "unadjusted": sum(run.batch.unadjusted for _, run in runs),
+                        "exits_unadjusted": [s for _, run in runs
+                                             for s in run.exits.unadjusted]}
+                for key, attr in (("fill_drift", "drift"),
+                                  ("marks_stale_close", "marks_stale_close"),
+                                  ("marks_raw_or_missing", "marks_raw_or_missing")):
+                    values = [v for _, run in runs for v in getattr(run, attr)]
+                    if values:
+                        meta[key] = values
+                if len(runs) > 1:
+                    meta["groups"] = {rt.group.name: run.meta() for rt, run in runs}
                 if eff.rejected:
                     meta["settings_rejected"] = list(eff.rejected)
                 if sync_fail_closed:
                     meta["fail_closed"] = "bar sync failures"
-                # the guards are only protective if a bad night is LOUD: a cycle that
-                # scans 500 names and publishes none used to leave `recs: 0` and silence
-                rec_issues: list[str] = []
-                if not sync_fail_closed and batch.scanned:
-                    if n == 0:
-                        rec_issues.append(
-                            f"0 recommendations published from {batch.scanned} scanned "
-                            f"({batch.stale} stale-bar, {batch.unadjusted} unadjusted)")
-                    elif batch.excluded > 0.2 * batch.scanned:
-                        rec_issues.append(
-                            f"{batch.excluded}/{batch.scanned} symbols excluded "
-                            f"({batch.stale} stale-bar, {batch.unadjusted} unadjusted)")
-                if exits.unadjusted:
-                    rec_issues.append("held positions NOT marked (RAW prices): "
-                                      + ", ".join(exits.unadjusted))
-                if marks_raw_or_missing:
-                    rec_issues.append(
-                        f"equity untrusted — {len(marks_raw_or_missing)} position(s) "
-                        f"with RAW or missing prices: {', '.join(marks_raw_or_missing)}"
-                        " — snapshot + protections SKIPPED")
-                elif marks_stale_close:
-                    rec_issues.append(
-                        f"snapshot SKIPPED — {len(marks_stale_close)} position(s) "
-                        f"marked at an earlier session's close: "
-                        f"{', '.join(marks_stale_close)} (protections still ran)")
-                if kept_snapshot is not None:
-                    # the date is not left empty: whatever row is already there
-                    # stays the published point, and it may not be a real close
-                    # (2026-09-21 was written 00:37 ET off pre-market quotes)
-                    created = kept_snapshot.created_at
-                    stamp = (created.astimezone(_ET).strftime("%H:%M")
-                             if created is not None else "?")
-                    rec_issues.append(
-                        f"snapshot SKIPPED but the {kept_snapshot.snapshot_date} row "
-                        f"(created {stamp} ET, equity {float(kept_snapshot.equity):.2f})"
-                        " stands")
+                rec_issues = [_label(runtimes, rt) + issue
+                              for rt, run in runs for issue in run.issues] + refused_issues
+                if refused:
+                    meta["groups_refused"] = list(refused)
                 if rec_issues:
                     meta["fail_closed"] = "; ".join(rec_issues)
                 await _beat(db, "signal_cycle", **meta)
@@ -590,20 +747,25 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                 if eff.rejected:
                     await _notify("⚠️ master_settings 有非法行（只允许收紧）— 该项用常量: "
                                   + "; ".join(eff.rejected))
-                if drift:
-                    await _notify(
-                        f"⚠️ open_once 成交价对账超 {cycles.OPEN_FILL_DRIFT_BPS:.0f}bps"
-                        " — 09:30 bar 与日线 open 不一致: " + "; ".join(drift))
-                if closed:
-                    await _notify(f"📤 对照账户 daily exits: {', '.join(closed)}")
-                if exits.data_end:
-                    await _notify(
-                        "⚠️ 对照账户 data_end 强平 — no new daily bar for "
-                        f"{cycles.DATA_END_STALE_SESSIONS}+ sessions, closed at the "
-                        f"last known close: {', '.join(exits.data_end)}")
-                shortlist = [r["symbol"] for r in recs if r.get("shortlist_rank")]
-                if shortlist:
-                    await _notify("🔎 明日 shortlist: " + ", ".join(shortlist[:10]))
+                for rt, run in runs:
+                    label = _label(runtimes, rt)
+                    if run.drift:
+                        await _notify(
+                            f"{label}⚠️ open_once 成交价对账超 "
+                            f"{cycles.OPEN_FILL_DRIFT_BPS:.0f}bps"
+                            " — 09:30 bar 与日线 open 不一致: " + "; ".join(run.drift))
+                    if run.exits.closed:
+                        await _notify(f"{label}📤 对照账户 daily exits: "
+                                      f"{', '.join(run.exits.closed)}")
+                    if run.exits.data_end:
+                        await _notify(
+                            f"{label}⚠️ 对照账户 data_end 强平 — no new daily bar for "
+                            f"{cycles.DATA_END_STALE_SESSIONS}+ sessions, closed at the "
+                            f"last known close: {', '.join(run.exits.data_end)}")
+                    shortlist = [r["symbol"] for r in run.recs if r.get("shortlist_rank")]
+                    if shortlist:
+                        await _notify(f"{label}🔎 明日 shortlist: "
+                                      + ", ".join(shortlist[:10]))
                 return f"recs={n} closed={closed} scanned={len(symbols)} synced={synced}/{len(sync_set)}"
         return _run_async(_do())
     except Exception:

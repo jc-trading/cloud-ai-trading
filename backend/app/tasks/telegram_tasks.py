@@ -2,9 +2,11 @@
 
 A 1-minute poll of getUpdates (offset persisted in the heartbeats row
 ``telegram_updates``). Only messages from the CONFIGURED chat id are honored —
-anything else is ignored and logged. Commands act on the 对照账户's safety
-state; /kill additionally drops the HALT sentinel file, which blocks entries
-even if the DB is unreachable (cycles check the file first).
+anything else is ignored and logged. /status reports every managed strategy
+group (``/status <group name>`` one of them); /pause /resume /kill act on the
+safety state of every managed group's account. /kill additionally drops the
+HALT sentinel file, which blocks entries even if the DB is unreachable (cycles
+check the file first).
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ from app.modules.notifications import TelegramNotifier
 from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, Recommendation
 from app.modules.simledger.service import SimLedgerService
-from app.tasks.quant_tasks import _run_async, _system_account
+from app.modules.strategy_groups.models import MANAGED_STATUSES
+from app.modules.strategy_groups.service import load_groups
+from app.tasks.quant_tasks import _run_async
 
 logger = logging.getLogger(__name__)
 
@@ -41,17 +45,14 @@ async def _get_updates(offset: int) -> list[dict]:
     return data.get("result", []) if data.get("ok") else []
 
 
-async def _status_text(db) -> str:
-    account = await _system_account(db)
-    if account is None:
-        return "no system account yet"
+async def _group_status(db, rt) -> list[str]:
+    account = rt.account
     positions = await SimLedgerService.get_open_positions(db, account.id)
     state = await cycles.get_safety_state(db, account)
-    beats = {r.name: r.last_beat_at for r in (
-        await db.execute(select(HeartbeatRecord))).scalars().all()}
     recs = list((await db.execute(
         select(Recommendation.symbol)
-        .where(Recommendation.trade_date >= date.today(),
+        .where(Recommendation.group_id == rt.group.id,
+               Recommendation.trade_date >= date.today(),
                Recommendation.shortlist_rank.isnot(None))
         .order_by(Recommendation.shortlist_rank).limit(10))).scalars().all())
 
@@ -59,32 +60,59 @@ async def _status_text(db) -> str:
         f"  {p.symbol}: {float(p.shares):.4g} @ {float(p.avg_cost):.2f} "
         f"stop {float(p.stop):.2f}" for p in positions) or "  (none)"
     blocked = cycles.entries_blocked_reason(state, today=date.today())
+    return [f"cash: ${float(account.cash):,.2f}",
+            f"positions:\n{pos_lines}",
+            f"entries: {'🚫 ' + blocked if blocked else '✅ allowed'}",
+            f"next shortlist: {', '.join(recs) or '(none)'}"]
+
+
+async def _heartbeats_line(db) -> str:
+    beats = {r.name: r.last_beat_at for r in (
+        await db.execute(select(HeartbeatRecord))).scalars().all()}
     hb = ", ".join(f"{k} {v:%H:%M}" for k, v in sorted(beats.items()))
-    return (f"CAT 对照账户\n"
-            f"cash: ${float(account.cash):,.2f}\n"
-            f"positions:\n{pos_lines}\n"
-            f"entries: {'🚫 ' + blocked if blocked else '✅ allowed'}\n"
-            f"next shortlist: {', '.join(recs) or '(none)'}\n"
-            f"heartbeats: {hb or '(none)'}")
+    return f"heartbeats: {hb or '(none)'}"
+
+
+async def _status_text(db, runtimes, arg: str) -> str:
+    if arg:
+        match = [rt for rt in runtimes if rt.group.name == arg]
+        if not match:
+            return (f"unknown group: {arg} — groups: "
+                    + ", ".join(rt.group.name for rt in runtimes))
+        lines = [f"CAT {arg}", *await _group_status(db, match[0])]
+    elif len(runtimes) == 1:
+        lines = ["CAT 对照账户", *await _group_status(db, runtimes[0])]
+    else:
+        lines = ["CAT"]
+        for rt in runtimes:
+            lines.append(f"[{rt.group.name}] ({rt.group.status})")
+            lines.extend(await _group_status(db, rt))
+    lines.append(await _heartbeats_line(db))
+    return "\n".join(lines)
 
 
 async def _handle_command(db, text: str) -> str:
-    cmd = text.strip().split()[0].lower().split("@")[0]
-    account = await _system_account(db)
+    head, _, rest = text.strip().partition(" ")
+    cmd = head.lower().split("@")[0]
+    arg = rest.strip()
+    runtimes, _ = await load_groups(db, MANAGED_STATUSES)
+    if not runtimes:
+        return "no strategy groups"
     if cmd == "/status":
-        return await _status_text(db)
-    if account is None:
-        return "no system account yet"
-    state = await cycles.get_safety_state(db, account, create=True)
+        return await _status_text(db, runtimes, arg)
+    states = [await cycles.get_safety_state(db, rt.account, create=True)
+              for rt in runtimes]
     if cmd == "/pause":
-        state.paused_until = date.today() + timedelta(days=30)
-        state.reason = "manual /pause"
+        for state in states:
+            state.paused_until = date.today() + timedelta(days=30)
+            state.reason = "manual /pause"
         return "⏸ entries paused for 30 days — /resume to lift"
     if cmd == "/resume":
-        state.paused_until = None
-        state.halted = False
-        state.halted_until = None
-        state.reason = "manual /resume"
+        for state in states:
+            state.paused_until = None
+            state.halted = False
+            state.halted_until = None
+            state.reason = "manual /resume"
         try:
             import os
             os.remove(cycles.HALT_SENTINEL)
@@ -96,9 +124,10 @@ async def _handle_command(db, text: str) -> str:
         os.makedirs(os.path.dirname(cycles.HALT_SENTINEL), exist_ok=True)
         with open(cycles.HALT_SENTINEL, "w") as f:
             f.write(f"killed via telegram {datetime.now(timezone.utc).isoformat()}\n")
-        state.halted = True
-        state.halted_until = None
-        state.reason = "manual /kill"
+        for state in states:
+            state.halted = True
+            state.halted_until = None
+            state.reason = "manual /kill"
         return "🛑 KILLED — HALT sentinel written; entries refused even if the DB dies. /resume to restart"
     return "commands: /status /pause /resume /kill"
 

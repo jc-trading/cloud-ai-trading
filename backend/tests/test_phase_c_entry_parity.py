@@ -173,8 +173,8 @@ def _live_entries(frames, monkeypatch):
 
     open_prices = {s: float(f["open"].iloc[-1]) for s, f in frames.items()}
     booked = asyncio.run(cycles.run_entries(
-        session, account, D2, now=NOW, entry_mode=cycles.ENTRY_MODE_OPEN_ONCE,
-        open_prices=open_prices))
+        session, account, D2, group_id=uuid4(), now=NOW,
+        entry_mode=cycles.ENTRY_MODE_OPEN_ONCE, open_prices=open_prices))
     lots = [o for o in session.added if isinstance(o, SimPosition)]
     return booked, lots, account
 
@@ -322,8 +322,8 @@ def _live_entries_two_day_book(frames, monkeypatch, book, *, snapshot=True,
 
     open_prices = {s: float(f["open"].iloc[-1]) for s, f in frames.items()}
     booked = asyncio.run(cycles.run_entries(
-        session, account, D2, now=NOW, entry_mode=cycles.ENTRY_MODE_OPEN_ONCE,
-        open_prices=open_prices))
+        session, account, D2, group_id=uuid4(), now=NOW,
+        entry_mode=cycles.ENTRY_MODE_OPEN_ONCE, open_prices=open_prices))
     lots = [o for o in session.added if isinstance(o, SimPosition)]
     return booked, lots
 

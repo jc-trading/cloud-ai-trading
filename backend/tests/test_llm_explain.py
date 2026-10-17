@@ -111,7 +111,8 @@ def test_explains_each_row_and_records_calls(monkeypatch):
     calls = _patch_call(monkeypatch, text="Uptrend, low volatility.")
     db = _FakeSession(rows)
 
-    n = asyncio.run(explain_recommendations(db, date(2026, 8, 5), top_n=10))
+    n = asyncio.run(explain_recommendations(db, date(2026, 8, 5), group_id=uuid4(),
+                                            top_n=10))
 
     assert n == 3
     assert all(r.llm_explanation == "Uptrend, low volatility." for r in rows)
@@ -126,7 +127,7 @@ def test_none_safe_when_llm_returns_no_text(monkeypatch):
     _patch_call(monkeypatch, text=None)  # simulate provider failure
     db = _FakeSession(rows)
 
-    n = asyncio.run(explain_recommendations(db, date(2026, 8, 5)))
+    n = asyncio.run(explain_recommendations(db, date(2026, 8, 5), group_id=uuid4()))
 
     assert n == 0
     assert rows[0].llm_explanation is None

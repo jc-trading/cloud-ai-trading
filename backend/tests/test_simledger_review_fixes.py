@@ -75,7 +75,7 @@ def test_insufficient_cash_skips_symbol_not_cycle(monkeypatch):
     monkeypatch.setattr(SimLedgerService, "get_positions_closed_on",
                         staticmethod(_no_closes))
     db = _RecSession([_rec("AAA", 1), _rec("BBB", 2)])
-    out = asyncio.run(cycles.run_entries(db, _acct(), date(2026, 7, 30),
+    out = asyncio.run(cycles.run_entries(db, _acct(), date(2026, 7, 30), group_id=uuid4(),
                                          quote_fn=lambda s: _q(100.0), now=NOW))
     assert calls == ["AAA", "BBB"]      # BBB still attempted after AAA failed
     assert out == ["BBB"]
@@ -99,6 +99,7 @@ def test_run_entries_sizes_on_cost_price(monkeypatch):
                         staticmethod(_no_closes))
     db = _RecSession([_rec("AAA", 1, stop_distance=5.0, adv=1e9)])
     asyncio.run(cycles.run_entries(db, _acct(cash=2000.0), date(2026, 7, 30),
+                                   group_id=uuid4(),
                                    quote_fn=lambda s: _q(100.0), now=NOW))
     eff = entry_cost_price(100.0, adv=1e9)
     assert eff > 100.0
@@ -424,14 +425,14 @@ def test_chase_cap_skips_gap_up_enters_at_ref(monkeypatch):
     # GAP: quote 104 (>+3%) -> skipped
     q = lambda s: cyc.QuoteReading(price=104.0, at=NOW)
     out = asyncio.run(cyc.run_entries(_RS([rec("AAA")]), _acct(), date(2026, 7, 30),
-                                      quote_fn=q, now=NOW))
+                                      group_id=uuid4(), quote_fn=q, now=NOW))
     assert out == [] and booked == []
 
     # at reference 100 -> enters
     booked.clear()
     q2 = lambda s: cyc.QuoteReading(price=100.0, at=NOW)
     out = asyncio.run(cyc.run_entries(_RS([rec("AAA")]), _acct(), date(2026, 7, 30),
-                                      quote_fn=q2, now=NOW))
+                                      group_id=uuid4(), quote_fn=q2, now=NOW))
     assert out == ["AAA"]
 
 
@@ -466,5 +467,6 @@ def test_chase_cap_none_disables_gate(monkeypatch):
 
     q = lambda s: cyc.QuoteReading(price=120.0, at=NOW)   # +20%, would be capped
     out = asyncio.run(cyc.run_entries(_RS(), _acct(), date(2026, 7, 30),
-                                      quote_fn=q, now=NOW, chase_cap=None))
+                                      group_id=uuid4(), quote_fn=q, now=NOW,
+                                      chase_cap=None))
     assert out == ["AAA"]                     # gate disabled -> books anyway

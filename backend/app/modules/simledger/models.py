@@ -20,7 +20,7 @@ Tables:
   - master_settings    §8.6 risk knobs; the service layer only allows TIGHTENING
   - recommendations    the daily engine output feed (v3 dashboard reads this):
                        shortlist rank + confidence + phase read, one per
-                       (symbol, trade_date)
+                       (group, symbol, trade_date)
   - recommendation_outcomes  forward returns per recommendation (P1 复盘
                        ground work); written only by the manual backfill in
                        app.modules.simledger.outcomes, never by the cycles
@@ -52,7 +52,8 @@ class SimAccount(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(),
                         onupdate=func.now(), nullable=False)
 
-    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_sim_account_user_name"),)
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_sim_account_user_name"),
+                      UniqueConstraint("id", "is_system", name="uq_sim_account_id_is_system"))
 
 
 class SimPosition(Base):
@@ -182,6 +183,10 @@ class Recommendation(Base):
     __tablename__ = "recommendations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    group_id = Column(UUID(as_uuid=True),
+                      ForeignKey("strategy_groups.id", ondelete="RESTRICT",
+                                 name="fk_recommendation_group"),
+                      nullable=False)
     symbol = Column(String(20), nullable=False, index=True)
     trade_date = Column(Date, nullable=False, index=True)     # session the rec is FOR
     direction = Column(String(10), nullable=False)            # up|down|flat
@@ -197,8 +202,8 @@ class Recommendation(Base):
     llm_explanation = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (UniqueConstraint("symbol", "trade_date",
-                                       name="uq_recommendation_symbol_date"),)
+    __table_args__ = (UniqueConstraint("group_id", "symbol", "trade_date",
+                                       name="uq_recommendation_group_symbol_date"),)
 
 
 class RecommendationOutcome(Base):

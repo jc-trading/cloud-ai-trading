@@ -409,7 +409,9 @@ def signal_cycle_retry_decision(*, now_utc: datetime, now_et: datetime,
 def build_recommendations(symbols: list[str], session_date: date, *,
                           funnel_params: qfunnel.FunnelParams = RECOMMENDED_FUNNEL,
                           bars_fn=qbars.get_bars,
-                          sectors: dict[str, str] | None = None) -> RecommendationBatch:
+                          sectors: dict[str, str] | None = None,
+                          strategy_params: qstrategy.StrategyParams | None = None
+                          ) -> RecommendationBatch:
     """Compute the shortlist + phase reads from daily bars as of session_date.
     Pure given bars_fn. Returns dicts ready to become Recommendation rows with
     trade_date = the NEXT session (decide on D close, act at D+1 open).
@@ -436,7 +438,7 @@ def build_recommendations(symbols: list[str], session_date: date, *,
                          "cached corporate action) — excluded from tonight's "
                          "recommendations", sym)
             continue
-        sp = qstrategy.StrategyParams()
+        sp = strategy_params if strategy_params is not None else qstrategy.StrategyParams()
         if b.empty or len(b) < sp.warmup + 5:
             continue
         last_bar_date = b["ts"].iloc[-1].tz_convert("America/New_York").date()
@@ -497,25 +499,27 @@ def build_recommendations(symbols: list[str], session_date: date, *,
     return batch
 
 
-async def store_recommendations(db: AsyncSession, recs: list[dict]) -> int:
-    """Idempotent publish: replace the whole batch for that trade_date."""
+async def store_recommendations(db: AsyncSession, recs: list[dict], *, group_id) -> int:
+    """Idempotent publish: replace the group's whole batch for that trade_date."""
     if not recs:
         return 0
     td = recs[0]["trade_date"]
-    await db.execute(delete(Recommendation).where(Recommendation.trade_date == td))
+    await db.execute(delete(Recommendation).where(Recommendation.group_id == group_id,
+                                                  Recommendation.trade_date == td))
     for r in recs:
-        db.add(Recommendation(**r))
+        db.add(Recommendation(group_id=group_id, **r))
     await db.flush()
     return len(recs)
 
 
-async def shortlist_symbols(db: AsyncSession, today: date) -> list[str]:
+async def shortlist_symbols(db: AsyncSession, today: date, *, group_id) -> list[str]:
     """Today's shortlisted names in rank order — the set open_once needs opening
     prices for. Pyramid candidates are a subset (a name is only added to when it
     is BOTH held and recommended), so this is the whole fetch set."""
     return list((await db.execute(
         select(Recommendation.symbol)
-        .where(Recommendation.trade_date == today,
+        .where(Recommendation.group_id == group_id,
+               Recommendation.trade_date == today,
                Recommendation.shortlist_rank.isnot(None))
         .order_by(Recommendation.shortlist_rank)
     )).scalars().all())
@@ -548,7 +552,9 @@ def benchmark_return_since(closes, entry_date: date, session_date: date) -> floa
 async def daily_exit_management(db: AsyncSession, account: SimAccount,
                                 session_date: date, *,
                                 exit_params: ExitParams = RECOMMENDED_EXITS,
-                                bars_fn=qbars.get_bars) -> ExitPass:
+                                bars_fn=qbars.get_bars,
+                                strategy_params: qstrategy.StrategyParams | None = None
+                                ) -> ExitPass:
     """Post-close exit pass on the system account — the simulator's exact
     ordering: trailing ratchet from info through D-1, fold D's bar into state,
     then close-based exits (reversal/stagnation) at D's close. Stop breaches
@@ -615,7 +621,9 @@ async def daily_exit_management(db: AsyncSession, account: SimAccount,
                                sp.symbol, last_bar_date, session_date)
             continue
         try:
-            sig = qstrategy.compute_signals(b, qstrategy.StrategyParams())
+            sig = qstrategy.compute_signals(
+                b, strategy_params if strategy_params is not None
+                else qstrategy.StrategyParams())
             row, last_bar = sig.iloc[-1], b.iloc[-1]
             prev_atr = float(sig["atr"].iloc[-2]) if len(sig) > 1 else float(row["atr"])
             p = Position(symbol=sp.symbol, shares=float(sp.shares),
@@ -761,7 +769,7 @@ async def _entry_price_source(mode: str, db: AsyncSession, account: SimAccount,
 
 
 async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
-                      quote_fn=None, now: datetime | None = None,
+                      group_id, quote_fn=None, now: datetime | None = None,
                       risk_pct: float = qconfig.PER_TRADE_RISK_PCT,
                       chase_cap: float | None = qconfig.INTRADAY_ENTRY_CHASE_CAP,
                       entry_mode: str = ENTRY_MODE_LADDER,
@@ -783,7 +791,8 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
     now = now or datetime.now(timezone.utc)
     recs = list((await db.execute(
         select(Recommendation)
-        .where(Recommendation.trade_date == today,
+        .where(Recommendation.group_id == group_id,
+               Recommendation.trade_date == today,
                Recommendation.shortlist_rank.isnot(None))
         .order_by(Recommendation.shortlist_rank)
     )).scalars().all())
