@@ -95,6 +95,22 @@ def test_complete_when_everything_landed(world):
     assert world.calls.panel == [(date(2026, 10, 16), True)]
 
 
+def test_an_edgar_outage_fails_closed_without_touching_the_panel(world):
+    def outage(ciks, s):
+        raise us.edgar.EdgarOutage(30, 25, 25)
+
+    world.monkeypatch.setattr(us.edgar, "refresh_ciks", outage)
+    report = us.run(now=AFTER_CLOSE, fresh_cap=300)
+    beat = world.calls.beats[-1]
+    assert report.fail_closed == beat["fail_closed"] == (
+        "edgar refresh failed: edgar: 25 consecutive CIKs failed, "
+        "stopped after 30 processed (25 failed)")
+    assert beat["edgar"] == {"error": "edgar: 25 consecutive CIKs failed, "
+                                      "stopped after 30 processed (25 failed)"}
+    assert report.complete is True and beat["complete"] is True
+    assert world.calls.panel == [(date(2026, 10, 16), True)]
+
+
 @pytest.mark.parametrize("bars, n, expected", [
     ({"failed": 20, "current": 100, "fresh_pending": 0}, 100, True),
     ({"failed": 21, "current": 100, "fresh_pending": 0}, 100, False),

@@ -347,6 +347,7 @@ def _run_locked(report: SyncReport, now: datetime, fresh_cap: int) -> None:
     except Exception as e:
         logger.exception("universe_sync: EDGAR refresh failed")
         meta["edgar"] = {"error": str(e)}
+        issues.append(f"edgar refresh failed: {e}")
 
     if report.complete:
         if past_deadline("sectors"):
