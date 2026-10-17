@@ -57,7 +57,7 @@ def _chunks(seq: list[str], n: int):
 def run_daily_backfill(symbols: list[str], *, now: datetime | None = None,
                        batch_size: int = 100, skip_fresh_days: int = 4,
                        history_years: int = config.DAILY_HISTORY_YEARS,
-                       progress=print) -> BackfillStats:
+                       progress=print, pause_s: float = 0.0) -> BackfillStats:
     now = now or datetime.now(timezone.utc)
     st = BackfillStats(total=len(symbols))
     full_start = now - timedelta(days=365 * history_years + 7)
@@ -85,6 +85,8 @@ def run_daily_backfill(symbols: list[str], *, now: datetime | None = None,
             st.stored += 1
         progress(f"  fresh batch {bi + 1}: {len(batch)} symbols, "
                  f"{st.stored} stored so far, {len(st.empty)} empty")
+        if pause_s:
+            time.sleep(pause_s)
 
     # stale: per-symbol incremental (cheap; delisted names return ~nothing)
     for s in stale:

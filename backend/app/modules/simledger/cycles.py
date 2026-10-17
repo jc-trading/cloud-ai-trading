@@ -330,6 +330,9 @@ def signal_cycle_data_failure(meta: dict | None) -> str | None:
         + list(m.get("marks_stale_close") or [])
     if failed > 0:
         return f"{failed} symbols failed bar sync"
+    pool_failed = int(m.get("pool_failed") or 0)
+    if pool_failed > 0:
+        return f"{pool_failed} pool symbols failed bar sync"
     if unmarked:
         return f"{len(unmarked)} position(s) without this session's close"
     if stale > 0.2 * scanned:

@@ -166,3 +166,15 @@ def test_fails_closed_within_connect_timeout(monkeypatch):
         elapsed = time.monotonic() - started
         registry.close()
     assert elapsed < 5, f"connect_timeout not honoured: blocked {elapsed:.1f}s"
+
+
+def test_run_many_batches_one_statement(pg):
+    n = registry.run_many(
+        f"INSERT INTO {registry._STREAM_TABLE} (symbol, priority, enabled, note) "
+        f"VALUES (%s, %s, TRUE, 'run_many test')",
+        [(SYM, 900), (OTHER, 901)])
+    assert n == 2
+    rows = registry._run(
+        f"SELECT symbol, priority FROM {registry._STREAM_TABLE} WHERE symbol LIKE %s "
+        f"ORDER BY symbol", (f"{PREFIX}%",), fetch="all")
+    assert [tuple(r) for r in rows] == [(SYM, 900), (OTHER, 901)]

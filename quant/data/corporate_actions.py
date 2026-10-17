@@ -221,6 +221,55 @@ def sync_universe(symbols: list[str] | None = None, *, chunk_size: int = 100,
     return total
 
 
+def sync_recent(symbols: list[str], *, days: int = config.CA_RECENT_DAYS,
+                chunk_size: int = 100, client=None, db_path: Path | None = None) -> int:
+    """Sync only the last ``days`` of actions — the nightly top-up for the
+    whole-market universe, where a full-window re-query of ~11k names would
+    cost the same as the first load.
+
+    The window is per symbol, because sync_actions stamps every symbol it is
+    given authoritative through the previous session: a never-synced symbol
+    gets the full history, one last synced before the window starts is fetched
+    from its own watermark (minus 5 days of overlap). Symbols are chunked in
+    start order and each chunk starts at its earliest member."""
+    from datetime import timedelta
+
+    end = date.today()
+    recent = end - timedelta(days=days)
+    full = end - timedelta(days=365 * config.DAILY_HISTORY_YEARS + 7)
+    starts = []
+    for sym in symbols:
+        synced_at = load_synced_at(sym, db_path=db_path)
+        if synced_at is None:
+            starts.append((full, sym))
+        elif synced_at < recent:
+            starts.append((synced_at - timedelta(days=5), sym))
+        else:
+            starts.append((recent, sym))
+    starts.sort()
+    total = 0
+    for i in range(0, len(starts), chunk_size):
+        chunk = starts[i:i + chunk_size]
+        total += sync_actions([s for _, s in chunk], chunk[0][0], end,
+                              client=client, db_path=db_path)
+    return total
+
+
+def load_all_splits(*, db_path: Path | None = None) -> pd.DataFrame:
+    """Every cached split (and stock dividend) as [symbol, ex_date, ratio]."""
+    conn = _connect(db_path)
+    try:
+        df = pd.read_sql_query(
+            "SELECT symbol, ex_date, ratio FROM corporate_actions "
+            "WHERE action_type = 'split' AND ratio IS NOT NULL ORDER BY symbol, ex_date",
+            conn)
+    finally:
+        conn.close()
+    if not df.empty:
+        df["ex_date"] = pd.to_datetime(df["ex_date"]).dt.date
+    return df
+
+
 if __name__ == "__main__":
     n = sync_universe()
     print(f"done: {n} actions, {count_symbols_with_actions()} symbols have actions")

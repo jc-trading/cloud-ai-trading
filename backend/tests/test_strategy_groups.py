@@ -24,7 +24,7 @@ from app.modules.simledger import cycles
 from app.modules.simledger.models import Recommendation, SimAccount
 from app.modules.simledger.service import _dec
 from app.modules.strategy_groups.models import StrategyGroup
-from app.modules.strategy_groups.service import GroupRefused, validate_group
+from app.modules.strategy_groups.service import GroupRefused, load_groups, validate_group
 from tests._groups import group_for
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -75,7 +75,7 @@ def test_validate_group_accepts_group_one():
 @pytest.mark.parametrize("overrides, reason", [
     ({"market": "hk"}, "market"),
     ({"timeframe": "1m"}, "timeframe"),
-    ({"screener_json": {"market_cap": 1e8}}, "screener_json"),
+    ({"screener_json": {"market_cap": 1e8}}, "screener_json invalid"),
     ({"trade_settings_json": {"entry": "limit"}}, "trade_settings_json"),
     ({"risk_json": {"halt_pct": 0.1}}, "risk_json"),
     ({"strategy_key": "cat.v2.nope"}, "unknown strategy_key"),
@@ -87,6 +87,47 @@ def test_validate_group_refuses_what_p1_cannot_honour(overrides, reason):
         validate_group(group)
     assert str(e.value).startswith("g2: ")
     assert reason in str(e.value)
+
+
+JIACONG_SCREENER = {"rules": [
+    {"field": "market_cap", "op": ">=", "value": 100000000},
+    {"field": "adv_usd", "window": 20, "op": ">=", "value": 50000000},
+    {"field": "ret_std", "window": 5, "op": ">=", "value": 0.035},
+    {"field": "close_vs_ema", "window": 21, "op": ">", "value": 0},
+]}
+
+
+def test_a_valid_screener_is_accepted_and_carried_on_the_runtime():
+    acct = _acct()
+    group = group_for(acct, name="screened", screener_json=JIACONG_SCREENER)
+    assert validate_group(group) == get_spec(V1_COMPOSITE_KEY).defaults
+
+    class _RowsDb:
+        async def execute(self, stmt):
+            class _R:
+                def all(self):
+                    return [(group, acct)]
+            return _R()
+
+    runtimes, refused = asyncio.run(load_groups(_RowsDb(), ("active",)))
+    assert refused == []
+    assert runtimes[0].screener is not None
+    assert [r.key for r in runtimes[0].screener.rules] == [
+        "market_cap", "adv_usd:20", "ret_std:5", "close_vs_ema:21"]
+
+
+def test_a_legacy_group_has_no_screener():
+    acct = _acct()
+
+    class _RowsDb:
+        async def execute(self, stmt):
+            class _R:
+                def all(self):
+                    return [(group_for(acct), acct)]
+            return _R()
+
+    runtimes, _ = asyncio.run(load_groups(_RowsDb(), ("active",)))
+    assert runtimes[0].screener is None
 
 
 # --- every recommendation read/write carries the group ----------------------

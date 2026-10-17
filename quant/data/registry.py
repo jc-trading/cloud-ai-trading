@@ -131,6 +131,25 @@ def _run(sql: str, params: tuple, *, fetch: str | None = None):
                 raise
 
 
+def run_many(sql: str, rows: list[tuple]) -> int:
+    """``_run`` for a batch: one executemany on the process-wide connection,
+    retried once on a dropped connection. Returns the affected row count."""
+    import psycopg
+
+    global _conn
+    for attempt in (0, 1):
+        if _conn is None or _conn.closed:
+            _conn = _connect()
+        try:
+            with _conn.cursor() as cur:
+                cur.executemany(sql, rows)
+                return cur.rowcount
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            close()
+            if attempt:
+                raise
+
+
 def close() -> None:
     global _conn
     if _conn is not None:

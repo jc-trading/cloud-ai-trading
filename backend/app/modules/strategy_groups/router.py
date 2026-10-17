@@ -2,6 +2,8 @@
 
   GET /strategy-groups              every group, oldest first (optional ?status=)
   GET /strategy-groups/{group_id}   one group + its params schema + account block
+  GET /strategy-groups/{group_id}/screen?date=
+                                    that group's screener run for one session
 
 There is no default group: every per-strategy endpoint elsewhere takes a
 required ``group_id`` picked from this list. Auth-only (CurrentUser), like the
@@ -10,11 +12,18 @@ other dashboard reads.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
+from quant import config as qconfig
+from quant.data import calendar as qcal
+from quant.data import panel as qpanel
+from quant.data import screen as qscreen
+from quant.engine.screener import ScreenerSpecError, parse_spec
 from quant.engine.strategies import StrategyParamsError, get_spec
 
 from app.dependencies import DB, CurrentUser
@@ -79,4 +88,52 @@ async def get_group_detail(group_id: UUID, user: CurrentUser, db: DB = None):
                 "date": snap.snapshot_date.isoformat(), "equity": float(snap.equity),
             },
         },
+    }
+
+
+@router.get("/{group_id}/screen")
+async def get_group_screen(group_id: UUID, user: CurrentUser, db: DB = None,
+                           for_date: date | None = Query(default=None, alias="date")):
+    """Run the group's screener for one session (default: the latest complete
+    panel session). The pool includes the group account's open positions, as
+    signal_cycle's does."""
+    group = await _require_group(db, group_id)
+    if not group.screener_json:
+        raise HTTPException(status_code=409,
+                            detail="group uses the legacy v1 pool (screener_json is empty)")
+    try:
+        spec = parse_spec(group.screener_json)
+    except ScreenerSpecError as e:
+        raise HTTPException(status_code=409, detail=f"screener_json invalid: {e}")
+    if for_date is not None and not qcal.is_trading_day(for_date):
+        raise HTTPException(status_code=422, detail=f"{for_date} is not a trading day")
+    as_of = for_date or qpanel.latest_complete()
+    if as_of is None:
+        raise HTTPException(status_code=409, detail="no complete panel yet")
+    if not qpanel.is_complete(as_of):
+        raise HTTPException(status_code=409, detail=f"no complete panel for {as_of}")
+    positions = await SimLedgerService.get_open_positions(db, group.sim_account_id)
+    held = sorted({p.symbol for p in positions})
+    try:
+        res = await asyncio.to_thread(qscreen.run_screen, spec, as_of, held=held)
+    except qscreen.PanelIncomplete:
+        raise HTTPException(status_code=409, detail=f"no complete panel for {as_of}")
+    picked = set(res.screened) | set(spec.include)
+    return {
+        "group_id": str(group.id), "group_name": group.name,
+        "as_of": res.as_of.isoformat(), "evaluated": res.evaluated,
+        "asset_types": list(spec.asset_types),
+        "rules": [{"index": s.index, "field": s.field, "window": s.window, "op": s.op,
+                   "value": s.value, "on_null": s.on_null, "passed": s.passed,
+                   "null": s.null, "passed_cumulative": s.passed_cumulative}
+                  for s in res.rule_stats],
+        "screened": len(res.screened),
+        "include_added": list(res.include_added),
+        "include_ignored": list(res.include_ignored),
+        "excluded_removed": list(res.excluded_removed),
+        "held_added": sorted(set(res.pool) - picked),
+        "pool_size": len(res.pool),
+        "pool_cap": qconfig.SCREEN_POOL_MAX,
+        "over_cap": len(res.pool) > qconfig.SCREEN_POOL_MAX,
+        "pool": list(res.pool),
     }

@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quant.engine.screener import ScreenerSpec, ScreenerSpecError, parse_spec
 from quant.engine.strategies import StrategyParamsError, V1Config, get_spec
 
 from app.modules.simledger.models import SimAccount
@@ -32,12 +33,13 @@ class GroupRuntime:
     group: StrategyGroup
     account: SimAccount
     config: V1Config
+    screener: ScreenerSpec | None = None
 
 
 def validate_group(group: StrategyGroup) -> V1Config:
-    """The engine config for a group, or GroupRefused naming why P1 cannot run
-    it: only the US daily v1 chain exists, and screener / trade settings / risk
-    overrides are not implemented yet."""
+    """The engine config for a group, or GroupRefused naming why it cannot run:
+    only the US daily v1 chain exists, the screener spec must parse, and trade
+    settings / risk overrides are not implemented yet."""
     def refuse(reason: str) -> GroupRefused:
         return GroupRefused(f"{group.name}: {reason}")
 
@@ -45,7 +47,11 @@ def validate_group(group: StrategyGroup) -> V1Config:
         raise refuse(f"market {group.market!r} is not supported")
     if group.timeframe != "1d":
         raise refuse(f"timeframe {group.timeframe!r} is not supported")
-    for field in ("screener_json", "trade_settings_json", "risk_json"):
+    try:
+        parse_spec(group.screener_json)
+    except ScreenerSpecError as e:
+        raise refuse(f"screener_json invalid: {e}") from None
+    for field in ("trade_settings_json", "risk_json"):
         if getattr(group, field):
             raise refuse(f"{field} is not supported yet and must be empty")
     try:
@@ -65,7 +71,8 @@ async def load_groups(db: AsyncSession, statuses) -> tuple[list[GroupRuntime], l
     refused: list[str] = []
     for group, account in rows:
         try:
-            runtimes.append(GroupRuntime(group, account, validate_group(group)))
+            runtimes.append(GroupRuntime(group, account, validate_group(group),
+                                         parse_spec(group.screener_json)))
         except GroupRefused as e:
             logger.error("strategy group refused: %s", e)
             refused.append(str(e))

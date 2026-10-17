@@ -135,3 +135,20 @@ TRAILING_START_R: float = 1.5                 # [C8] start/tighten trailing at ~
 COMMISSION_PER_SHARE: float = 0.0             # US equities/ETF ~ $0 (tiny reg fees)
 # slippage + spread assumptions are set in backtest/costs.py and calibrated
 # against observed paper slippage later (成本校准闭环).
+
+# --------------------------------------------------------------------------
+# Whole-US-equity data + rule screener (strategy lab P2)
+# --------------------------------------------------------------------------
+PANEL_ROOT: Path = DATA_ROOT / "panel" / "us" / "daily"
+ELIGIBLE_ASSET_TYPES: tuple[str, ...] = ("stock", "adr", "etf")
+SCREEN_POOL_MAX: int = 1500
+UNIVERSE_FRESH_PER_NIGHT: int = 300
+UNIVERSE_FAIL_RATIO: float = 0.2
+SEC_MAX_RPS: int = 8
+SHARES_STALE_DAYS: int = 400
+PANEL_REBUILD_SESSIONS: int = 15
+MIN_FREE_DISK_GB: int = 10
+CA_RECENT_DAYS: int = 30
+FRESH_EMPTY_DORMANT_AFTER: int = 3
+FRESH_DORMANT_RETRY_DAYS: int = 7
+UNIVERSE_SYNC_DEADLINE_S: int = 5400

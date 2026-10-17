@@ -30,7 +30,12 @@ from app.modules.simledger.models import (  # noqa: F401
     Recommendation,
 )
 from app.modules.llm.models import LLMCall  # noqa: F401
-from app.modules.market.models import MarketDataFile, MarketStreamSymbol  # noqa: F401
+from app.modules.market.models import (  # noqa: F401
+    MarketDataFile,
+    MarketStreamSymbol,
+    Security,
+    SecurityShareFact,
+)
 from app.modules.strategy_groups.models import StrategyGroup  # noqa: F401
 
 __all__ = [
@@ -50,5 +55,7 @@ __all__ = [
     "LLMCall",
     "MarketDataFile",
     "MarketStreamSymbol",
+    "Security",
+    "SecurityShareFact",
     "StrategyGroup",
 ]

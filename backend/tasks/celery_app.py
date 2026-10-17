@@ -46,6 +46,9 @@ celery_app.conf.update(
     # wedges the worker permanently (2026-07-01 freeze).
     task_soft_time_limit=1500,  # 25 min: raises SoftTimeLimitExceeded in-task
     task_time_limit=1800,  # 30 min: hard kill + replace the pool child
+    # the whole-market sync runs for up to two hours: its own worker (-Q bulk)
+    # keeps it off the slots signal_cycle and the heartbeat need
+    task_routes={"market.universe_sync": {"queue": "bulk"}},
 )
 
 # NOTE: no autodiscover_tasks() — every task module is registered explicitly via
@@ -103,6 +106,14 @@ celery_app.conf.beat_schedule.update({
         "task": "quant.signal_cycle",
         "schedule": crontab(hour=21, minute=30),   # post-close in both regimes
         "options": {"expires": 3300},
+    },
+    # P2: whole-market sync for the screener on the bulk worker. All three
+    # slots target the last completed session; once it is complete the later
+    # ones are no-ops (and a flock stops them overlapping a manual run).
+    "market-universe-sync": {
+        "task": "market.universe_sync",
+        "schedule": crontab(minute=15, hour="22,2,10"),
+        "options": {"expires": 3 * 3600},
     },
     # Catch-up for a signal_cycle that died or fail-closed on data. Every slot
     # re-decides from the heartbeat rows (the task holds no state), and stops

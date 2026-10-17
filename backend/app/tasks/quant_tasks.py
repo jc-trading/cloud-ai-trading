@@ -429,6 +429,7 @@ class _SignalRun:
     marks_stale_close: list[str] = field(default_factory=list)
     marks_raw_or_missing: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    screen: dict | None = None
 
     def meta(self) -> dict:
         meta = {"recs": self.n, "explained": self.explained,
@@ -443,7 +444,18 @@ class _SignalRun:
             meta["marks_raw_or_missing"] = self.marks_raw_or_missing
         if self.issues:
             meta["fail_closed"] = "; ".join(self.issues)
+        if self.screen is not None:
+            meta["screen"] = self.screen
         return meta
+
+
+def _screen_meta(res) -> dict:
+    return {"as_of": str(res.as_of), "evaluated": res.evaluated,
+            "screened": len(res.screened), "pool": len(res.pool),
+            "include_ignored": list(res.include_ignored),
+            "rules": [{"field": s.field, "window": s.window, "passed": s.passed,
+                       "null": s.null, "passed_cumulative": s.passed_cumulative}
+                      for s in res.rule_stats]}
 
 
 @shared_task(name="quant.signal_cycle", soft_time_limit=1500, time_limit=1700)
@@ -488,6 +500,8 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
         watchlist_syms: set[str] = set()
         # group id -> (held, watchlist): each group scans its own names
         group_syms: dict = {}
+        # group id -> screener spec of each active screener group
+        group_specs: dict = {}
 
         async def _context():
             async with CeleryAsyncSessionLocal() as db:
@@ -499,6 +513,8 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                     watch = (await _system_watchlist(db, rt.account)
                              if rt.group.status in SIGNAL_STATUSES else set())
                     out[rt.group.id] = (held, watch)
+                    if rt.screener is not None and rt.group.status in SIGNAL_STATUSES:
+                        group_specs[rt.group.id] = rt.screener
                 return out
         try:
             group_syms = _run_async(_context())
@@ -526,6 +542,46 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
         synced, failed_syms = qfetch.sync_daily_many(sync_set)
         failed = len(failed_syms)
         logger.info("signal_cycle: bars synced for %d symbols (%d failed)", synced, failed)
+
+        # screener groups pool off the PREVIOUS session's complete panel (the
+        # bulk worker builds it after the close), then only their pool is synced
+        # here — never the whole market. A group whose screen is unavailable or
+        # over the cap publishes nothing tonight; the legacy groups are untouched.
+        screens: dict = {}
+        screen_issues: dict = {}
+        pool_sync_set: list[str] = []
+        pool_synced, pool_failed_syms = 0, []
+        pool_fail_closed = False
+        screen_as_of = None
+        if group_specs:
+            from quant.data import screen as qscreen
+
+            screen_as_of = qcal.previous_session(today)
+            for gid, spec in group_specs.items():
+                held, _ = group_syms.get(gid, (set(), set()))
+                try:
+                    res = qscreen.run_screen(spec, screen_as_of, held=held)
+                except Exception as exc:
+                    logger.warning("signal_cycle: screen failed", exc_info=True)
+                    screen_issues[gid] = f"screen unavailable for {screen_as_of}: {exc}"
+                    continue
+                screens[gid] = res
+                if len(res.pool) > qconfig.SCREEN_POOL_MAX:
+                    screen_issues[gid] = (f"pool {len(res.pool)} > max "
+                                          f"{qconfig.SCREEN_POOL_MAX}")
+            pooled = set()
+            for gid, res in screens.items():
+                if gid not in screen_issues:
+                    pooled |= set(res.pool)
+            pool_sync_set = sorted(pooled - set(sync_set))
+            if pool_sync_set:
+                try:
+                    qactions.sync_recent(pool_sync_set)
+                except Exception:
+                    logger.warning("signal_cycle: pool corporate action sync failed",
+                                   exc_info=True)
+                pool_synced, pool_failed_syms = qfetch.sync_daily_many(pool_sync_set)
+                pool_fail_closed = len(pool_failed_syms) > 0.2 * len(pool_sync_set)
 
         # v3.1: ANALYZE only the most-liquid slice of the index + the watchlist
         # (always, ignoring volume) + ETFs + any held name. The other ~80% of the
@@ -582,9 +638,28 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                 async def one_group(rt) -> _SignalRun:
                     run = _SignalRun()
                     held, watch = group_syms.get(rt.group.id, (set(), set()))
-                    group_symbols = sorted(liquid | set(qconfig.ETF_WHITELIST)
-                                           | watch | held)
-                    if rt.group.status in SIGNAL_STATUSES and not sync_fail_closed:
+                    screened = (rt.screener is not None
+                                and rt.group.status in SIGNAL_STATUSES)
+                    screen_issue = None
+                    if screened:
+                        res = screens.get(rt.group.id)
+                        if res is not None:
+                            run.screen = _screen_meta(res)
+                        group_symbols = sorted(res.pool) if res is not None else []
+                        screen_issue = screen_issues.get(rt.group.id)
+                        if screen_issue is None and res is None:
+                            screen_issue = f"screen unavailable for {screen_as_of}: not run"
+                        if screen_issue is None and pool_fail_closed:
+                            screen_issue = (f"pool bar sync failed for "
+                                            f"{len(pool_failed_syms)}/{len(pool_sync_set)} "
+                                            "symbols")
+                        if screen_issue is not None:
+                            run.issues.append(f"screen: {screen_issue}")
+                    else:
+                        group_symbols = sorted(liquid | set(qconfig.ETF_WHITELIST)
+                                               | watch | held)
+                    if rt.group.status in SIGNAL_STATUSES and not sync_fail_closed \
+                            and screen_issue is None:
                         funnel = replace(rt.config.funnel, min_confidence=max(
                             rt.config.funnel.min_confidence, eff.min_confidence))
                         run.batch = cycles.build_recommendations(
@@ -718,6 +793,11 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                     values = [v for _, run in runs for v in getattr(run, attr)]
                     if values:
                         meta[key] = values
+                if pool_sync_set:
+                    meta["pool_synced"] = pool_synced
+                    meta["pool_failed"] = len(pool_failed_syms)
+                if len(runs) == 1 and runs[0][1].screen is not None:
+                    meta["screen"] = runs[0][1].screen
                 if len(runs) > 1:
                     meta["groups"] = {rt.group.name: run.meta() for rt, run in runs}
                 if eff.rejected:
@@ -875,6 +955,42 @@ def signal_cycle_retry():
     logger.error("signal_cycle_retry: dispatched attempt %d — %s",
                  decision.seq, decision.reason)
     return f"dispatched: seq={decision.seq}"
+
+
+@shared_task(name="market.universe_sync", soft_time_limit=7200, time_limit=7500)
+def universe_sync():
+    """Post-close whole-market sync on the bulk queue: securities, corporate
+    actions, daily bars, the screener panel, SEC share facts and pool sectors
+    for the last completed session. Thin wrapper — the logic lives in
+    quant.data.universe_sync (``python -m quant.data.universe_sync``)."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    from quant.data import universe_sync as qsync
+
+    def failed(error: str) -> str:
+        async def _record():
+            async with CeleryAsyncSessionLocal() as db:
+                await _beat(db, "universe_sync", error=error, fail_closed=error)
+                await db.commit()
+        try:
+            _run_async(_record())
+        except Exception:
+            logger.exception("market.universe_sync: recording the failure failed")
+        _run_async(_notify(f"⛔ universe_sync failed: {error}"))
+        return "error"
+
+    try:
+        report = qsync.run()
+    except SoftTimeLimitExceeded:
+        logger.error("market.universe_sync hit its soft time limit")
+        return failed("soft time limit")
+    except Exception as exc:
+        logger.exception("market.universe_sync failed")
+        return failed(f"{type(exc).__name__}: {exc}")
+    if report.fail_closed:
+        _run_async(_notify(f"⛔ universe_sync fail-closed: {report.fail_closed} "
+                           f"(session {report.session})"))
+    return report.summary()
 
 
 @shared_task(name="market.eod_correction", soft_time_limit=1500, time_limit=1700)

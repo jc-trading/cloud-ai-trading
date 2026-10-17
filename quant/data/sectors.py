@@ -12,6 +12,7 @@ summary, never silently.
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -35,8 +36,14 @@ def load_sectors() -> dict[str, str]:
 
 def _save(sectors: dict[str, str]) -> None:
     config.UNIVERSE_DIR.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(sorted(sectors.items()), columns=["symbol", "sector"]).to_parquet(
-        SECTORS_PARQUET, index=False)
+    tmp = SECTORS_PARQUET.parent / f"{SECTORS_PARQUET.name}.tmp-{os.getpid()}"
+    try:
+        pd.DataFrame(sorted(sectors.items()), columns=["symbol", "sector"]).to_parquet(
+            tmp, index=False)
+        os.replace(tmp, SECTORS_PARQUET)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def fetch_sector(symbol: str, token: str, *, timeout: int = 15) -> str | None:

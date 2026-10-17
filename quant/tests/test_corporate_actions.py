@@ -159,3 +159,82 @@ def test_sync_watermark_roundtrip(tmp_path):
     assert ca.load_synced_at("AAPL", db_path=db) == date(2026, 8, 18)
     ca.record_sync(["HOOD"], date(2026, 8, 19), db_path=db)
     assert ca.load_synced_at("HOOD", db_path=db) == date(2026, 8, 19)
+
+
+class _WindowClient:
+    """Records every request window; returns one split per call."""
+
+    def __init__(self):
+        self.calls = []
+
+    def get_corporate_actions(self, req):
+        self.calls.append((list(req.symbols), req.start, req.end))
+        return {"forward_splits": [{"symbol": req.symbols[0], "ex_date": req.end,
+                                    "new_rate": 2.0, "old_rate": 1.0}]}
+
+
+def test_sync_recent_queries_only_the_recent_window_in_chunks(tmp_path):
+    from datetime import timedelta
+
+    client = _WindowClient()
+    syms = [f"S{i}" for i in range(5)]
+    today = date.today()
+    ca.record_sync(syms, today - timedelta(days=3), db_path=tmp_path / "manifest.db")
+    n = ca.sync_recent(syms, days=30, chunk_size=2, client=client,
+                       db_path=tmp_path / "manifest.db")
+    assert [c[0] for c in client.calls] == [["S0", "S1"], ["S2", "S3"], ["S4"]]
+    assert all((c[1], c[2]) == (today - timedelta(days=30), today) for c in client.calls)
+    assert n == 3
+    assert ca.load_synced_at("S4", db_path=tmp_path / "manifest.db") is not None
+
+
+def test_load_all_splits_returns_only_splits(tmp_path):
+    db = tmp_path / "manifest.db"
+    assert ca.load_all_splits(db_path=db).empty
+    ca.store_actions([
+        {"symbol": "AAPL", "ex_date": date(2020, 8, 31), "action_type": "split",
+         "ratio": 4.0, "cash_amount": None},
+        {"symbol": "AAPL", "ex_date": date(2024, 2, 9), "action_type": "dividend",
+         "ratio": None, "cash_amount": 0.24},
+        {"symbol": "GE", "ex_date": date(2021, 8, 2), "action_type": "split",
+         "ratio": 0.125, "cash_amount": None},
+    ], db_path=db)
+    df = ca.load_all_splits(db_path=db)
+    assert list(df.columns) == ["symbol", "ex_date", "ratio"]
+    assert df.values.tolist() == [["AAPL", date(2020, 8, 31), 4.0],
+                                  ["GE", date(2021, 8, 2), 0.125]]
+
+
+def test_sync_recent_reaches_back_per_symbol(tmp_path):
+    """sync_actions stamps every symbol it is given authoritative, so a symbol
+    whose own watermark is older than the window (or missing) must be fetched
+    from that watermark (or over the full history), not just the window."""
+    from datetime import timedelta
+
+    from quant import config
+
+    db = tmp_path / "manifest.db"
+    today = date.today()
+    ca.record_sync(["OK1", "OK2"], today - timedelta(days=2), db_path=db)
+    ca.record_sync(["OLD"], today - timedelta(days=120), db_path=db)
+    client = _WindowClient()
+    ca.sync_recent(["OK1", "NEW", "OLD", "OK2"], days=30, chunk_size=1, client=client,
+                   db_path=db)
+    starts = {c[0][0]: c[1] for c in client.calls}
+    assert starts["NEW"] == today - timedelta(days=365 * config.DAILY_HISTORY_YEARS + 7)
+    assert starts["OLD"] == today - timedelta(days=125)
+    assert starts["OK1"] == starts["OK2"] == today - timedelta(days=30)
+    assert all(c[2] == today for c in client.calls)
+
+
+def test_sync_recent_chunk_starts_at_its_earliest_member(tmp_path):
+    from datetime import timedelta
+
+    db = tmp_path / "manifest.db"
+    today = date.today()
+    ca.record_sync(["OK1"], today - timedelta(days=2), db_path=db)
+    ca.record_sync(["OLD"], today - timedelta(days=120), db_path=db)
+    client = _WindowClient()
+    ca.sync_recent(["OK1", "OLD"], days=30, chunk_size=2, client=client, db_path=db)
+    assert [(sorted(c[0]), c[1]) for c in client.calls] == [
+        (["OK1", "OLD"], today - timedelta(days=125))]

@@ -153,6 +153,61 @@ services:
     restart: unless-stopped
     command: celery -A tasks.celery_app worker --loglevel=info --concurrency=2
 
+  # Bulk worker (P2): consumes ONLY the bulk queue — the nightly whole-market
+  # universe_sync runs up to two hours and must never take the main worker's
+  # slots (signal_cycle, heartbeat). Reuses the worker image; no build.
+  celery-bulk:
+    container_name: cat_celery_bulk
+    image: cloud-ai-trading-celery-worker:latest
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      AI_PROVIDER: ${AI_PROVIDER:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DEBUG: ${DEBUG:-False}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      ALPACA_MODE: ${ALPACA_MODE:-paper}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tasks:/app/tasks
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/tests:/app/tests
+      - ./quant:/app/quant
+      - ./cat-data:/app/cat-data
+      - ./stock-market-data:/app/stock-market-data
+      - ./runtime:/app/runtime
+    networks:
+      - cat_network
+    restart: unless-stopped
+    cpus: 2.0
+    mem_limit: 2g
+    command: celery -A tasks.celery_app worker -Q bulk --concurrency=1 --loglevel=info -n bulk@%h
+
   # Celery Beat (Scheduler)
   celery-beat:
     container_name: cat_celery_beat
