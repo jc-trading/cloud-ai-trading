@@ -3,11 +3,14 @@
     <div class="jd-page-head">
       <div>
         <h1 class="jd-h1">Sim Accounts</h1>
-        <p class="jd-sub">You vs the system — same $2,000 start, same cost model, simulation only</p>
+        <p class="jd-sub">You vs group <b>{{ groups.selected?.name || '—' }}</b> — same $2,000 start, same cost model, simulation only</p>
       </div>
-      <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="loading" @click="load">
-        <i class="pi pi-refresh"></i> Refresh
-      </button>
+      <div class="head-actions">
+        <GroupSelector />
+        <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="loading" @click="load">
+          <i class="pi pi-refresh"></i> Refresh
+        </button>
+      </div>
     </div>
 
     <div v-if="error" class="jd-decision nogo" style="padding:24px 22px" role="alert">
@@ -62,7 +65,9 @@
             </div>
           </div>
         </div>
-        <div v-else class="d-body"><p class="d-nodata">Not available yet.</p></div>
+        <div v-else class="d-body">
+          <p class="d-nodata">{{ acct.key === 'system' && groups.loaded && !groups.selectedId ? 'No strategy group exists yet.' : 'Not available yet.' }}</p>
+        </div>
 
         <!-- manual trade form (practice account only) -->
         <div class="d-foot" v-if="acct.key === 'mine'">
@@ -80,11 +85,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
-import { getSimAccount, placeSimTrade } from '../api/sim'
+import { getGroupAccount, getSimAccount, placeSimTrade } from '../api/sim'
+import GroupSelector from '@/components/common/GroupSelector.vue'
+import { useStrategyGroupsStore } from '@/stores/strategyGroups'
 
 const toast = useToast()
+const groups = useStrategyGroupsStore()
 const mine = ref(null)
 const system = ref(null)
 const loading = ref(false)
@@ -94,7 +102,7 @@ const form = ref({ symbol: '', qty: null, stop: null })
 
 const panels = computed(() => [
   { key: 'mine', title: 'My practice account', data: mine.value },
-  { key: 'system', title: '对照 · system account', data: system.value },
+  { key: 'system', title: `${groups.selected?.name ?? '—'} · strategy account`, data: system.value },
 ])
 
 const equityOf = a => {
@@ -122,14 +130,21 @@ const curvePoints = curve => {
 async function load() {
   loading.value = true
   error.value = false
+  let groupId = null
   try {
-    const { data } = await getSimAccount()
-    mine.value = data.mine
-    system.value = data.system
+    await groups.ensureLoaded()
+    groupId = groups.selectedId
+    if ((system.value?.group_id ?? null) !== groupId) system.value = null
+    const [own, group] = await Promise.all([
+      getSimAccount(),
+      groupId ? getGroupAccount(groupId) : Promise.resolve(null),
+    ])
+    mine.value = own.data.mine
+    if (groupId === groups.selectedId) system.value = group?.data ?? null
   } catch (e) {
-    error.value = true
+    if (groupId === groups.selectedId) error.value = true
   } finally {
-    loading.value = false
+    if (groupId === groups.selectedId) loading.value = false
   }
 }
 
@@ -164,10 +179,12 @@ async function sell(p) {
 }
 
 onMounted(load)
+watch(() => groups.selectedId, (id, prev) => { if (prev != null) load() })
 </script>
 
 <style scoped>
 /* Shared page chrome (.jd-page-head, .d-head, …) lives in assets/main.css. */
+.head-actions { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .acct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }
 /* Padding lives here (not on the global .d-foot) — Recommendations' .d-foot
    gets its padding from the inner .d-reason instead. */

@@ -1,7 +1,8 @@
 """Sim-ledger API (R1-7 backend half, Direction v3).
 
-  GET  /sim/recommendations   latest recommendation feed (shortlist + phase)
-  GET  /sim/account           the caller's practice account + the 对照账户 view
+  GET  /sim/recommendations   one strategy group's latest feed (shortlist + phase)
+  GET  /sim/account           the caller's practice account
+  GET  /sim/group-account     one strategy group's account (read-only view)
   POST /sim/trade             manual practice trade (buy/sell) on the caller's
                               own account — the "自己 vs 系统" learning loop
 Auth-only (CurrentUser) — the 2026-07-01 /decisions 403 lesson: never gate a
@@ -10,20 +11,24 @@ dashboard read behind an admin permission.
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from quant.engine.strategies import V1_COMPOSITE_KEY, get_spec
+
 from app.dependencies import DB, CurrentUser
 from app.modules.market.finnhub_client import FinnhubClient
-from app.modules.simledger.models import AccountSnapshot, Recommendation
+from app.modules.simledger.models import AccountSnapshot, Recommendation, SimAccount
 from app.modules.simledger.service import (InsufficientCash, SimLedgerService,
                                            SimLedgerError)
 from app.modules.simledger import cycles
+from app.modules.strategy_groups.service import _require_group
 
 router = APIRouter(prefix="/sim", tags=["Sim ledger"])
 
@@ -52,6 +57,17 @@ def oos_badge() -> dict:
                       "quant.research.r09 --fixed-oos"}
 
 
+def _group_badge(group) -> dict | None:
+    """The fixed-OOS badge describes the v1 chain at its deployed params only;
+    any other group (another strategy, or v1 with changed params) gets none."""
+    if group.strategy_key != V1_COMPOSITE_KEY:
+        return None
+    deployed = get_spec(V1_COMPOSITE_KEY).default_params()
+    if json.dumps(group.params_json, sort_keys=True) != json.dumps(deployed, sort_keys=True):
+        return None
+    return oos_badge()
+
+
 class TradeRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     side: Literal["buy", "sell"]
@@ -62,24 +78,30 @@ class TradeRequest(BaseModel):
 
 @router.get("/recommendations")
 async def recommendations(user: CurrentUser, db: DB = None,
+                          group_id: UUID = Query(...),
                           for_date: date | None = Query(default=None)):
-    """Latest published feed (defaults to the newest trade_date). Phase wording
-    is DESCRIPTIVE by design — see the G1 report §3.2."""
+    """A group's latest published feed (defaults to its newest trade_date).
+    Phase wording is DESCRIPTIVE by design — see the G1 report §3.2."""
+    group = await _require_group(db, group_id)
+    head = {"group_id": str(group.id), "group_name": group.name,
+            "oos_badge": _group_badge(group)}
     td = for_date
     if td is None:
         td = (await db.execute(
             select(Recommendation.trade_date)
+            .where(Recommendation.group_id == group.id)
             .order_by(Recommendation.trade_date.desc()).limit(1)
         )).scalar_one_or_none()
     if td is None:
-        return {"trade_date": None, "oos_badge": oos_badge(), "items": []}
+        return {"trade_date": None, **head, "items": []}
     rows = list((await db.execute(
-        select(Recommendation).where(Recommendation.trade_date == td)
+        select(Recommendation).where(Recommendation.group_id == group.id,
+                                     Recommendation.trade_date == td)
         .order_by(Recommendation.shortlist_rank.nulls_last(),
                   Recommendation.confidence.desc())
     )).scalars().all())
     return {
-        "trade_date": td, "oos_badge": oos_badge(),
+        "trade_date": td, **head,
         "items": [{
             "symbol": r.symbol, "rank": r.shortlist_rank,
             "direction": r.direction, "confidence": float(r.confidence),
@@ -112,15 +134,20 @@ async def _account_payload(db, account) -> dict:
 
 @router.get("/account")
 async def account(user: CurrentUser, db: DB = None):
-    """The caller's own practice account (created on first use) plus the
-    system 对照账户 (read-only view) for the '自己 vs 系统' comparison."""
+    """The caller's own practice account (created on first use). The system
+    side of '自己 vs 系统' is per strategy group: /sim/group-account."""
     mine = await SimLedgerService.get_or_create_account(db, user.id, "practice")
-    system = await SimLedgerService.system_account(db)
     await db.commit()
-    return {
-        "mine": await _account_payload(db, mine),
-        "system": await _account_payload(db, system) if system else None,
-    }
+    return {"mine": await _account_payload(db, mine)}
+
+
+@router.get("/group-account")
+async def group_account(user: CurrentUser, db: DB = None,
+                        group_id: UUID = Query(...)):
+    group = await _require_group(db, group_id)
+    acct = await db.get(SimAccount, group.sim_account_id)
+    return {**await _account_payload(db, acct),
+            "group_id": str(group.id), "group_name": group.name}
 
 
 @router.post("/trade")

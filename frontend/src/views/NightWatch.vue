@@ -1,12 +1,20 @@
 <template>
   <div class="jd-page">
     <!-- Header -->
-    <div>
-      <h1 class="text-3xl font-bold mb-1">深夜股票检测 <span style="color: var(--jd-text-muted); font-size: 0.6em; font-weight: 400">Night Watch</span></h1>
-      <p class="text-sm" style="color: var(--jd-text-muted)">
-        The G2 paper-observation run, one row per US session — signal output, system-account orders, LLM cost, equity.
-        <span style="color: var(--jd-text-faint)">Read-only view over what the cycles already record.</span>
-      </p>
+    <div class="jd-page-head" style="margin-bottom:0">
+      <div>
+        <h1 class="text-3xl font-bold mb-1">深夜股票检测 <span style="color: var(--jd-text-muted); font-size: 0.6em; font-weight: 400">Night Watch</span></h1>
+        <p class="text-sm" style="color: var(--jd-text-muted)">
+          The G2 paper-observation run for group <b>{{ groups.selected?.name || '—' }}</b>, one row per US session — signal output, the group account's orders, LLM cost, equity.
+          <span style="color: var(--jd-text-faint)">Read-only view over what the cycles already record.</span>
+        </p>
+      </div>
+      <GroupSelector />
+    </div>
+
+    <div v-if="groups.loaded && !groups.selectedId" class="jd-empty">
+      <i class="pi pi-moon"></i>
+      <p>No strategy group exists yet.</p>
     </div>
 
     <!-- Safety banner -->
@@ -21,9 +29,9 @@
     </div>
 
     <!-- Now panel: cycle heartbeats -->
-    <div class="jd-card">
+    <div v-if="groups.selectedId" class="jd-card">
       <div class="jd-card-header flex-header">
-        <h2 class="jd-card-title">Cycles — last beat</h2>
+        <h2 class="jd-card-title">Cycles — last beat (platform)</h2>
         <div class="header-right">
           <span class="update-text">{{ loading ? 'Loading…' : `${nights.length} nights` }}</span>
           <button class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="loading" @click="load">
@@ -44,7 +52,7 @@
     </div>
 
     <!-- Per-night table -->
-    <div class="jd-card">
+    <div v-if="groups.selectedId" class="jd-card">
       <div class="jd-card-header"><h2 class="jd-card-title">Nights</h2></div>
       <div class="jd-card-body">
         <DataTable
@@ -105,9 +113,9 @@
       </div>
     </div>
 
-    <!-- System-account orders, flattened -->
-    <div class="jd-card">
-      <div class="jd-card-header"><h2 class="jd-card-title">System-account orders (对照账户)</h2></div>
+    <!-- Group-account orders, flattened -->
+    <div v-if="groups.selectedId" class="jd-card">
+      <div class="jd-card-header"><h2 class="jd-card-title">Orders — {{ groups.selected?.name }}</h2></div>
       <div class="jd-card-body">
         <DataTable
           :columns="orderColumns"
@@ -149,15 +157,20 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import DataTable from '@/components/common/DataTable.vue'
+import GroupSelector from '@/components/common/GroupSelector.vue'
 import { getNightWatchLog } from '@/api/nightwatch'
+import { useStrategyGroupsStore } from '@/stores/strategyGroups'
+
+const groups = useStrategyGroupsStore()
 
 const nightsRaw = ref([])
 const heartbeats = ref([])
 const safety = ref(null)
 const loading = ref(false)
 const error = ref(null)
+let shownGroupId = null
 
 const safetyActive = computed(() =>
   safety.value && (safety.value.halted || safety.value.paused_until))
@@ -184,7 +197,7 @@ const columns = [
   { key: 'entries_filled', header: 'Entries', sortable: true, align: 'center' },
   { key: 'exits_filled', header: 'Exits', sortable: true, align: 'center' },
   { key: 'orders_rejected', header: 'Rejected', sortable: true, align: 'center' },
-  { key: 'llmText', header: 'LLM (calls · $)', align: 'right' },
+  { key: 'llmText', header: 'LLM (platform · calls · $)', align: 'right' },
   { key: 'equity', header: 'EOD equity', sortable: true, align: 'right' },
 ]
 
@@ -228,17 +241,35 @@ const beatClass = (h) => {
 async function load() {
   loading.value = true
   error.value = null
+  let groupId = null
   try {
-    const { data } = await getNightWatchLog(30)
+    await groups.ensureLoaded()
+    if (groups.error) {
+      error.value = groups.error
+      return
+    }
+    groupId = groups.selectedId
+    if (shownGroupId !== groupId) {
+      nightsRaw.value = []
+      heartbeats.value = []
+      safety.value = null
+      shownGroupId = groupId
+    }
+    if (!groupId) return
+    const { data } = await getNightWatchLog(groupId, 30)
+    if (groupId !== groups.selectedId) return
     nightsRaw.value = data.nights || []
     heartbeats.value = data.now?.heartbeats || []
     safety.value = data.now?.safety || null
   } catch (e) {
-    error.value = e?.response?.data?.detail || 'Failed to load night-watch log'
+    if (groupId === groups.selectedId) {
+      error.value = e?.response?.data?.detail || 'Failed to load night-watch log'
+    }
   } finally {
-    loading.value = false
+    if (groupId === groups.selectedId) loading.value = false
   }
 }
 
 onMounted(load)
+watch(() => groups.selectedId, (id, prev) => { if (prev != null) load() })
 </script>

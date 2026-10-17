@@ -4,11 +4,14 @@
     <div class="jd-page-head">
       <div>
         <h1 class="jd-h1">Recommendations</h1>
-        <p class="jd-sub">Deterministic engine picks for {{ feed.trade_date || '—' }} · phase reads are <b>descriptive of the current state, not predictions</b></p>
+        <p class="jd-sub">Group <b>{{ groups.selected?.name || '—' }}</b> · engine picks for {{ feed.trade_date || '—' }} · phase reads are <b>descriptive of the current state, not predictions</b></p>
       </div>
-      <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="loading" @click="load">
-        <i class="pi pi-refresh"></i> Refresh
-      </button>
+      <div class="head-actions">
+        <GroupSelector />
+        <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="loading" @click="load">
+          <i class="pi pi-refresh"></i> Refresh
+        </button>
+      </div>
     </div>
 
     <!-- The honest scoreboard badge -->
@@ -22,6 +25,11 @@
     <div v-if="error" class="jd-decision nogo" style="padding:24px 22px" role="alert">
       <div class="jd-take" style="margin-bottom:6px"><b>Could not load the feed.</b></div>
       <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" @click="load">Try again</button>
+    </div>
+
+    <div v-else-if="groups.loaded && !groups.selectedId" class="jd-empty">
+      <i class="pi pi-inbox"></i>
+      <p>No strategy group exists yet.</p>
     </div>
 
     <div v-else-if="loading && !feed.items.length" class="scope-grid" aria-hidden="true">
@@ -87,11 +95,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getRecommendations } from '../api/sim'
+import GroupSelector from '@/components/common/GroupSelector.vue'
+import { useStrategyGroupsStore } from '@/stores/strategyGroups'
 
 const router = useRouter()
+const groups = useStrategyGroupsStore()
 const feed = ref({ trade_date: null, oos_badge: null, items: [] })
 const loading = ref(false)
 const error = ref(false)
@@ -109,20 +120,28 @@ const openSymbol = s => router.push(`/market/${encodeURIComponent(s)}`)
 async function load() {
   loading.value = true
   error.value = false
+  let groupId = null
   try {
-    const { data } = await getRecommendations()
-    feed.value = data
+    await groups.ensureLoaded()
+    if (groups.error) throw new Error(groups.error)
+    groupId = groups.selectedId
+    if (feed.value.group_id !== groupId) feed.value = { trade_date: null, oos_badge: null, items: [] }
+    if (!groupId) return
+    const { data } = await getRecommendations(groupId)
+    if (groupId === groups.selectedId) feed.value = data
   } catch (e) {
-    error.value = true
+    if (groupId === groups.selectedId) error.value = true
   } finally {
-    loading.value = false
+    if (groupId === groups.selectedId) loading.value = false
   }
 }
 onMounted(load)
+watch(() => groups.selectedId, (id, prev) => { if (prev != null) load() })
 </script>
 
 <style scoped>
 /* Shared page chrome (.jd-page-head, .d-head, …) lives in assets/main.css. */
+.head-actions { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 14px; }
 .jd-decision.skeleton { padding: 20px; display: flex; flex-direction: column; gap: 12px; cursor: default; animation: sk 1.6s ease-in-out infinite; }
 .sk { border-radius: 6px; background: var(--jd-card-hover); }
