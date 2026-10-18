@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -24,6 +24,7 @@ from app.tasks import news_tasks
 from tests._pg_rollback import pg_session_rollback  # noqa: F401
 
 RELEVANT = {"ZQXA": (1, "shortlist")}
+COUNTED = (NewsItem, NewsItemSource)
 
 
 def _iso(dt: datetime) -> str:
@@ -68,6 +69,7 @@ async def cycle(pg_session_rollback, monkeypatch):
     db.add(Security(code="ZQXA", asset_type="stock", tradable=True,
                     first_seen=date(2026, 1, 2), last_seen=date(2026, 10, 16)))
     await db.flush()
+    db.info["baseline"] = {model: await _count(db, model) for model in COUNTED}
 
     @asynccontextmanager
     async def session_local():
@@ -116,8 +118,22 @@ async def _origins(db) -> list[tuple[str, str]]:
     return sorted((await db.execute(select(NewsItem.origin, NewsItem.status))).all())
 
 
+async def _count(db, model) -> int:
+    return (await db.execute(select(func.count()).select_from(model))).scalar()
+
+
+async def _added(db, model) -> int:
+    return await _count(db, model) - db.info["baseline"][model]
+
+
+async def _start_with_no_news(db) -> None:
+    """First-tick tests need an empty news table; the delete rolls back with the fixture."""
+    await db.execute(delete(NewsItem))
+
+
 @pytest.mark.asyncio
 async def test_first_tick_is_backfill_then_live(cycle):
+    await _start_with_no_news(cycle.db)
     now = datetime.now(timezone.utc)
     old = [_raw(1, now - timedelta(hours=48)), _raw(2, now - timedelta(hours=1))]
     fresh = [_raw(3, now + timedelta(minutes=5))]
@@ -141,6 +157,7 @@ async def test_first_tick_is_backfill_then_live(cycle):
 
 @pytest.mark.asyncio
 async def test_truncated_backfill_stays_backfill_on_later_ticks(cycle):
+    await _start_with_no_news(cycle.db)
     now = datetime.now(timezone.utc)
     oldest = [_raw(i, now - timedelta(hours=70 - i)) for i in range(1, 4)]
     newer = [_raw(i, now - timedelta(hours=30 - i)) for i in range(4, 7)]
@@ -196,7 +213,7 @@ async def test_fetch_error_is_recorded_without_raising(cycle):
     assert meta["fetch_error"] == "URLError: x" and meta["truncated"] is True
     assert {k: meta[k] for k in ("fetched", "new", "merged", "updated")} == dict.fromkeys(
         ("fetched", "new", "merged", "updated"), 0)
-    assert (await cycle.db.execute(select(func.count()).select_from(NewsItem))).scalar() == 0
+    assert await _added(cycle.db, NewsItem) == 0
 
 
 @pytest.mark.asyncio
@@ -212,7 +229,7 @@ async def test_partial_page_is_kept_and_not_duplicated_next_tick(cycle):
     assert await news_tasks._news_cycle() == "ok"
     second = await _meta(cycle.db)
     assert (second["new"], second["updated"], second["fetch_error"]) == (1, 2, None)
-    assert (await cycle.db.execute(select(func.count()).select_from(NewsItemSource))).scalar() == 3
+    assert await _added(cycle.db, NewsItemSource) == 3
 
 
 @pytest.mark.asyncio
@@ -244,7 +261,7 @@ async def test_malformed_article_does_not_wedge_the_cycle(cycle):
     assert await news_tasks._news_cycle() == "ok"
     meta = await _meta(cycle.db)
     assert (meta["fetched"], meta["new"], meta["invalid"]) == (3, 2, 1)
-    assert (await cycle.db.execute(select(func.count()).select_from(NewsItem))).scalar() == 2
+    assert await _added(cycle.db, NewsItem) == 2
 
 
 @pytest.mark.asyncio
@@ -257,4 +274,4 @@ async def test_database_rejected_article_does_not_wedge_the_cycle(cycle, monkeyp
     assert await news_tasks._news_cycle() == "ok"
     meta = await _meta(cycle.db)
     assert (meta["fetched"], meta["new"], meta["invalid"]) == (3, 2, 1)
-    assert (await cycle.db.execute(select(func.count()).select_from(NewsItem))).scalar() == 2
+    assert await _added(cycle.db, NewsItem) == 2
