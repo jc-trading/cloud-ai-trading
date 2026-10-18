@@ -30,12 +30,15 @@
         </div>
       </div>
     </div>
+
+    <NotificationSettings v-if="authStore.isAdmin" />
   </div>
 </template>
 
 <script setup>
 import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import NotificationSettings from '@/components/notifications/NotificationSettings.vue'
 
 const authStore = useAuthStore()
 const user = computed(() => authStore.user)

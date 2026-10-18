@@ -79,6 +79,8 @@ services:
       ALPACA_MODE: ${ALPACA_MODE:-paper}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_APP_PASSWORD: ${SMTP_APP_PASSWORD:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -133,6 +135,13 @@ services:
       ALPACA_MODE: ${ALPACA_MODE:-paper}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_APP_PASSWORD: ${SMTP_APP_PASSWORD:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      CLAUDE_CLI_MODEL: ${CLAUDE_CLI_MODEL:-haiku}
+      CLAUDE_CLI_DAILY_CAP: ${CLAUDE_CLI_DAILY_CAP:-300}
+      CLAUDE_CLI_TIMEOUT_SECONDS: ${CLAUDE_CLI_TIMEOUT_SECONDS:-60}
+      DISABLE_AUTOUPDATER: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -186,6 +195,8 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_APP_PASSWORD: ${SMTP_APP_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -261,7 +261,7 @@ def test_entry_cycle_fails_closed_without_recommendations(monkeypatch):
     monkeypatch.setattr(cycles, "run_entries", fake_run_entries)
     notes = []
 
-    async def fake_notify(msg):
+    async def fake_notify(msg, *_a, **_kw):
         notes.append(msg)
 
     monkeypatch.setattr(quant_tasks, "_notify", fake_notify)
@@ -337,7 +337,7 @@ def test_signal_cycle_fails_closed_on_sync_failures(monkeypatch):
     monkeypatch.setattr(cycles, "store_recommendations", fake_store)
     notes = []
 
-    async def fake_notify(msg):
+    async def fake_notify(msg, *_a, **_kw):
         notes.append(msg)
 
     monkeypatch.setattr(quant_tasks, "_notify", fake_notify)
@@ -397,7 +397,7 @@ def test_signal_cycle_syncs_corporate_actions_before_bars(monkeypatch):
     monkeypatch.setattr(SimLedgerService, "get_open_positions", staticmethod(fake_positions))
     monkeypatch.setattr(cycles, "update_protections", fake_protections)
 
-    async def fake_notify(msg):
+    async def fake_notify(msg, *_a, **_kw):
         pass
 
     monkeypatch.setattr(quant_tasks, "_notify", fake_notify)
@@ -467,7 +467,7 @@ def _signal_cycle_with(monkeypatch, batch, *, exits=None, marks=None,
     monkeypatch.setattr(SimLedgerService, "snapshot", staticmethod(fake_snapshot))
     notes = []
 
-    async def fake_notify(msg):
+    async def fake_notify(msg, *_a, **_kw):
         notes.append(msg)
 
     monkeypatch.setattr(quant_tasks, "_notify", fake_notify)

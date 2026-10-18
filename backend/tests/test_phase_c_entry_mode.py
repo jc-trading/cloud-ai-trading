@@ -437,7 +437,7 @@ def wired(monkeypatch):
     async def fake_state(db, acct, **kw):
         return None
 
-    async def fake_notify(msg):
+    async def fake_notify(msg, *_a, **_kw):
         notes.append(msg)
         return True
 
@@ -510,7 +510,7 @@ def test_a_failed_alert_does_not_burn_the_day(wired, monkeypatch):
     Telegram failure — exactly when it matters (watchdog._alert's rule)."""
     outcomes = [False, True, True]
 
-    async def _flaky(msg):
+    async def _flaky(msg, *_a, **_kw):
         wired.notes.append(msg)
         return outcomes.pop(0)
 

@@ -16,7 +16,8 @@ Row semantics — everything is anchored on the US SESSION DATE (ET):
     (entries in RTH, exits from the daily exit pass).
   - llm: cost booked on that ET date (the nightly explanation calls — these
     describe the NEXT session's recs; this is a daily cost ledger, not a
-    per-recset attribution).
+    per-recset attribution). cost_usd is API spend only; Claude CLI calls on
+    the subscription are reported separately as subscription_est_usd.
   - equity: the group account's end-of-day snapshot, when one exists.
 A session with no recommendations shows recs=0 — either the Mac was offline
 (no signal run) or the A2 fail-closed gate suppressed publishing; the
@@ -33,7 +34,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from app.dependencies import DB, CurrentUser
 from app.modules.llm.models import LLMCall
@@ -62,7 +63,7 @@ def _night(nights: dict, d) -> dict:
                        "explained": 0, "shortlist": []},
             "orders": [],
             "entries_filled": 0, "exits_filled": 0, "orders_rejected": 0,
-            "llm": {"calls": 0, "cost_usd": 0.0},
+            "llm": {"calls": 0, "cost_usd": 0.0, "subscription_est_usd": 0.0},
             "equity": None, "open_positions": None,
         }
     return nights[key]
@@ -148,12 +149,16 @@ async def nightwatch_log(user: CurrentUser, db: DB = None,
     et_day = func.date(func.timezone("America/New_York", C.created_at))
     llm_agg = (await db.execute(
         select(et_day.label("day"), func.count().label("calls"),
-               func.coalesce(func.sum(C.cost_usd), 0).label("cost_usd"))
+               func.coalesce(func.sum(case((C.billing == "api", C.cost_usd), else_=0)),
+                             0).label("cost_usd"),
+               func.coalesce(func.sum(case((C.billing == "subscription", C.cost_usd),
+                                           else_=0)), 0).label("subscription_est_usd"))
         .where(C.created_at >= since).group_by(et_day)
     )).all()
-    for day, calls, cost_usd in llm_agg:
+    for day, calls, cost_usd, subscription_est_usd in llm_agg:
         _night(nights, day)["llm"] = {
             "calls": int(calls), "cost_usd": _f(cost_usd) or 0.0,
+            "subscription_est_usd": _f(subscription_est_usd) or 0.0,
         }
 
     # --- "now" panel ----------------------------------------------------

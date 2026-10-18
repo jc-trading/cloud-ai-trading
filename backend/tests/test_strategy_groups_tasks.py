@@ -138,7 +138,7 @@ def _beats(factory, name):
 def notes(monkeypatch):
     out = []
 
-    async def fake_notify(msg):
+    async def fake_notify(msg, *_a, **_kw):
         out.append(msg)
         return True
 

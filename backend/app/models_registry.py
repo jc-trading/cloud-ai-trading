@@ -37,6 +37,11 @@ from app.modules.market.models import (  # noqa: F401
     SecurityShareFact,
 )
 from app.modules.strategy_groups.models import StrategyGroup  # noqa: F401
+from app.modules.notifications.models import (  # noqa: F401
+    NotificationChannel,
+    NotificationLog,
+    NotificationRule,
+)
 
 __all__ = [
     "Base",
@@ -58,4 +63,7 @@ __all__ = [
     "Security",
     "SecurityShareFact",
     "StrategyGroup",
+    "NotificationChannel",
+    "NotificationRule",
+    "NotificationLog",
 ]

@@ -274,7 +274,7 @@ def _wire(monkeypatch, db, *, now=_utc(19, 0, 0)):
     monkeypatch.setattr(quant_tasks, "signal_cycle", _Stub())
     notes = []
 
-    async def fake_notify(msg):
+    async def fake_notify(msg, *_a, **_kw):
         notes.append(msg)
         return True
 

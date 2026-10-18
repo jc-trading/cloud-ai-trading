@@ -27,6 +27,7 @@ from app.modules.nightwatch.router import router as nightwatch_router
 from app.modules.strategy_groups.router import router as strategy_groups_router
 from app.modules.system.routes import router as system_router
 from app.modules.admin.router import router as admin_router
+from app.modules.notifications.router import router as notifications_router
 
 settings = get_settings()
 
@@ -135,6 +136,7 @@ app.include_router(nightwatch_router, prefix=settings.API_V1_PREFIX)
 app.include_router(strategy_groups_router, prefix=settings.API_V1_PREFIX)
 app.include_router(system_router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
+app.include_router(notifications_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/api/health")

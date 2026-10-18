@@ -14,7 +14,7 @@ into total-calls / total-tokens / total-USD tiles.
 from uuid import uuid4
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Integer, Numeric, String, Text, func,
+    Boolean, CheckConstraint, Column, DateTime, Integer, Numeric, String, Text, func, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -51,3 +51,13 @@ class LLMCall(Base):
     success = Column(Boolean, nullable=False, server_default="true")
     error = Column(Text, nullable=True)
     request_id = Column(String(80), nullable=True)
+    # api = provider-billed spend; subscription = Claude CLI on the Max plan,
+    # whose cost_usd is only the CLI's estimate
+    billing = Column(String(20), nullable=False, server_default=text("'api'"))
+
+    __table_args__ = (
+        CheckConstraint("billing IN ('api','subscription')", name="ck_llm_call_billing"),
+    )
+    # why: no RETURNING of server defaults on INSERT, so a row that never sets
+    # billing still inserts into a pre-021 llm_calls table
+    __mapper_args__ = {"eager_defaults": False}

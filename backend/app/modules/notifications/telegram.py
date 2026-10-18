@@ -33,6 +33,8 @@ class TelegramNotifier:
         self.bot_token = bot_token or settings.TELEGRAM_BOT_TOKEN
         self.chat_id = chat_id or settings.TELEGRAM_CHAT_ID
         self.api_url = f"https://api.telegram.org/bot{self.bot_token}"
+        self.last_attempts = 0
+        self.last_error: Optional[str] = None
 
     async def send_message(self, message: str, parse_mode: Optional[str] = "Markdown") -> bool:
         """
@@ -51,7 +53,10 @@ class TelegramNotifier:
         Returns:
             True if successful, False otherwise
         """
+        self.last_attempts = 0
+        self.last_error = None
         if not self.bot_token or not self.chat_id:
+            self.last_error = "telegram credentials not configured"
             logger.warning(
                 "Telegram credentials not configured. "
                 "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
@@ -66,6 +71,7 @@ class TelegramNotifier:
             payload["parse_mode"] = parse_mode
 
         for attempt in range(1, SEND_ATTEMPTS + 1):
+            self.last_attempts = attempt
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -75,13 +81,16 @@ class TelegramNotifier:
                     ) as response:
                         if response.status == 200:
                             logger.info(f"Telegram message sent: {message[:50]}...")
+                            self.last_error = None
                             return True
+                        self.last_error = f"HTTP {response.status}: {(await response.text())[:300]}"
                         logger.error(
                             f"Telegram API error (attempt {attempt}/"
                             f"{SEND_ATTEMPTS}): {response.status} - "
                             f"{await response.text()}"
                         )
             except Exception as e:
+                self.last_error = f"{type(e).__name__}: {e}".replace(self.bot_token, "***")
                 logger.error(
                     f"Failed to send Telegram message (attempt {attempt}/"
                     f"{SEND_ATTEMPTS}): {e}"

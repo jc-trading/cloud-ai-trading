@@ -214,7 +214,7 @@ async def test_worker_alerts_but_never_refuses_to_start(rejecting_db, monkeypatc
     on the constants it already fell back to."""
     sent = []
 
-    async def _notify(message):
+    async def _notify(message, *_a, **_kw):
         sent.append(message)
         return True
 
@@ -228,7 +228,7 @@ async def test_worker_alerts_but_never_refuses_to_start(rejecting_db, monkeypatc
 async def test_worker_is_silent_when_settings_are_legal(stub_db, monkeypatch):
     sent = []
 
-    async def _notify(message):
+    async def _notify(message, *_a, **_kw):
         sent.append(message)
         return True
 

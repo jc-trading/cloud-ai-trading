@@ -29,7 +29,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.celery_database import CeleryAsyncSessionLocal
 from app.modules.market.finnhub_client import FinnhubClient
-from app.modules.notifications import TelegramNotifier
+from app.modules.notifications.service import notify
 from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, Recommendation
 from app.modules.simledger.service import SimLedgerService
@@ -41,14 +41,12 @@ logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 
 
-async def _notify(message: str) -> bool:
-    """Event notification — never lets a Telegram failure break the cycle."""
+async def _notify(message: str, *, event: str, severity: str) -> bool:
+    """Event notification — never lets a delivery failure break the cycle."""
     try:
-        # Plain text: messages carry dynamic names (signal_cycle, symbols)
-        # whose _ would 400 Telegram's Markdown parser; no formatting is used.
-        return bool(await TelegramNotifier().send_message(message, parse_mode=None))
+        return bool(await notify(event, severity, {"text": message}))
     except Exception:
-        logger.warning("telegram notify failed", exc_info=True)
+        logger.warning("notify failed", exc_info=True)
         return False
 
 
@@ -237,7 +235,8 @@ def position_cycle():
             for rt, closed in per_group:
                 label = _label(runtimes, rt)
                 if closed:
-                    await _notify(f"{label}🛑 对照账户 stop exit: {', '.join(closed)}")
+                    await _notify(f"{label}🛑 对照账户 stop exit: {', '.join(closed)}",
+                                  event="stop_hit", severity="warning")
                 results.append(label + (f"closed: {closed}" if closed else "no breaches"))
             return "; ".join(results)
     try:
@@ -392,7 +391,8 @@ def entry_cycle():
             settings = memo.get("eff")
             if settings is not None and settings.rejected:
                 await _notify("⚠️ master_settings 有非法行（只允许收紧）— 该项用常量: "
-                              + "; ".join(settings.rejected))
+                              + "; ".join(settings.rejected),
+                              event="config_rejected", severity="warning")
             for rt, out in outcomes:
                 label = _label(runtimes, rt)
                 if out.missing and out.alerted_on != str(today):
@@ -401,13 +401,15 @@ def entry_cycle():
                     # day's alert to one failed send, which is when it matters most
                     sent = await _notify(
                         f"{label}⛔ 对照账户 open_once fail-closed: 拿不到 09:30 开盘价, "
-                        f"今天不进这些票: {', '.join(out.missing)}")
+                        f"今天不进这些票: {', '.join(out.missing)}",
+                        event="data_fail_closed", severity="critical")
                     if sent:
                         await _stamp_open_price_alert(
                             db, today, None if single else rt.group.name)
                 if out.booked:
                     await _notify(f"{label}📈 对照账户 entries booked: "
-                                  f"{', '.join(out.booked)}")
+                                  f"{', '.join(out.booked)}",
+                                  event="fill_entry", severity="info")
             return "; ".join(_label(runtimes, rt) + out.result for rt, out in outcomes)
     try:
         return _run_async(_do())
@@ -625,10 +627,12 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                     if sync_fail_closed:
                         await _notify("⛔ signal_cycle fail-closed: bar sync failed for "
                                       f"{failed}/{len(sync_set)} symbols — no "
-                                      "recommendations published for the next session")
+                                      "recommendations published for the next session",
+                                      event="data_fail_closed", severity="critical")
                     elif refused_issues:
                         await _notify("⛔ signal_cycle fail-closed: "
-                                      + "; ".join(refused_issues))
+                                      + "; ".join(refused_issues),
+                                      event="data_fail_closed", severity="critical")
                     return f"no strategy groups: synced={synced}/{len(sync_set)}"
                 if sync_fail_closed:
                     logger.error("signal_cycle fail-closed: %d/%d symbols failed "
@@ -821,31 +825,38 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                 if sync_fail_closed:
                     await _notify("⛔ signal_cycle fail-closed: bar sync failed for "
                                   f"{failed}/{len(sync_set)} symbols — no "
-                                  "recommendations published for the next session")
+                                  "recommendations published for the next session",
+                                  event="data_fail_closed", severity="critical")
                 elif rec_issues:
-                    await _notify("⛔ signal_cycle fail-closed: " + "; ".join(rec_issues))
+                    await _notify("⛔ signal_cycle fail-closed: " + "; ".join(rec_issues),
+                                  event="data_fail_closed", severity="critical")
                 if eff.rejected:
                     await _notify("⚠️ master_settings 有非法行（只允许收紧）— 该项用常量: "
-                                  + "; ".join(eff.rejected))
+                                  + "; ".join(eff.rejected),
+                                  event="config_rejected", severity="warning")
                 for rt, run in runs:
                     label = _label(runtimes, rt)
                     if run.drift:
                         await _notify(
                             f"{label}⚠️ open_once 成交价对账超 "
                             f"{cycles.OPEN_FILL_DRIFT_BPS:.0f}bps"
-                            " — 09:30 bar 与日线 open 不一致: " + "; ".join(run.drift))
+                            " — 09:30 bar 与日线 open 不一致: " + "; ".join(run.drift),
+                            event="data_warning", severity="warning")
                     if run.exits.closed:
                         await _notify(f"{label}📤 对照账户 daily exits: "
-                                      f"{', '.join(run.exits.closed)}")
+                                      f"{', '.join(run.exits.closed)}",
+                                      event="fill_exit", severity="info")
                     if run.exits.data_end:
                         await _notify(
                             f"{label}⚠️ 对照账户 data_end 强平 — no new daily bar for "
                             f"{cycles.DATA_END_STALE_SESSIONS}+ sessions, closed at the "
-                            f"last known close: {', '.join(run.exits.data_end)}")
+                            f"last known close: {', '.join(run.exits.data_end)}",
+                            event="fill_exit", severity="warning")
                     shortlist = [r["symbol"] for r in run.recs if r.get("shortlist_rank")]
                     if shortlist:
                         await _notify(f"{label}🔎 明日 shortlist: "
-                                      + ", ".join(shortlist[:10]))
+                                      + ", ".join(shortlist[:10]),
+                                      event="daily_summary", severity="info")
                 return f"recs={n} closed={closed} scanned={len(symbols)} synced={synced}/{len(sync_set)}"
         return _run_async(_do())
     except Exception:
@@ -892,7 +903,8 @@ async def _report_retry_exhausted(db, finished, retry, retry_meta, session) -> N
             meta["fail_closed"] = f"{existing}; {message}" if existing else message
             finished.meta = meta
             await db.commit()
-    if await _notify("⛔ " + message) and retry is not None:
+    if await _notify("⛔ " + message,
+                     event="data_fail_closed", severity="critical") and retry is not None:
         retry.meta = {**retry_meta, "exhausted_notified": str(session)}
         await db.commit()
 
@@ -976,7 +988,8 @@ def universe_sync():
             _run_async(_record())
         except Exception:
             logger.exception("market.universe_sync: recording the failure failed")
-        _run_async(_notify(f"⛔ universe_sync failed: {error}"))
+        _run_async(_notify(f"⛔ universe_sync failed: {error}",
+                           event="data_fail_closed", severity="critical"))
         return "error"
 
     try:
@@ -989,7 +1002,8 @@ def universe_sync():
         return failed(f"{type(exc).__name__}: {exc}")
     if report.fail_closed:
         _run_async(_notify(f"⛔ universe_sync fail-closed: {report.fail_closed} "
-                           f"(session {report.session})"))
+                           f"(session {report.session})",
+                           event="data_fail_closed", severity="warning"))
     return report.summary()
 
 
@@ -1023,10 +1037,12 @@ def eod_correction():
             if report.fail_closed:
                 await _notify("⛔ market.eod_correction fail-closed: "
                               f"{report.fail_closed} for {report.day} — no 1min "
-                              "file overwritten, rows marked stale")
+                              "file overwritten, rows marked stale",
+                              event="data_fail_closed", severity="critical")
             elif report.partial:
                 await _notify(f"⚠️ {report.day} 1min incomplete for "
-                              + ", ".join(report.partial[:10]))
+                              + ", ".join(report.partial[:10]),
+                              event="data_warning", severity="warning")
     try:
         _run_async(_do())
     except Exception:

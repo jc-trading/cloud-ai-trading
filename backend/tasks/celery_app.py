@@ -141,7 +141,7 @@ async def check_master_settings() -> list[str]:
             "master_settings validation failed: %s", detail)
         from app.tasks.quant_tasks import _notify
         await _notify("⚠️ master_settings 有非法行（只允许收紧）— worker 用常量在跑: "
-                      + detail)
+                      + detail, event="config_rejected", severity="warning")
     return problems
 
 

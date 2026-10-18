@@ -11,7 +11,7 @@ permission (the 2026-07-01 /decisions 403 lesson).
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from app.dependencies import DB, CurrentUser
 from app.modules.llm.models import LLMCall
@@ -32,6 +32,10 @@ async def llm_log(user: CurrentUser, db: DB = None,
         func.coalesce(func.sum(C.input_tokens), 0).label("input_tokens"),
         func.coalesce(func.sum(C.output_tokens), 0).label("output_tokens"),
         func.coalesce(func.sum(C.cost_usd), 0).label("cost_usd"),
+        func.coalesce(func.sum(case((C.billing == "api", C.cost_usd), else_=0)),
+                      0).label("cost_api_usd"),
+        func.coalesce(func.sum(case((C.billing == "subscription", C.cost_usd), else_=0)),
+                      0).label("cost_subscription_est_usd"),
     )
 
     all_time = (await db.execute(select(*totals))).one()
@@ -40,9 +44,9 @@ async def llm_log(user: CurrentUser, db: DB = None,
     )).one()
 
     by_model = (await db.execute(
-        select(C.model, func.count().label("calls"),
+        select(C.model, C.billing, func.count().label("calls"),
                func.coalesce(func.sum(C.cost_usd), 0).label("cost_usd"))
-        .group_by(C.model).order_by(func.sum(C.cost_usd).desc())
+        .group_by(C.model, C.billing).order_by(func.sum(C.cost_usd).desc())
     )).all()
 
     by_day = (await db.execute(
@@ -60,14 +64,15 @@ async def llm_log(user: CurrentUser, db: DB = None,
     def _tile(r):
         return {"calls": int(r.calls), "input_tokens": int(r.input_tokens),
                 "output_tokens": int(r.output_tokens),
-                "cost_usd": _f(r.cost_usd)}
+                "cost_usd": _f(r.cost_usd), "cost_api_usd": _f(r.cost_api_usd),
+                "cost_subscription_est_usd": _f(r.cost_subscription_est_usd)}
 
     return {
         "summary": {
             "all_time": _tile(all_time),
             "today": _tile(today),
-            "by_model": [{"model": m, "calls": int(c), "cost_usd": _f(cost)}
-                         for m, c, cost in by_model],
+            "by_model": [{"model": m, "billing": b, "calls": int(c), "cost_usd": _f(cost)}
+                         for m, b, c, cost in by_model],
             "by_day": [{"day": str(d), "calls": int(c), "cost_usd": _f(cost)}
                        for d, c, cost in by_day],
         },
@@ -87,5 +92,6 @@ async def llm_log(user: CurrentUser, db: DB = None,
             "latency_ms": r.latency_ms,
             "success": r.success,
             "error": r.error,
+            "billing": r.billing,
         } for r in rows],
     }

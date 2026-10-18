@@ -43,14 +43,14 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: str = "change-this-to-a-fernet-key"
 
     # AI Provider Configuration — which backend app.modules.llm.client talks to.
-    AI_PROVIDER: str = "claude"  # Options: "claude", "deepseek"
+    AI_PROVIDER: str = "claude"  # Options: "claude", "deepseek", "claude_cli"
 
     @field_validator("AI_PROVIDER")
     @classmethod
     def _validate_ai_provider(cls, v: str) -> str:
         v = v.strip().lower()
-        if v not in ("claude", "deepseek"):
-            raise ValueError("AI_PROVIDER must be 'claude' or 'deepseek'")
+        if v not in ("claude", "deepseek", "claude_cli"):
+            raise ValueError("AI_PROVIDER must be 'claude', 'deepseek' or 'claude_cli'")
         return v
 
     # Claude API
@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_MODEL: str = "deepseek-v4-flash"  # Or "deepseek-v4-pro"
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/anthropic"
+
+    # Claude Code CLI (`claude -p`) billed to the Max subscription via a
+    # `claude setup-token` OAuth token; capped per UTC day.
+    CLAUDE_CLI_PATH: str = "claude"
+    CLAUDE_CLI_MODEL: str = "haiku"
+    CLAUDE_CLI_TIMEOUT_SECONDS: float = 60.0
+    CLAUDE_CLI_DAILY_CAP: int = 300
+    CLAUDE_CODE_OAUTH_TOKEN: str = ""
 
     # Celery
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
@@ -116,6 +124,10 @@ class Settings(BaseSettings):
     # Telegram notifications
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
+
+    # SMTP notification channel (Gmail App Password)
+    SMTP_USER: str = ""
+    SMTP_APP_PASSWORD: str = ""
 
     # HALT sentinel: its EXISTENCE refuses all sim entries even when the DB is
     # down. Env-overridable so host-run dev/tests don't need /app (review #11).

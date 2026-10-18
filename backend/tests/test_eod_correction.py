@@ -50,7 +50,7 @@ def wired(monkeypatch):
     sent: list[str] = []
     beats: list[tuple[str, dict]] = []
 
-    async def _notify(message):
+    async def _notify(message, *_a, **_kw):
         sent.append(message)
 
     async def _beat(_db, name, **meta):

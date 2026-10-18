@@ -17,6 +17,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+ARG CLAUDE_CLI_VERSION=2.1.301
+RUN apt-get update -o Acquire::Retries=3 && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://claude.ai/install.sh | bash -s ${CLAUDE_CLI_VERSION} \
+    && ln -sf /root/.local/bin/claude /usr/local/bin/claude && claude --version
+
 # Copy application code
 COPY . .
 
