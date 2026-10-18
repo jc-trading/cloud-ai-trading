@@ -235,11 +235,20 @@ CLAUDE_CLI_DEFAULT_SYSTEM = "Answer concisely."
 CLAUDE_CLI_BREAKER_SECONDS = 900
 # Plan quota wording ("usage limit reached", "5-hour limit reached", "hit your
 # limit") stops the CLI for the rest of the UTC day; a transient API rate limit
-# ("rate limit reached", 429) only trips the circuit breaker.
+# ("rate limit reached", 429) only trips the circuit breaker, and a context-window
+# or output-token limit ("context limit reached") only fails that one call.
 _QUOTA_PATTERN = re.compile(
-    r"usage limit|(?<!rate[ _-])limit reached|hit your limit|quota|out of (extra )?usage",
+    r"usage limit|(?<!rate[ _-])(?<!context[ _-])(?<!window[ _-])(?<!output[ _-])"
+    r"(?<!token[ _-])(?<!tokens[ _-])limit reached|hit your limit|quota"
+    r"|out of (extra )?usage",
     re.I)
 _RATE_LIMIT_PATTERN = re.compile(r"rate.?limit|too many requests|\b429\b", re.I)
+# A rejected login or OAuth token trips the breaker and is announced once a UTC day.
+_AUTH_PATTERN = re.compile(
+    r"API Error: 401\b|authentication_error|failed to authenticate|not logged in"
+    r"|invalid api key|invalid bearer token|oauth token (?:has )?(?:been )?(?:expired|revoked)"
+    r"|please run /login",
+    re.I)
 _cli_breaker_until = 0.0
 
 
@@ -274,6 +283,22 @@ async def _cli_usage_today(db: AsyncSession) -> tuple[int, bool]:
     return int(count) + len(pending), bool(quota) or pending_quota
 
 
+async def _cli_auth_failed_today(db: AsyncSession) -> bool:
+    """Whether a claude-cli call already failed authentication today (UTC), in
+    the database or still pending in the caller's session (not autoflushed)."""
+    if any(isinstance(o, LLMCall) and o.platform == "claude-cli"
+           and (o.error or "").startswith("auth_failed") for o in db.new):
+        return True
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    with db.no_autoflush:
+        found = (await db.execute(
+            select(func.count())
+            .where(LLMCall.platform == "claude-cli", LLMCall.created_at >= start,
+                   LLMCall.error.like("auth_failed%"))
+        )).scalar_one()
+    return bool(found)
+
+
 def _open_breaker() -> None:
     global _cli_breaker_until
     _cli_breaker_until = time.monotonic() + CLAUDE_CLI_BREAKER_SECONDS
@@ -290,6 +315,20 @@ async def _notify_quota(context: str) -> None:
         logger.warning("claude-cli quota notification failed", exc_info=True)
 
 
+async def _notify_auth(context: str) -> None:
+    try:
+        from app.modules.notifications.service import notify
+
+        # why: llm_quota_exhausted is the only LLM event with a seeded route; a
+        # dedicated auth event would need a migration
+        await notify("llm_quota_exhausted", "warning", {
+            "text": f"⚠️ Claude CLI 认证失败 — LLM 调用暂停 {CLAUDE_CLI_BREAKER_SECONDS // 60} "
+                    "分钟后重试；请重新登录或更新 CLAUDE_CODE_OAUTH_TOKEN。"
+                    f"context={context}"})
+    except Exception:
+        logger.warning("claude-cli auth notification failed", exc_info=True)
+
+
 async def _call_claude_cli(db: AsyncSession, provider: Provider, skip, *, context: str,
                            prompt: str, system: str | None, symbol: str | None,
                            model: str | None) -> LLMResult:
@@ -298,8 +337,8 @@ async def _call_claude_cli(db: AsyncSession, provider: Provider, skip, *, contex
     Guarded three ways so the CLI cannot stall or overspend the nightly cycle:
     a daily call cap plus a sticky per-day stop once the CLI reports its quota
     is used up (announced once), a hard timeout that kills the whole process
-    group, and a 15-minute circuit breaker after a crash, timeout or unreadable
-    output. Never raises."""
+    group, and a 15-minute circuit breaker after a crash, timeout, unreadable
+    output or rejected login (announced once a day). Never raises."""
     if time.monotonic() < _cli_breaker_until:
         return skip("claude-cli circuit breaker open")
     try:
@@ -354,35 +393,51 @@ async def _call_claude_cli(db: AsyncSession, provider: Provider, skip, *, contex
         return _fail(f"timeout after {timeout:g}s")
 
     err_text = stderr.decode("utf-8", "replace").strip()[-500:]
+    out_text = stdout.decode("utf-8", "replace")
     try:
-        data = json.loads(stdout.decode("utf-8", "replace"))
+        data = json.loads(out_text)
         if not isinstance(data, dict):
             raise ValueError("CLI output is not a JSON object")
-    except ValueError:
-        detail = err_text or stdout.decode("utf-8", "replace").strip()[-500:]
+        usage = data.get("usage") or {}
+        model_usage = data.get("modelUsage") or {}
+        if not isinstance(usage, dict) or not isinstance(model_usage, dict):
+            raise ValueError("usage or modelUsage is not a JSON object")
+        text = data.get("result")
+        failed = proc.returncode != 0 or bool(data.get("is_error"))
+        if not isinstance(text, str) and (text is not None or not failed):
+            raise ValueError("result is not a string")
+        tokens = [int(usage.get(key) or 0) for key in (
+            "input_tokens", "output_tokens", "cache_read_input_tokens",
+            "cache_creation_input_tokens")]
+        cost = Decimal(str(data.get("total_cost_usd") or 0))
+        if not cost.is_finite():
+            raise ValueError("total_cost_usd is not a finite number")
+        top_model = max(model_usage, key=lambda k: (model_usage[k] or {}).get("costUSD")
+                        or 0) if model_usage else None
+    except (ValueError, TypeError, AttributeError, ArithmeticError, RecursionError) as exc:
+        detail = err_text or out_text.strip()[-500:]
         if _QUOTA_PATTERN.search(detail):
             return await _quota_fail(db, context, _fail, detail)
+        if _AUTH_PATTERN.search(detail):
+            return await _auth_fail(db, context, _fail, detail)
         _open_breaker()
-        return _fail(f"claude-cli exit {proc.returncode}, unreadable output: {detail}")
+        return _fail(f"claude-cli exit {proc.returncode}, unreadable output "
+                     f"({type(exc).__name__}: {exc}): {detail}")
 
-    usage = data.get("usage") or {}
-    row.input_tokens = int(usage.get("input_tokens") or 0)
-    row.output_tokens = int(usage.get("output_tokens") or 0)
-    row.cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
-    row.cache_creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
-    row.cost_usd = Decimal(str(data.get("total_cost_usd") or 0))
-    model_usage = data.get("modelUsage") or {}
-    if model_usage:
-        row.model = max(model_usage,
-                        key=lambda k: (model_usage[k] or {}).get("costUSD") or 0)[:60]
+    (row.input_tokens, row.output_tokens, row.cache_read_tokens,
+     row.cache_creation_tokens) = tokens
+    row.cost_usd = cost
+    if top_model:
+        row.model = top_model[:60]
     session_id = data.get("session_id")
     row.request_id = str(session_id)[:80] if session_id else None
 
-    text = data.get("result")
-    if proc.returncode != 0 or data.get("is_error"):
+    if failed:
         detail = str(text or err_text or f"exit {proc.returncode}")
         if _QUOTA_PATTERN.search(detail):
             return await _quota_fail(db, context, _fail, detail)
+        if _AUTH_PATTERN.search(detail):
+            return await _auth_fail(db, context, _fail, detail)
         if _RATE_LIMIT_PATTERN.search(detail):
             _open_breaker()
         return _fail(f"claude-cli error: {detail}")
@@ -401,3 +456,14 @@ async def _quota_fail(db: AsyncSession, context: str, fail, detail: str) -> LLMR
     if not already:
         await _notify_quota(context)
     return fail(f"quota_exhausted: {detail}")
+
+
+async def _auth_fail(db: AsyncSession, context: str, fail, detail: str) -> LLMResult:
+    _open_breaker()
+    try:
+        already = await _cli_auth_failed_today(db)
+    except Exception:
+        already = True
+    if not already:
+        await _notify_auth(context)
+    return fail(f"auth_failed: {detail}")

@@ -13,8 +13,11 @@ import os
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -62,6 +65,8 @@ elif mode == "error_text":
 elif mode == "garbage":
     print("Segmentation fault (core dumped)")
     sys.exit(1)
+elif mode == "raw":
+    print((here / "text").read_text())
 elif mode == "hang":
     child = subprocess.Popen(["sleep", "30"])
     (here / "pids").write_text(f"{{os.getpid()}} {{child.pid}}")
@@ -102,6 +107,12 @@ def cli(tmp_path, monkeypatch):
         return len(rows), any((r.error or "").startswith("quota_exhausted") for r in rows)
 
     monkeypatch.setattr(llm_client, "_cli_usage_today", usage_from_session)
+
+    async def auth_failed_from_session(db):
+        return any((r.error or "").startswith("auth_failed") for r in db.added
+                   if r.platform == "claude-cli")
+
+    monkeypatch.setattr(llm_client, "_cli_auth_failed_today", auth_failed_from_session)
 
     def mode(m, text=""):
         (tmp_path / "mode").write_text(m)
@@ -184,14 +195,127 @@ def test_child_env_is_an_allow_list(cli, monkeypatch):
 
 
 def test_is_error_is_a_failed_row_without_breaker(cli):
-    cli.mode("is_error")
+    cli.mode("error_text", "Something unexpected happened")
     db = _Session()
     res = _call(db)
     assert res.success is False and res.call_id is not None
     [row] = db.added
     assert row.success is False and row.billing == "subscription"
-    assert row.error.startswith("claude-cli error: Failed to authenticate")
+    assert row.error == "claude-cli error: Something unexpected happened"
     assert llm_client._cli_breaker_until == 0.0
+
+
+def _record_notify(monkeypatch):
+    sent = []
+
+    async def fake_notify(event, severity, payload):
+        sent.append((event, severity, payload["text"]))
+        return True
+
+    import app.modules.notifications.service as notif
+    monkeypatch.setattr(notif, "notify", fake_notify)
+    return sent
+
+
+def test_auth_failure_opens_the_breaker_and_notifies_once_a_day(cli, monkeypatch):
+    sent = _record_notify(monkeypatch)
+    cli.mode("is_error")
+    db = _Session()
+    res = _call(db, context="ctx-auth")
+    assert res.success is False
+    assert db.added[0].error.startswith("auth_failed: Failed to authenticate")
+    assert llm_client._cli_breaker_until > time.monotonic()
+    assert len(sent) == 1
+    event, severity, text = sent[0]
+    assert (event, severity) == ("llm_quota_exhausted", "warning")
+    assert "Claude CLI 认证失败" in text and "context=ctx-auth" in text
+
+    again = _call(db)
+    assert again.skipped and "circuit breaker" in again.error
+    assert cli.calls() == 1
+
+    monkeypatch.setattr(llm_client, "_cli_breaker_until", 0.0)
+    third = _call(db)
+    assert third.success is False and cli.calls() == 2
+    assert db.added[1].error.startswith("auth_failed:")
+    assert llm_client._cli_breaker_until > time.monotonic()
+    assert len(sent) == 1
+
+
+def test_auth_failure_in_plain_text_output_is_classified(cli, monkeypatch):
+    sent = _record_notify(monkeypatch)
+    cli.mode("raw", "Invalid API key · Please run /login")
+    db = _Session()
+    res = _call(db)
+    assert res.success is False
+    assert db.added[0].error == "auth_failed: Invalid API key · Please run /login"
+    assert llm_client._cli_breaker_until > time.monotonic()
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "Failed to authenticate. API Error: 401 Invalid bearer token",
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+    "Invalid API key · Please run /login",
+    "Not logged in · Please run /login",
+    "OAuth token has expired. Please obtain a new token or refresh your existing token.",
+    "OAuth token revoked · Please run /login",
+    'API Error: 403 {"error":{"type":"permission_error","message":"OAuth token has been revoked"}}',
+])
+def test_auth_wording_is_recognised(text):
+    assert llm_client._AUTH_PATTERN.search(text)
+    assert not llm_client._QUOTA_PATTERN.search(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Something unexpected happened",
+    "Claude AI usage limit reached|1760000000",
+    "API Error: 429 rate limit exceeded",
+    "API Error: 500 Internal server error (request req_401abc)",
+    "Context limit reached · /compact or /clear to continue",
+    "The authentication flow of the company is explained in the filing.",
+])
+def test_auth_pattern_ignores_other_errors(text):
+    assert not llm_client._AUTH_PATTERN.search(text)
+
+
+_OK = {"type": "result", "is_error": False, "result": "Fine.", "session_id": "s",
+       "total_cost_usd": 0.001, "usage": {"input_tokens": 3, "output_tokens": 2},
+       "modelUsage": {"claude-haiku-4-5-20251001": {"costUSD": 0.001}}}
+
+
+@pytest.mark.parametrize("raw", [
+    "[1, 2, 3]",
+    '"just a string"',
+    json.dumps({**_OK, "usage": [3, 2]}),
+    json.dumps({**_OK, "usage": {"input_tokens": "lots"}}),
+    json.dumps({**_OK, "usage": {"input_tokens": {"n": 1}}}),
+    json.dumps({**_OK, "total_cost_usd": "n/a"}),
+    json.dumps({**_OK, "total_cost_usd": float("nan")}),
+    json.dumps({**_OK, "modelUsage": ["claude-haiku-4-5"]}),
+    json.dumps({**_OK, "modelUsage": {"claude-haiku-4-5": "cheap"}}),
+    json.dumps({k: v for k, v in _OK.items() if k != "result"}),
+    json.dumps({**_OK, "result": {"text": "Fine."}}),
+    json.dumps({**_OK, "is_error": True, "result": {"msg": "x"}, "usage": "none"}),
+])
+def test_ill_formed_output_is_a_failed_row_that_opens_the_breaker(cli, raw):
+    cli.mode("raw", raw)
+    db = _Session()
+    res = _call(db)
+    assert res.success is False and not res.skipped
+    [row] = db.added
+    assert row.success is False
+    assert row.error.startswith("claude-cli exit 0, unreadable output")
+    assert (row.input_tokens, row.output_tokens, row.cost_usd) == (None, None, None)
+    assert llm_client._cli_breaker_until > time.monotonic()
+
+
+def test_well_formed_raw_output_still_succeeds(cli):
+    cli.mode("raw", json.dumps(_OK))
+    db = _Session()
+    res = _call(db)
+    assert res.success and res.text == "Fine."
+    assert db.added[0].model == "claude-haiku-4-5-20251001"
 
 
 def test_unreadable_output_opens_the_breaker(cli):
@@ -291,6 +415,34 @@ def test_plan_quota_wording_stops_the_day(text):
 
 
 @pytest.mark.parametrize("text", [
+    "Context limit reached · /compact or /clear to continue",
+    "context-limit reached",
+    "Context window limit reached",
+    "output token limit reached",
+    "Output limit reached",
+    "max_tokens limit reached",
+    "Prompt is too long",
+    "input length and `max_tokens` exceed context window limit",
+])
+def test_context_and_output_limits_are_not_a_quota(text):
+    assert not llm_client._QUOTA_PATTERN.search(text)
+
+
+def test_context_limit_fails_the_call_without_stopping_the_day(cli, monkeypatch):
+    sent = _record_notify(monkeypatch)
+    cli.mode("error_text", "Context limit reached · /compact or /clear to continue")
+    db = _Session()
+    res = _call(db)
+    assert res.success is False
+    assert db.added[0].error.startswith("claude-cli error: Context limit reached")
+    assert llm_client._cli_breaker_until == 0.0
+    assert sent == []
+
+    cli.mode("ok")
+    assert _call(db).success
+
+
+@pytest.mark.parametrize("text", [
     "Rate limit reached for requests",
     "Rate-limit reached, retry in 30s",
     "rate_limit reached",
@@ -321,6 +473,74 @@ def test_transient_rate_limit_fails_and_trips_only_the_breaker(cli, monkeypatch)
 
     again = _call(db)
     assert again.skipped and "circuit breaker" in again.error
+
+
+def _insert_sql(rows):
+    """Flush ``rows`` through a PostgreSQL-dialect engine whose DBAPI only
+    records the SQL it is handed — no database is contacted."""
+    statements = []
+
+    class Cursor:
+        description, rowcount = None, len(rows)
+        connection = SimpleNamespace(notices=[])
+
+        def execute(self, sql, params=None):
+            statements.append(sql)
+
+        executemany = execute
+
+        def fetchall(self):
+            raise AssertionError("the INSERT asked for RETURNING rows")
+
+        def close(self):
+            pass
+
+    class Connection:
+        def cursor(self, *a, **kw):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        rollback = close = commit
+
+    dbapi = SimpleNamespace(paramstyle="pyformat", Error=Exception,
+                            connect=lambda *a, **kw: Connection())
+    engine = create_engine("postgresql://", module=dbapi, _initialize=False)
+    assert engine.dialect.insert_returning
+    with Session(engine) as session:
+        session.add_all(rows)
+        session.flush()
+    return [s for s in statements if s.startswith("INSERT INTO llm_calls")]
+
+
+def test_llm_calls_insert_relies_on_server_defaults(cli, monkeypatch):
+    import anthropic
+
+    message = SimpleNamespace(usage=SimpleNamespace(input_tokens=3, output_tokens=2),
+                              content=[SimpleNamespace(type="text", text="ok")],
+                              _request_id="req-1")
+
+    async def create(**_kw):
+        return message
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic",
+                        lambda **_kw: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    monkeypatch.setattr(settings, "AI_PROVIDER", "claude")
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "sk-test")
+    api = _Session()
+    assert _call(api).success and _call(api).success
+
+    monkeypatch.setattr(settings, "AI_PROVIDER", "claude_cli")
+    sub = _Session()
+    assert _call(sub).success
+    cli.mode("garbage")
+    assert not _call(sub).success
+
+    [api_sql] = _insert_sql(api.added)
+    assert "billing" not in api_sql and "RETURNING" not in api_sql
+    sub_sql = _insert_sql(sub.added)
+    assert sub_sql and all("billing" in s and "RETURNING" not in s for s in sub_sql)
 
 
 def test_daily_cap_skips_without_spawning(cli, monkeypatch):
@@ -384,3 +604,37 @@ def test_usage_check_counts_pending_rows_without_flushing_them():
     (n0, _), (n1, quota), still_pending = asyncio.run(run())
     assert still_pending
     assert n1 == n0 + 1 and quota is True
+
+
+def test_auth_check_reads_pending_and_stored_rows_without_flushing():
+    """Real PostgreSQL: the auth dedup query runs against llm_calls and sees an
+    auth_failed row still pending in the caller's session."""
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.modules.llm.models import LLMCall
+
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        if os.environ.get("CAT_NO_PG") == "1":
+            pytest.skip("DATABASE_URL not set")
+        pytest.fail("DATABASE_URL not set — run `make test-backend`, or set CAT_NO_PG=1")
+
+    async def run():
+        engine = create_async_engine(url, poolclass=NullPool)
+        try:
+            async with AsyncSession(engine) as db:
+                base = await llm_client._cli_auth_failed_today(db)
+                bad = LLMCall(context=None, platform="claude-cli", model="m",
+                              error="auth_failed: test")
+                db.add(bad)
+                after = await llm_client._cli_auth_failed_today(db)
+                still_pending = bad in db.new
+                await db.rollback()
+            return base, after, still_pending
+        finally:
+            await engine.dispose()
+
+    base, after, still_pending = asyncio.run(run())
+    assert isinstance(base, bool)
+    assert after is True and still_pending

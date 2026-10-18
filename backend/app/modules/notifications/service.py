@@ -140,10 +140,10 @@ async def notify(event_type: str, severity: str, payload: dict) -> bool:
                              "sent" if outcome.ok else "failed", text, outcome))
 
     delivered = any(o.ok for o in outcomes)
-    if severity == "critical" and not delivered and channels and all(
+    if severity == "critical" and not delivered and any(
             _is_legacy_destination(c) for c in channels):
         logger.warning("notify(%s): critical not delivered; legacy fallback skipped — "
-                       "every failed channel is the env-default Telegram destination",
+                       "a failed channel is the env-default Telegram destination",
                        event_type)
     elif severity == "critical" and not delivered:
         delivered = await _legacy_telegram(text)

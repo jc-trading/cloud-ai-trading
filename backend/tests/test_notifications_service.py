@@ -450,6 +450,22 @@ def test_critical_not_retried_when_the_default_telegram_itself_failed(monkeypatc
     assert "legacy fallback skipped" in caplog.text
 
 
+def test_critical_not_retried_when_any_failed_channel_is_the_default_telegram(monkeypatch,
+                                                                           tg, caplog):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    tg.ok = False
+    gmail = _channel(name="gmail", type_="smtp", secret="SMTP_APP_PASSWORD",
+                     config={"host": "h", "port": 587, "username_env": "SMTP_USER", "to": []})
+    factory = _use(monkeypatch, _Factory([(_rule(), gmail), (_rule(), _channel())]))
+    with caplog.at_level("WARNING"):
+        assert _notify(event="data_fail_closed", severity="critical") is False
+    assert len(tg.instances) == 1 and tg.instances[0].bot_token == "tok"
+    assert [(r.channel_name, r.status) for r in factory.logs] == [
+        ("gmail", "failed"), ("telegram-default", "failed")]
+    assert "legacy fallback skipped" in caplog.text
+
+
 def test_critical_retried_when_the_failed_default_points_at_another_chat(monkeypatch, tg):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
