@@ -71,6 +71,35 @@ class Settings(BaseSettings):
     CLAUDE_CLI_DAILY_CAP: int = 300
     CLAUDE_CODE_OAUTH_TOKEN: str = ""
 
+    # News (P6/P7): Alpaca news ingestion, extraction budget and source scoring
+    NEWS_ENABLED: bool = True
+    NEWS_POLL_OVERLAP_MINUTES: int = 30
+    NEWS_BACKFILL_HOURS: int = 72
+    NEWS_MAX_PAGES_PER_TICK: int = 20
+    NEWS_HTTP_TIMEOUT_SECONDS: float = 20.0
+    NEWS_MAX_SYMBOLS: int = 5
+    NEWS_MERGE_WINDOW_HOURS: int = 12
+    NEWS_MERGE_MIN_RATIO: float = 0.92
+    NEWS_EXTRACT_MAX_AGE_HOURS: int = 36
+    NEWS_BATCH_SIZE: int = 8
+    NEWS_MAX_CALLS_PER_TICK: int = 4
+    NEWS_LLM_DAILY_BUDGET: int = 150
+    NEWS_JUDGE_DAILY_BUDGET: int = 20
+    NEWS_MAX_ATTEMPTS: int = 2
+    NEWS_REVIEW_MIN_PROB: int = 60
+    NEWS_ACTION_MIN_PROB: int = 70
+    NEWS_NOTIFY_MIN_PROB: int = 80
+    NEWS_NOTIFY_DAILY_MAX: int = 10
+    NEWS_SOURCE_MIN_N: int = 20
+    NEWS_ACTION_MIN_LIFT: float = 1.2
+    NEWS_DISABLE_BELOW_LIFT: float = 0.75
+    NEWS_DISABLE_CONSECUTIVE_DAYS: int = 3
+    NEWS_PRIOR_STRENGTH: float = 10.0
+    NEWS_PRIOR_MEAN_DEFAULT: float = 0.40
+    NEWS_PRIOR_MIN_GLOBAL_N: int = 100
+    NEWS_HIT_MIN_EXCESS_PCT: float = 1.0
+    NEWS_NODATA_GRACE_SESSIONS: int = 5
+
     # Celery
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"

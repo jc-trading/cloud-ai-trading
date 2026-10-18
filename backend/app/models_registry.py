@@ -42,6 +42,12 @@ from app.modules.notifications.models import (  # noqa: F401
     NotificationLog,
     NotificationRule,
 )
+from app.modules.news.models import (  # noqa: F401
+    NewsItem,
+    NewsItemSource,
+    NewsItemSymbol,
+    NewsSource,
+)
 
 __all__ = [
     "Base",
@@ -66,4 +72,8 @@ __all__ = [
     "NotificationChannel",
     "NotificationRule",
     "NotificationLog",
+    "NewsSource",
+    "NewsItem",
+    "NewsItemSource",
+    "NewsItemSymbol",
 ]

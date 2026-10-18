@@ -81,6 +81,9 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_APP_PASSWORD: ${SMTP_APP_PASSWORD:-}
+      NEWS_LLM_DAILY_BUDGET: ${NEWS_LLM_DAILY_BUDGET:-150}
+      NEWS_ACTION_MIN_LIFT: ${NEWS_ACTION_MIN_LIFT:-1.2}
+      NEWS_DISABLE_BELOW_LIFT: ${NEWS_DISABLE_BELOW_LIFT:-0.75}
     ports:
       - "8000:8000"
     depends_on:
@@ -162,7 +165,7 @@ services:
     restart: unless-stopped
     command: celery -A tasks.celery_app worker --loglevel=info --concurrency=2
 
-  # Bulk worker (P2): consumes ONLY the bulk queue — the nightly whole-market
+  # Bulk worker (P2): consumes ONLY the bulk and news (P6a) queues — the nightly whole-market
   # universe_sync runs up to two hours and must never take the main worker's
   # slots (signal_cycle, heartbeat). Reuses the worker image; no build.
   celery-bulk:
@@ -197,6 +200,10 @@ services:
       SEC_USER_AGENT: ${SEC_USER_AGENT:-}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_APP_PASSWORD: ${SMTP_APP_PASSWORD:-}
+      NEWS_ENABLED: ${NEWS_ENABLED:-true}
+      NEWS_LLM_DAILY_BUDGET: ${NEWS_LLM_DAILY_BUDGET:-150}
+      NEWS_ACTION_MIN_LIFT: ${NEWS_ACTION_MIN_LIFT:-1.2}
+      NEWS_DISABLE_BELOW_LIFT: ${NEWS_DISABLE_BELOW_LIFT:-0.75}
     depends_on:
       postgres:
         condition: service_healthy
@@ -217,7 +224,7 @@ services:
     restart: unless-stopped
     cpus: 2.0
     mem_limit: 2g
-    command: celery -A tasks.celery_app worker -Q bulk --concurrency=1 --loglevel=info -n bulk@%h
+    command: celery -A tasks.celery_app worker -Q bulk,news --concurrency=1 --loglevel=info -n bulk@%h
 
   # Celery Beat (Scheduler)
   celery-beat:

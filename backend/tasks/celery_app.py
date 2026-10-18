@@ -27,6 +27,7 @@ celery_app = Celery(
         # v3 platform (R1): the three-tier quant schedule + telegram commands
         "app.tasks.quant_tasks",
         "app.tasks.telegram_tasks",
+        "app.tasks.news_tasks",
     ],
 )
 
@@ -48,7 +49,8 @@ celery_app.conf.update(
     task_time_limit=1800,  # 30 min: hard kill + replace the pool child
     # the whole-market sync runs for up to two hours: its own worker (-Q bulk)
     # keeps it off the slots signal_cycle and the heartbeat need
-    task_routes={"market.universe_sync": {"queue": "bulk"}},
+    task_routes={"market.universe_sync": {"queue": "bulk"},
+                 "news.cycle": {"queue": "news"}},
 )
 
 # NOTE: no autodiscover_tasks() — every task module is registered explicitly via
@@ -122,6 +124,14 @@ celery_app.conf.beat_schedule.update({
         "task": "quant.signal_cycle_retry",
         "schedule": crontab(minute="0,30", hour="22,23,0,1,2,3"),
         "options": {"expires": 1500},
+    },
+    # P6a: Alpaca news ingest on the bulk worker. A tick dropped by expires while
+    # universe_sync holds that worker loses nothing — the next one resumes from
+    # the stored cursor.
+    "news-cycle": {
+        "task": "news.cycle",
+        "schedule": 900.0,
+        "options": {"expires": 840},
     },
 })
 
