@@ -13,6 +13,7 @@ beat and a manual run from overlapping.
 
   python -m quant.data.universe_sync          one nightly pass
   python -m quant.data.universe_sync --init   first load, stage by stage, resumable
+  python -m quant.data.universe_sync --edgar-recheck   one-off SEC share-fact catch-up
 """
 
 from __future__ import annotations
@@ -292,6 +293,9 @@ def _run_locked(report: SyncReport, now: datetime, fresh_cap: int) -> None:
         registry.beat("universe_sync", meta)
         return True
 
+    removed = panel.remove_orphan_tmp()
+    if removed:
+        logger.warning("universe_sync: removed %d orphan panel temp file(s)", removed)
     if _free_gb() < config.MIN_FREE_DISK_GB:
         report.fail_closed = meta["fail_closed"] = "disk"
         registry.beat("universe_sync", meta)
@@ -374,6 +378,9 @@ def run_init(*, now: datetime | None = None) -> None:
     what is already done: synced actions, stored bars, checked CIKs."""
     now = now or datetime.now(timezone.utc)
     with _lock():
+        removed = panel.remove_orphan_tmp()
+        if removed:
+            logger.warning("universe_sync: removed %d orphan panel temp file(s)", removed)
         _stage(1, securities.refresh(now.date()))
         codes = securities.eligible_codes()
 
@@ -395,11 +402,33 @@ def run_init(*, now: datetime | None = None) -> None:
         _stage(5, panel.write_years(codes, range(start.year, now.year + 1)))
 
 
+def run_edgar_recheck(*, today: date | None = None) -> dict:
+    """One-off catch-up: re-fetch share facts for every stock CIK with no period
+    end inside SHARES_STALE_DAYS, under the nightly lock (a beat slot that meets
+    it skips as busy and the next slot retries)."""
+    today = today or datetime.now(timezone.utc).date()
+    with _lock():
+        stats = edgar.refresh_ciks(securities.ciks_without_usable_shares(today), today,
+                                   progress=print)
+    print(f"EDGAR RECHECK DONE {json.dumps(stats, sort_keys=True)}", flush=True)
+    return stats
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Whole-market universe sync")
-    ap.add_argument("--init", action="store_true", help="first load, stages 1-5")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--init", action="store_true", help="first load, stages 1-5")
+    mode.add_argument("--edgar-recheck", action="store_true",
+                      help="one-off: re-fetch SEC share facts for stock CIKs with no usable count")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    if args.edgar_recheck:
+        try:
+            run_edgar_recheck()
+        except Busy:
+            print("skipped: busy")
+            return 2
+        return 0
     if args.init:
         run_init()
         return 0

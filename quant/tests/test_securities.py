@@ -177,3 +177,17 @@ REAL_EXPECTED = {"AMX": "adr", "RLX": "adr", "WDH": "adr", "ITUB": "adr", "PBR.A
 @pytest.mark.parametrize("code", sorted(REAL_EXPECTED))
 def test_classify_real_names(code):
     assert securities.classify(code, "NYSE", REAL_ROWS[code]) == REAL_EXPECTED[code]
+
+
+def test_ciks_without_usable_shares_looks_back_the_stale_window(monkeypatch):
+    calls = []
+
+    def _run(sql, params, fetch=None):
+        calls.append((sql, params))
+        return [(5,), (9,)]
+
+    monkeypatch.setattr(securities, "registry", SimpleNamespace(_run=_run))
+    assert securities.ciks_without_usable_shares(date(2026, 10, 18)) == [5, 9]
+    sql, params = calls[0]
+    assert params == (date(2025, 9, 13),)
+    assert "NOT EXISTS" in sql and "end_date >= %s" in sql

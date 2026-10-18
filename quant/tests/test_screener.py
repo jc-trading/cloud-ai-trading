@@ -12,8 +12,8 @@ import pytest
 
 from quant.data import calendar
 from quant.engine import indicators
-from quant.engine.screener import (DEFAULT_SCREENER, ScreenerSpecError, apply,
-                                   compute_features, parse_spec, required_lookback,
+from quant.engine.screener import (DEFAULT_SCREENER, SHARE_CONCEPTS, ScreenerSpecError,
+                                   apply, compute_features, parse_spec, required_lookback,
                                    shares_as_of)
 
 JIACONG = {"rules": [
@@ -359,6 +359,7 @@ def _facts(rows):
 
 DEI, GAAP = ("dei:EntityCommonStockSharesOutstanding",
              "us-gaap:CommonStockSharesOutstanding")
+WAB = "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic"
 NO_SPLITS = pd.DataFrame(columns=["symbol", "ex_date", "ratio"])
 
 
@@ -440,3 +441,30 @@ def test_us_gaap_counts_are_not_split_adjusted_twice():
     s = shares_as_of(facts, splits, {"G": 1, "D": 2}, date(2026, 10, 16))
     assert s["G"] == 6_000_000          # only the post-filing 3:1
     assert s["D"] == 2_000_000          # the 2:1 after the cover date
+
+
+def test_share_concepts_rank_dei_then_us_gaap_then_weighted_average():
+    assert SHARE_CONCEPTS == (DEI, GAAP, WAB)
+
+
+def test_weighted_average_loses_a_tie_but_wins_a_later_period_end():
+    facts = _facts([(1, WAB, "2026-06-30", "2026-07-20", 250),
+                    (1, GAAP, "2026-06-30", "2026-07-20", 200),
+                    (2, DEI, "2026-03-31", "2026-04-20", 100),
+                    (2, WAB, "2026-06-30", "2026-07-20", 250)])
+    s = shares_as_of(facts, NO_SPLITS, {"A": 1, "B": 2}, date(2026, 10, 16))
+    assert (s["A"], s["B"]) == (200, 250)
+
+
+def test_weighted_average_is_split_adjusted_from_its_filing_date():
+    facts = _facts([(1, WAB, "2026-06-30", "2026-08-01", 2_000_000)])
+    splits = pd.DataFrame([("W", "2026-07-15", 2.0), ("W", "2026-09-01", 3.0)],
+                          columns=["symbol", "ex_date", "ratio"])
+    s = shares_as_of(facts, splits, {"W": 1}, date(2026, 10, 16))
+    assert s["W"] == 6_000_000
+
+
+def test_weighted_average_filed_after_as_of_is_unknown():
+    facts = _facts([(1, WAB, "2026-09-30", "2026-10-17", 2_000_000)])
+    s = shares_as_of(facts, NO_SPLITS, {"W": 1}, date(2026, 10, 16))
+    assert math.isnan(s["W"])

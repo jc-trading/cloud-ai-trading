@@ -158,3 +158,21 @@ def test_include_codes_that_are_not_eligible_are_ignored(world, monkeypatch):
     assert res.include_ignored == ("SPY", "GONE")              # etf not in asset_types
     assert res.include_added == ("AAA",)
     assert res.pool == ("AAA", "HELD")
+
+
+def test_orphan_temp_files_are_removed(world):
+    root = config.PANEL_ROOT
+    root.mkdir(parents=True)
+    (root / "2026.parquet").write_bytes(b"keep")
+    (root / "2026.parquet.tmp-19").write_bytes(b"orphan")
+    (root / "_sessions.json.tmp-7").write_text("{}")
+    (root / "_sessions.json").write_text('{"2026-10-16": true}')
+    assert panel.remove_orphan_tmp() == 2
+    assert sorted(p.name for p in root.iterdir()) == ["2026.parquet", "_sessions.json"]
+    assert (root / "2026.parquet").read_bytes() == b"keep"
+    assert (root / "_sessions.json").read_text() == '{"2026-10-16": true}'
+
+
+def test_orphan_cleanup_without_a_panel_dir(world):
+    assert not config.PANEL_ROOT.exists()
+    assert panel.remove_orphan_tmp() == 0

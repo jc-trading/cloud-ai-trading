@@ -19,7 +19,7 @@ import json
 import os
 import re
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import dotenv_values
 
@@ -273,4 +273,16 @@ def unchecked_ciks() -> list[int]:
         "SELECT DISTINCT cik FROM securities WHERE market = 'us' AND status = 'active' "
         "AND asset_type = 'stock' AND cik IS NOT NULL AND shares_checked_at IS NULL "
         "ORDER BY cik", (), fetch="all")
+    return [r[0] for r in rows]
+
+
+def ciks_without_usable_shares(today: date) -> list[int]:
+    """Active stock CIKs with no stored share fact whose period end is inside
+    SHARES_STALE_DAYS of ``today`` (no facts at all, or only stale ones)."""
+    rows = registry._run(
+        "SELECT DISTINCT s.cik FROM securities s WHERE s.market = 'us' "
+        "AND s.status = 'active' AND s.asset_type = 'stock' AND s.cik IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM security_share_facts f "
+        "WHERE f.cik = s.cik AND f.end_date >= %s) ORDER BY s.cik",
+        (today - timedelta(days=config.SHARES_STALE_DAYS),), fetch="all")
     return [r[0] for r in rows]

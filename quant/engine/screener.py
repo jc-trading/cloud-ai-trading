@@ -44,7 +44,8 @@ MAX_RULES = 20
 MAX_LIST = 500
 DEFAULT_SCREENER = {"rules": [{"field": "market_cap", "op": ">=", "value": 100000000}]}
 SHARE_CONCEPTS = ("dei:EntityCommonStockSharesOutstanding",
-                  "us-gaap:CommonStockSharesOutstanding")
+                  "us-gaap:CommonStockSharesOutstanding",
+                  "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic")
 NO_MARKET_CAP_TYPES = ("etf", "adr")
 # a foreign private issuer reports ORDINARY shares; its US line may be an ADR
 # trading at a ratio, so shares x that price is not its market cap
@@ -244,7 +245,10 @@ def shares_as_of(facts: pd.DataFrame, splits: pd.DataFrame,
     restated to it) and on/before as_of scale the count by their ratio, so a
     1:10 reverse split divides it by ten. A count taken from a foreign
     private issuer's form (20-F / 6-K, amendments included) is NULL; a
-    Canadian 40-F issuer lists its ordinary shares 1:1 and keeps its count. Returns
+    Canadian 40-F issuer lists its ordinary shares 1:1 and keeps its count. The
+    last concept is a period average, the only company-wide count a
+    multi-class issuer reports without a class dimension; like the other
+    us-gaap count it is restated for splits up to its filing date. Returns
     float shares (NaN when unknown) indexed by every code in ``cik_by_code``.
     """
     out = pd.Series(np.nan, index=sorted(cik_by_code), dtype="float64")

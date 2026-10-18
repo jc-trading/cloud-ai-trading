@@ -29,11 +29,13 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(us, "LOCK_PATH", tmp_path / "_locks" / "universe_sync.lock")
     monkeypatch.setattr(config, "ACTIONS_DB", tmp_path / "manifest.db")
     calls = SimpleNamespace(beats=[], backfill=[], many=[], panel=[], edgar=[],
-                            sectors=0, universe=[], recent=[])
+                            sectors=0, universe=[], recent=[], cleanups=[])
     codes = [f"C{i:03d}" for i in range(20)]
     stored = {"C000", "C001", "C002", "C003", "C004"}          # 15 fresh codes
 
     monkeypatch.setattr(us, "_free_gb", lambda: 500.0)
+    monkeypatch.setattr(us.panel, "remove_orphan_tmp",
+                        lambda: calls.cleanups.append(1) or 0)
     monkeypatch.setattr(us.panel, "is_complete", lambda s: False)
     monkeypatch.setattr(us.securities, "refresh", lambda today: {"active": 20})
     monkeypatch.setattr(us.securities, "eligible_codes", lambda *a: list(codes))
@@ -190,6 +192,7 @@ def test_init_stages_resume(world, capsys):
     assert world.calls.backfill == [world.codes[5:], []]
     assert '"ciks": 3' in out and '"ciks": 0' in out
     assert years[0] == list(range(2016, 2027))
+    assert len(world.calls.cleanups) == 2
 
 
 def _night(day: int) -> datetime:
@@ -396,3 +399,53 @@ def test_deadline_before_sectors_skips_them(world):
 
 def test_the_deadline_is_ninety_minutes():
     assert config.UNIVERSE_SYNC_DEADLINE_S == 5400
+
+
+@pytest.mark.parametrize("case", ["done", "disk", "full"])
+def test_every_locked_pass_clears_orphan_panel_temp_files_once(world, case):
+    if case == "done":
+        world.monkeypatch.setattr(us.panel, "is_complete", lambda s: True)
+    elif case == "disk":
+        world.monkeypatch.setattr(us, "_free_gb", lambda: config.MIN_FREE_DISK_GB - 0.1)
+    us.run(now=AFTER_CLOSE, fresh_cap=300)
+    assert world.calls.cleanups == [1]
+
+
+def test_a_busy_lock_leaves_temp_files_alone(world):
+    us.LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(us.LOCK_PATH, "w") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert us.run(now=AFTER_CLOSE).skipped == "busy"
+    assert world.calls.cleanups == []
+
+
+def test_edgar_recheck_refetches_ciks_without_usable_shares(world, capsys):
+    asked = []
+    world.monkeypatch.setattr(us.securities, "ciks_without_usable_shares",
+                              lambda today: asked.append(today) or [5, 6])
+    world.monkeypatch.setattr(us.edgar, "refresh_ciks",
+                              lambda ciks, s, progress=None: (
+                                  world.calls.edgar.append((list(ciks), s)), {"ciks": 2})[1])
+    assert us.run_edgar_recheck(today=date(2026, 10, 18)) == {"ciks": 2}
+    assert asked == [date(2026, 10, 18)]
+    assert world.calls.edgar == [([5, 6], date(2026, 10, 18))]
+    assert 'EDGAR RECHECK DONE {"ciks": 2}' in capsys.readouterr().out
+    assert world.calls.panel == [] and world.calls.backfill == []
+    assert world.calls.cleanups == []
+
+
+def test_edgar_recheck_skips_when_the_lock_is_held(world, capsys):
+    world.monkeypatch.setattr(us.securities, "ciks_without_usable_shares", lambda today: [5])
+    world.monkeypatch.setattr(us.edgar, "refresh_ciks",
+                              lambda ciks, s, progress=None: world.calls.edgar.append(ciks))
+    us.LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(us.LOCK_PATH, "w") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert us.main(["--edgar-recheck"]) == 2
+    assert "skipped: busy" in capsys.readouterr().out
+    assert world.calls.edgar == []
+
+
+def test_init_and_edgar_recheck_are_exclusive(world):
+    with pytest.raises(SystemExit):
+        us.main(["--init", "--edgar-recheck"])

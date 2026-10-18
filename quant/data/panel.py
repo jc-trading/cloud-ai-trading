@@ -80,6 +80,18 @@ def _tmp(path: Path) -> Path:
     return path.parent / f"{path.name}.tmp-{os.getpid()}"
 
 
+def remove_orphan_tmp() -> int:
+    """Delete temp files a killed writer left in PANEL_ROOT. Callers hold the
+    universe_sync lock, so no live writer can own one."""
+    if not config.PANEL_ROOT.exists():
+        return 0
+    n = 0
+    for p in config.PANEL_ROOT.glob("*.tmp-*"):
+        p.unlink(missing_ok=True)
+        n += 1
+    return n
+
+
 def load_sessions() -> dict[str, bool]:
     path = config.PANEL_ROOT / _SESSIONS_FILE
     if not path.exists():

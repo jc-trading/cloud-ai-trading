@@ -1,17 +1,25 @@
 """SEC EDGAR shares-outstanding facts — the point-in-time half of market cap.
 
-Only ``companyconcept`` is used: its facts carry ``filed``, so a screen for
-session D can keep exactly the numbers that were public on D. The ``frames``
-API has no ``filed`` and would leak later filings into the past.
+Only ``companyfacts`` is used: one document per CIK, and its facts carry
+``filed``, so a screen for session D can keep exactly the numbers that were
+public on D. ``companyconcept`` is not used because it returns empty ``units``
+for some CIKs whose companyfacts carries the counts (KO, 2026-10-18). The
+``frames`` API has no ``filed`` and would leak later filings into the past.
+
+These APIs carry only non-dimensional facts, so a multi-class issuer that
+reports its share counts per class falls back to
+``WeightedAverageNumberOfSharesOutstandingBasic``: a period average, not a
+point-in-time count.
 
 SEC's fair-access rules: every request names a contact in User-Agent
 (``SEC_USER_AGENT`` from .env, else the environment) and stays under
-``config.SEC_MAX_RPS``. 429/503 back off and retry; 404 means the company
-never reported that concept.
+``config.SEC_MAX_RPS``. 429/503 back off and retry; 404 means SEC has no XBRL
+facts for the company.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import math
@@ -31,7 +39,7 @@ from quant.engine.screener import SHARE_CONCEPTS
 
 logger = logging.getLogger(__name__)
 
-_CONCEPT_URL = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{tag}.json"
+_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 _RETRY_STATUS = (429, 503)
 _BACKOFF_S = (1, 2, 4)
 _TIMEOUT_S = 30
@@ -87,13 +95,17 @@ def _throttle() -> None:
 
 def get_json(url: str):
     """GET a sec.gov JSON document under the rate limit. Returns None on 404."""
-    headers = {"User-Agent": user_agent(), "Accept": "application/json"}
+    headers = {"User-Agent": user_agent(), "Accept": "application/json",
+               "Accept-Encoding": "gzip"}
     for attempt in range(len(_BACKOFF_S) + 1):
         _throttle()
         try:
             with _opener(urllib.request.Request(url, headers=headers),
                          timeout=_TIMEOUT_S) as resp:
-                return json.load(resp)
+                body = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    body = gzip.decompress(body)
+                return json.loads(body)
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
@@ -124,29 +136,45 @@ def _fits_columns(concept: str, f: dict, value: int) -> bool:
             and _is_date(f.get("end")) and _is_date(f.get("filed")))
 
 
-def fetch_concept(cik: int, concept: str) -> tuple[list[dict] | None, Counter]:
-    """Every share-count fact the company filed for one concept (None when SEC
-    has no such concept for it), plus the facts dropped before they can break
-    the insert: ``nonpositive`` (SEC carries 0, fractional and null counts that
-    ``ck_share_fact_value`` rejects) and ``invalid`` (bad date, or a value too
-    long for its ``security_share_facts`` column)."""
-    taxonomy, tag = concept.split(":", 1)
-    data = get_json(_CONCEPT_URL.format(cik=int(cik), taxonomy=taxonomy, tag=tag))
+def _parse_facts(cik: int, concept: str, rows) -> tuple[list[dict], Counter]:
+    """Share-count facts that fit security_share_facts, one per (accn, end): a
+    duration concept lists a quarter and a year-to-date span under the same
+    filing and period end, and the shortest span (latest ``start``) is kept.
+    ``nonpositive`` (0 / fractional / null, rejected by ck_share_fact_value) and
+    ``invalid`` (bad date or too long for its column) count the dropped facts."""
     skipped = Counter()
-    if data is None:
-        return None, skipped
-    out = []
-    for f in (data.get("units") or {}).get("shares", []):
+    kept: dict[tuple[str, str], tuple[str, dict]] = {}
+    for f in rows:
         value = _share_count(f.get("val"))
         if value <= 0:
             skipped["nonpositive"] += 1
-        elif not _fits_columns(concept, f, value):
+            continue
+        if not _fits_columns(concept, f, value):
             skipped["invalid"] += 1
-        else:
-            out.append({"cik": int(cik), "concept": concept, "end_date": f["end"],
-                        "filed": f["filed"], "accn": f["accn"], "form": f.get("form"),
-                        "value": value})
-    return out, skipped
+            continue
+        key, start = (f["accn"], f["end"]), str(f.get("start") or "")
+        if key in kept and kept[key][0] >= start:
+            continue
+        kept[key] = (start, {"cik": int(cik), "concept": concept, "end_date": f["end"],
+                             "filed": f["filed"], "accn": f["accn"],
+                             "form": f.get("form"), "value": value})
+    return [row for _, row in kept.values()], skipped
+
+
+def fetch_company_facts(cik: int) -> dict[str, tuple[list[dict], Counter]] | None:
+    """Every SHARE_CONCEPTS concept's facts from one companyfacts document;
+    None when SEC has no XBRL facts for the CIK."""
+    data = get_json(_FACTS_URL.format(cik=int(cik)))
+    if data is None:
+        return None
+    facts = data.get("facts") or {}
+    out = {}
+    for concept in SHARE_CONCEPTS:
+        taxonomy, tag = concept.split(":", 1)
+        rows = ((((facts.get(taxonomy) or {}).get(tag) or {}).get("units") or {})
+                .get("shares") or [])
+        out[concept] = _parse_facts(int(cik), concept, rows)
+    return out
 
 
 def _latest_end(facts: list[dict] | None) -> date | None:
@@ -156,29 +184,32 @@ def _latest_end(facts: list[dict] | None) -> date | None:
 
 
 def refresh_ciks(ciks, today: date, *, progress=None) -> dict:
-    """Fetch and store share facts for each CIK: the dei concept first, the
-    us-gaap fallback only when dei is missing or stale (multi-class issuers
-    such as GOOGL report the company total there). A CIK is stamped
-    ``shares_checked_at`` once both lookups it needed and its insert
-    succeeded; any other failure only marks that CIK failed, so the run goes
-    on and the next one retries the unstamped CIKs. ``MAX_CONSECUTIVE_FAILURES``
-    failures in a row raise ``EdgarOutage``."""
-    dei, gaap = SHARE_CONCEPTS
+    """Fetch and store share facts for each CIK from one companyfacts
+    document: the dei concept first, the other two concepts only when dei is
+    missing or stale (multi-class issuers such as GOOGL report the company
+    total in us-gaap). A CIK is stamped ``shares_checked_at`` once its fetch
+    and insert succeeded, even with no usable count (counted in ``empty``; the
+    every-fifth-night rotation checks it again); any other failure only marks
+    that CIK failed, so the run goes on and the next one retries the unstamped
+    CIKs. ``MAX_CONSECUTIVE_FAILURES`` failures in a row raise ``EdgarOutage``."""
+    primary, fallbacks = SHARE_CONCEPTS[0], SHARE_CONCEPTS[1:]
     stale_before = today - timedelta(days=config.SHARES_STALE_DAYS)
-    stats = {"ciks": 0, "facts": 0, "failed": 0, "gaap_fallback": 0,
+    stats = {"ciks": 0, "facts": 0, "failed": 0, "gaap_fallback": 0, "empty": 0,
              "skipped_nonpositive": 0, "skipped_invalid": 0}
     ciks = list(ciks)
     streak = 0
     for i, cik in enumerate(ciks, 1):
         try:
-            facts, skipped = fetch_concept(cik, dei)
-            facts = facts or []
+            by_concept = fetch_company_facts(cik) or {}
+            facts, skipped = by_concept.get(primary, ([], Counter()))
+            facts, skipped = list(facts), Counter(skipped)
             latest = _latest_end(facts)
             if latest is None or latest < stale_before:
                 stats["gaap_fallback"] += 1
-                more, more_skipped = fetch_concept(cik, gaap)
-                facts += more or []
-                skipped += more_skipped
+                for concept in fallbacks:
+                    more, more_skipped = by_concept.get(concept, ([], Counter()))
+                    facts += more
+                    skipped += more_skipped
             if facts:
                 registry.run_many(
                     "INSERT INTO security_share_facts (id, cik, concept, end_date, "
@@ -201,10 +232,14 @@ def refresh_ciks(ciks, today: date, *, progress=None) -> dict:
         streak = 0
         stats["ciks"] += 1
         stats["facts"] += len(facts)
+        latest = _latest_end(facts)
+        if latest is None or latest < stale_before:
+            stats["empty"] += 1
         stats["skipped_nonpositive"] += skipped["nonpositive"]
         stats["skipped_invalid"] += skipped["invalid"]
         if progress is not None and (i % 250 == 0 or i == len(ciks)):
             progress(f"edgar: {i}/{len(ciks)} CIKs, {stats['facts']} facts, "
+                     f"{stats['empty']} empty, "
                      f"{stats['skipped_nonpositive']} non-positive and "
                      f"{stats['skipped_invalid']} invalid skipped, "
                      f"{stats['failed']} failed")
