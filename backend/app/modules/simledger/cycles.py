@@ -333,6 +333,9 @@ def signal_cycle_data_failure(meta: dict | None) -> str | None:
     pool_failed = int(m.get("pool_failed") or 0)
     if pool_failed > 0:
         return f"{pool_failed} pool symbols failed bar sync"
+    crashed = list(m.get("groups_crashed") or [])
+    if crashed:
+        return f"{len(crashed)} group step(s) crashed: {', '.join(crashed)}"
     if unmarked:
         return f"{len(unmarked)} position(s) without this session's close"
     if stale > 0.2 * scanned:

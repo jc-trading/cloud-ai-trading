@@ -12,8 +12,8 @@ from being flipped to ``is_system = false``.
 from uuid import uuid4
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, Column, DateTime, ForeignKeyConstraint, String, Text,
-    UniqueConstraint, func, text
+    Boolean, CheckConstraint, Column, Date, DateTime, ForeignKeyConstraint, Index, Integer,
+    String, Text, UniqueConstraint, func, text
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -25,6 +25,8 @@ TIMEFRAMES = ("1d", "1m")
 # open lots managed (exits, stops, protections, snapshots)
 SIGNAL_STATUSES = ("active",)
 MANAGED_STATUSES = ("active", "paused")
+RUN_CYCLES = ("signal", "entry", "position")
+RUN_OUTCOMES = ("ok", "skipped", "blocked", "fail_closed", "error")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -63,4 +65,27 @@ class StrategyGroup(Base):
         CheckConstraint("(status = 'archived') = (archived_at IS NOT NULL)",
                         name="ck_strategy_group_archived_at"),
         CheckConstraint("account_is_system", name="ck_strategy_group_account_is_system"),
+    )
+
+
+class StrategyGroupRun(Base):
+    """One group's outcome in one cycle run (P3a) — the per-group record the
+    shared heartbeat cannot keep."""
+    __tablename__ = "strategy_group_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    group_id = Column(UUID(as_uuid=True), nullable=False)
+    cycle = Column(String(20), nullable=False)
+    session_date = Column(Date, nullable=False)
+    seq = Column(Integer, nullable=False, server_default=text("0"))
+    outcome = Column(String(20), nullable=False)
+    meta = Column(JSONB(), nullable=False, server_default=text("'{}'::jsonb"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["group_id"], ["strategy_groups.id"],
+                             name="fk_group_run_group", ondelete="RESTRICT"),
+        CheckConstraint(_in("cycle", RUN_CYCLES), name="ck_group_run_cycle"),
+        CheckConstraint(_in("outcome", RUN_OUTCOMES), name="ck_group_run_outcome"),
+        Index("ix_strategy_group_runs_group_created", "group_id", "created_at"),
     )

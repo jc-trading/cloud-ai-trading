@@ -33,7 +33,7 @@ from sqlalchemy import select
 from quant import config
 
 from app.modules.simledger.models import Recommendation, RecommendationOutcome
-from app.modules.simledger.outcomes import HORIZONS, spearman_ic
+from app.modules.simledger.outcomes import HORIZONS, resolve_group, spearman_ic
 
 # era boundaries on trade_date: pre < ERA_CUTS[0] <= phase_a < ERA_CUTS[1] <= phase_c
 ERA_CUTS = ("2026-09-09", "2026-09-11")
@@ -361,8 +361,9 @@ def build_markdown(result: dict, df: pd.DataFrame) -> str:
 
 # ── data access ──────────────────────────────────────────────────
 
-async def load_frame(db) -> tuple[pd.DataFrame, int]:
-    """Joined recommendations + outcomes as a float frame, plus the total rec count."""
+async def load_frame(db, *, group_id) -> tuple[pd.DataFrame, int]:
+    """One group's joined recommendations + outcomes as a float frame, plus its
+    total rec count."""
     rows = (await db.execute(
         select(Recommendation.trade_date, Recommendation.symbol,
                Recommendation.direction, Recommendation.confidence,
@@ -371,8 +372,10 @@ async def load_frame(db) -> tuple[pd.DataFrame, int]:
                RecommendationOutcome.ret_5d)
         .join(RecommendationOutcome,
               RecommendationOutcome.recommendation_id == Recommendation.id)
+        .where(Recommendation.group_id == group_id)
     )).all()
-    total_recs = len((await db.execute(select(Recommendation.id))).all())
+    total_recs = len((await db.execute(
+        select(Recommendation.id).where(Recommendation.group_id == group_id))).all())
     df = pd.DataFrame(rows, columns=[
         "trade_date", "symbol", "direction", "confidence", "shortlist_rank",
         "ret_1d", "ret_3d", "ret_5d"])
@@ -394,6 +397,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="minimum recs for a night to be scored (default: %(default)s)")
     p.add_argument("--out-dir", default=str(OUT_DIR),
                    help="JSON output directory (default: %(default)s)")
+    p.add_argument("--group", default=None,
+                   help="strategy group name (required when more than one exists)")
     return p.parse_args(argv)
 
 
@@ -406,7 +411,8 @@ async def _main(argv=None) -> None:
     engine.sync_engine.echo = False
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     async with AsyncSessionLocal() as db:
-        df, total_recs = await load_frame(db)
+        group = await resolve_group(db, args.group)
+        df, total_recs = await load_frame(db, group_id=group.id)
 
     result = analyse(df, total_recs, min_n=args.min_n,
                      cuts=tuple(args.era_cuts))

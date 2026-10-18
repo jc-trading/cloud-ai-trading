@@ -19,6 +19,7 @@ pending and skipped.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 from datetime import date
@@ -29,6 +30,7 @@ from sqlalchemy import select
 from quant.data import bars as qbars
 
 from app.modules.simledger.models import Recommendation, RecommendationOutcome
+from app.modules.strategy_groups.models import StrategyGroup
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +131,26 @@ async def backfill(db, *, bars_fn=qbars.get_bars) -> dict:
 
 # ── report ───────────────────────────────────────────────────────
 
-async def build_report(db) -> str:
-    """Confidence-IC + coverage report over the joined outcomes."""
+async def resolve_group(db, name: str | None) -> StrategyGroup:
+    """The group a report is for: the named one, or the only one there is."""
+    groups = (await db.execute(
+        select(StrategyGroup).order_by(StrategyGroup.created_at, StrategyGroup.id)
+    )).scalars().all()
+    names = [g.name for g in groups]
+    if name is None:
+        if len(groups) == 1:
+            return groups[0]
+        if not groups:
+            raise SystemExit("no strategy groups")
+        raise SystemExit("multiple strategy groups — pass --group: " + ", ".join(names))
+    for g in groups:
+        if g.name == name:
+            return g
+    raise SystemExit(f"unknown group {name!r} — known: {', '.join(names)}")
+
+
+async def build_report(db, *, group_id) -> str:
+    """Confidence-IC + coverage report over one group's joined outcomes."""
     rows = (await db.execute(
         select(Recommendation.trade_date, Recommendation.symbol,
                Recommendation.direction, Recommendation.confidence,
@@ -139,8 +159,10 @@ async def build_report(db) -> str:
                RecommendationOutcome.ret_5d)
         .join(RecommendationOutcome,
               RecommendationOutcome.recommendation_id == Recommendation.id)
+        .where(Recommendation.group_id == group_id)
     )).all()
-    total_recs = len((await db.execute(select(Recommendation.id))).all())
+    total_recs = len((await db.execute(
+        select(Recommendation.id).where(Recommendation.group_id == group_id))).all())
 
     if not rows:
         return "# Recommendation outcomes\n\nno evaluable outcomes yet\n"
@@ -208,13 +230,19 @@ async def build_report(db) -> str:
 
 # ── entrypoint ───────────────────────────────────────────────────
 
-async def _main() -> None:
+async def _main(argv=None) -> None:
+    p = argparse.ArgumentParser(prog="outcomes",
+                                description="Outcome backfill + confidence-IC report.")
+    p.add_argument("--group", default=None,
+                   help="strategy group name (required when more than one exists)")
+    args = p.parse_args(argv)
     from app.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         stats = await backfill(db)
         print(f"backfill: {stats}")
         print()
-        print(await build_report(db))
+        group = await resolve_group(db, args.group)
+        print(await build_report(db, group_id=group.id))
 
 
 if __name__ == "__main__":

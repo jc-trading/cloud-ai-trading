@@ -69,30 +69,6 @@ class SimLedgerService:
         return acct
 
     @staticmethod
-    async def system_account(db: AsyncSession):
-        """THE 对照账户, by stable identity: the is_system row wins, always
-        (review #31: resolving through a user-ordering heuristic re-created a
-        second system account whenever the super-admin set changed, orphaning
-        the old account's lots). Creation falls back to the first active
-        super-admin (else oldest active user) only when NO system account
-        exists yet."""
-        row = (await db.execute(
-            select(SimAccount).where(SimAccount.is_system.is_(True))
-            .order_by(SimAccount.created_at).limit(1)
-        )).scalar_one_or_none()
-        if row is not None:
-            return row
-        from app.modules.auth.models import User, UserRole
-        user = (await db.execute(
-            select(User).where(User.is_active.is_(True))
-            .order_by((User.role == UserRole.SUPER_ADMIN).desc(), User.created_at)
-            .limit(1))).scalar_one_or_none()
-        if user is None:
-            return None
-        return await SimLedgerService.get_or_create_account(
-            db, user.id, SYSTEM_ACCOUNT_NAME, is_system=True)
-
-    @staticmethod
     async def already_booked(db: AsyncSession, idempotency_key: str) -> bool:
         row = (await db.execute(
             select(SimOrder.id).where(SimOrder.idempotency_key == idempotency_key)

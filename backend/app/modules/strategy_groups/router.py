@@ -1,36 +1,56 @@
-"""Strategy-group API (P1, read-only).
+"""Strategy-group API (P1 reads, P3a lifecycle).
 
-  GET /strategy-groups              every group, oldest first (optional ?status=)
-  GET /strategy-groups/{group_id}   one group + its params schema + account block
-  GET /strategy-groups/{group_id}/screen?date=
-                                    that group's screener run for one session
+  GET   /strategy-groups              every group, oldest first (optional ?status=)
+  GET   /strategy-groups/registry     strategies + bounds, screener vocabulary
+  POST  /strategy-groups              create a group (+ its system account)
+  POST  /strategy-groups/{group_id}/clone
+                                      copy a group with overrides
+  PATCH /strategy-groups/{group_id}/status
+                                      active / paused / archived
+  GET   /strategy-groups/{group_id}/runs?days=&cycle=
+                                      that group's per-cycle outcomes
+  GET   /strategy-groups/{group_id}   one group + its params schema + account block
+  GET   /strategy-groups/{group_id}/screen?date=
+                                      that group's screener run for one session
 
 There is no default group: every per-strategy endpoint elsewhere takes a
-required ``group_id`` picked from this list. Auth-only (CurrentUser), like the
-other dashboard reads.
+required ``group_id`` picked from this list. Reads are auth-only (CurrentUser),
+like the other dashboard reads; writes need AdminUser.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from quant import config as qconfig
 from quant.data import calendar as qcal
 from quant.data import panel as qpanel
 from quant.data import screen as qscreen
-from quant.engine.screener import ScreenerSpecError, parse_spec
-from quant.engine.strategies import StrategyParamsError, get_spec
+from quant.engine.screener import (
+    DEFAULT_SCREENER, FIELDS, MAX_LIST, MAX_RULES, OPS, VALUE_BOUNDS, ScreenerSpecError,
+    parse_spec,
+)
+from quant.engine.strategies import (
+    CROSS_RULES, REGISTRY, StrategyParamsError, get_spec, ui_schema,
+)
 
-from app.dependencies import DB, CurrentUser
+from app.dependencies import DB, AdminUser, CurrentUser
 from app.modules.simledger.models import AccountSnapshot, SimAccount
 from app.modules.simledger.service import SimLedgerService
-from app.modules.strategy_groups.models import GROUP_STATUSES, StrategyGroup
-from app.modules.strategy_groups.service import _require_group
+from app.modules.strategy_groups.models import (
+    GROUP_STATUSES, RUN_CYCLES, StrategyGroup, StrategyGroupRun,
+)
+from app.modules.strategy_groups.service import (
+    GroupConflict, GroupInvalid, _require_group, clone_group, create_group, set_status,
+)
 
 router = APIRouter(prefix="/strategy-groups", tags=["Strategy groups"])
 
@@ -58,9 +78,108 @@ async def list_groups(user: CurrentUser, db: DB = None,
     return [_summary(g) for g in (await db.execute(stmt)).scalars().all()]
 
 
+class CreateGroupRequest(BaseModel):
+    name: str
+    strategy_key: str
+    params_json: dict = {}
+    screener_json: dict = {}
+    trade_settings_json: dict = {}
+    notes: str | None = Field(default=None, max_length=2000)
+    starting_capital: float = 2000
+    status: Literal["active", "paused"] = "paused"
+
+
+class CloneGroupRequest(BaseModel):
+    name: str
+    params_json: dict | None = None
+    screener_json: dict | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+    starting_capital: float | None = None
+    status: Literal["active", "paused"] = "paused"
+    archive_source: bool = False
+
+
+class StatusRequest(BaseModel):
+    status: Literal["active", "paused", "archived"]
+
+
+@router.get("/registry")
+async def get_registry(user: CurrentUser):
+    return {
+        "strategies": [
+            {"key": key, "description": spec.description, "params_schema": ui_schema(key),
+             "cross_rules": [{"left": a, "op": "<", "right": b} for a, b in CROSS_RULES[key]]}
+            for key, spec in REGISTRY.items()],
+        "screener": {"fields": FIELDS, "ops": OPS, "value_bounds": VALUE_BOUNDS,
+                     "max_rules": MAX_RULES, "max_list": MAX_LIST,
+                     "asset_types": list(qconfig.ELIGIBLE_ASSET_TYPES),
+                     "default": DEFAULT_SCREENER},
+        "trade_settings": {"available": False},
+        "timeframes": ["1d"],
+        "markets": ["us"],
+    }
+
+
+async def _write(db, op):
+    try:
+        return await op
+    except GroupInvalid as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except GroupConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="name already exists") from None
+
+
+@router.post("", status_code=201)
+async def create_strategy_group(data: CreateGroupRequest, admin: AdminUser, db: DB = None):
+    group = await _write(db, create_group(db, user_id=admin.id, **data.model_dump()))
+    return await _detail(db, group)
+
+
+@router.post("/{group_id}/clone", status_code=201)
+async def clone_strategy_group(group_id: UUID, data: CloneGroupRequest, admin: AdminUser,
+                               db: DB = None):
+    src = await _require_group(db, group_id)
+    group = await _write(db, clone_group(db, src, user_id=admin.id, **data.model_dump()))
+    return await _detail(db, group)
+
+
+@router.patch("/{group_id}/status")
+async def set_group_status(group_id: UUID, data: StatusRequest, admin: AdminUser,
+                           db: DB = None):
+    group = await _require_group(db, group_id)
+    await _write(db, set_status(db, group, data.status))
+    return await _detail(db, group)
+
+
+@router.get("/{group_id}/runs")
+async def list_group_runs(group_id: UUID, user: CurrentUser, db: DB = None,
+                          days: int = Query(default=30, ge=1, le=365),
+                          cycle: str | None = Query(default=None)):
+    await _require_group(db, group_id)
+    if cycle and cycle not in RUN_CYCLES:
+        raise HTTPException(status_code=422,
+                            detail=f"cycle must be one of {', '.join(RUN_CYCLES)}")
+    stmt = select(StrategyGroupRun).where(
+        StrategyGroupRun.group_id == group_id,
+        StrategyGroupRun.created_at >= datetime.now(timezone.utc) - timedelta(days=days))
+    if cycle:
+        stmt = stmt.where(StrategyGroupRun.cycle == cycle)
+    rows = (await db.execute(
+        stmt.order_by(StrategyGroupRun.created_at.desc()).limit(500))).scalars().all()
+    return [{"id": str(r.id), "cycle": r.cycle, "session_date": r.session_date.isoformat(),
+             "seq": r.seq, "outcome": r.outcome, "meta": r.meta,
+             "created_at": r.created_at.isoformat()} for r in rows]
+
+
 @router.get("/{group_id}")
 async def get_group_detail(group_id: UUID, user: CurrentUser, db: DB = None):
-    group = await _require_group(db, group_id)
+    return await _detail(db, await _require_group(db, group_id))
+
+
+async def _detail(db, group: StrategyGroup) -> dict:
     try:
         params_schema = get_spec(group.strategy_key).params_schema()
     except StrategyParamsError:

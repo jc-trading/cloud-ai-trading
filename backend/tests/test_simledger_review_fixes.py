@@ -368,22 +368,6 @@ def test_a_snapshot_gap_does_not_change_what_a_fill_is_sized_on(caplog):
     assert caplog.text.count("sizing base is the") == 1   # and only for the gap
 
 
-# --- #31: system account = stable is_system lookup --------------------------
-
-def test_system_account_prefers_existing_is_system_row():
-    existing = _acct()
-
-    class _S:
-        async def execute(self, stmt):
-            class _R:
-                def scalar_one_or_none(self):
-                    return existing
-            return _R()
-
-    out = asyncio.run(SimLedgerService.system_account(_S()))
-    assert out is existing          # no user-heuristic resolution, no create
-
-
 # --- v3.1: intraday chase-cap entry gate ------------------------------------
 
 def test_chase_cap_skips_gap_up_enters_at_ref(monkeypatch):

@@ -15,8 +15,8 @@ from app.modules.notifications.models import EVENT_TYPES, SEVERITIES
 
 _BACKEND = Path(__file__).resolve().parents[1]
 _SOURCES = (_BACKEND / "app/tasks/quant_tasks.py", _BACKEND / "tasks/celery_app.py")
-# quant_tasks 18 + celery_app.check_master_settings 1 (runtime/p4_stage/notify_sites.txt)
-_EXPECTED_SITES = 19
+# quant_tasks 20 + celery_app.check_master_settings 1
+_EXPECTED_SITES = 21
 
 
 def _notify_calls():

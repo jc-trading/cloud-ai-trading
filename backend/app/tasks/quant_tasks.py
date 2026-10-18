@@ -34,7 +34,9 @@ from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, Recommendation
 from app.modules.simledger.service import SimLedgerService
 from app.modules.simledger.settings import effective_settings
-from app.modules.strategy_groups.models import MANAGED_STATUSES, SIGNAL_STATUSES
+from app.modules.strategy_groups.models import (
+    MANAGED_STATUSES, SIGNAL_STATUSES, StrategyGroupRun,
+)
 from app.modules.strategy_groups.service import load_groups
 
 logger = logging.getLogger(__name__)
@@ -218,22 +220,65 @@ def position_cycle():
                 await _beat(db, "position_cycle", closed=[])
                 await db.commit()
                 return "no strategy groups"
+            today = _now_et().date()
             client = FinnhubClient()
             per_group = []
+            errors: dict = {}
             for rt in runtimes:
-                per_group.append((rt, await cycles.check_stops(
-                    db, rt.account, quote_fn=_quote_fn(client))))
+                if len(runtimes) == 1:
+                    per_group.append((rt, await cycles.check_stops(
+                        db, rt.account, quote_fn=_quote_fn(client))))
+                    continue
+                # try sits OUTSIDE the savepoint: catching inside it would release
+                # the savepoint and keep a half-written stop exit
+                try:
+                    async with db.begin_nested():
+                        closed = await cycles.check_stops(
+                            db, rt.account, quote_fn=_quote_fn(client))
+                except Exception as exc:
+                    logger.exception("position_cycle: group %s crashed", rt.group.name)
+                    closed = []
+                    errors[rt.group.id] = exc
+                per_group.append((rt, closed))
+            first_crash = {rt.group.id: await _first_crash_today(db, rt, "position", today)
+                           for rt, _ in per_group if rt.group.id in errors}
+            for rt, closed in per_group:
+                exc = errors.get(rt.group.id)
+                if exc is not None:
+                    db.add(StrategyGroupRun(group_id=rt.group.id, cycle="position",
+                                            session_date=today, seq=0, outcome="error",
+                                            meta={"closed": [], "error": _error_text(exc)}))
+                elif closed:
+                    db.add(StrategyGroupRun(group_id=rt.group.id, cycle="position",
+                                            session_date=today, seq=0, outcome="ok",
+                                            meta={"closed": closed}))
             if len(runtimes) == 1:
                 await _beat(db, "position_cycle", closed=per_group[0][1])
             else:
+                groups = {}
+                for rt, closed in per_group:
+                    groups[rt.group.name] = {"closed": closed}
+                    if rt.group.id in errors:
+                        groups[rt.group.name]["error"] = _error_text(errors[rt.group.id])
+                extra = {}
+                if errors:
+                    extra["groups_crashed"] = [rt.group.name for rt, _ in per_group
+                                               if rt.group.id in errors]
                 await _beat(db, "position_cycle",
                             closed=[s for _, closed in per_group for s in closed],
-                            groups={rt.group.name: {"closed": closed}
-                                    for rt, closed in per_group})
+                            groups=groups, **extra)
             await db.commit()
             results = []
             for rt, closed in per_group:
                 label = _label(runtimes, rt)
+                exc = errors.get(rt.group.id)
+                if exc is not None:
+                    if first_crash[rt.group.id]:
+                        await _notify(f"{label}⛔ position_cycle crashed: "
+                                      f"{type(exc).__name__} — 该组 stop 未检查",
+                                      event="data_fail_closed", severity="critical")
+                    results.append(label + f"error: {type(exc).__name__}")
+                    continue
                 if closed:
                     await _notify(f"{label}🛑 对照账户 stop exit: {', '.join(closed)}",
                                   event="stop_hit", severity="warning")
@@ -257,6 +302,35 @@ class _EntryOutcome:
     booked: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     alerted_on: str | None = None
+    crashed: bool = False
+
+
+def _error_text(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+async def _first_crash_today(db, rt, cycle: str, today) -> bool:
+    """No error run row yet today for this group and cycle — the crash alert
+    is sent once per group per day, not every 5 or 15 minutes."""
+    return (await db.execute(
+        select(StrategyGroupRun.id)
+        .where(StrategyGroupRun.group_id == rt.group.id,
+               StrategyGroupRun.cycle == cycle,
+               StrategyGroupRun.session_date == today,
+               StrategyGroupRun.outcome == "error").limit(1)
+    )).scalar_one_or_none() is None
+
+
+def _entry_outcome(out: _EntryOutcome) -> str | None:
+    if "skipped" in out.meta:
+        return None
+    if out.crashed:
+        return "error"
+    if "blocked" in out.meta:
+        return "blocked"
+    if "fail_closed" in out.meta:
+        return "fail_closed"
+    return "ok"
 
 
 @shared_task(name="quant.entry_cycle", soft_time_limit=500, time_limit=560)
@@ -377,13 +451,39 @@ def entry_cycle():
                                      meta, booked=booked, missing=missing,
                                      alerted_on=alerted_on)
 
-            outcomes = [(rt, await one_group(rt)) for rt in runtimes]
+            async def guarded(rt) -> _EntryOutcome:
+                if single:
+                    return await one_group(rt)
+                try:
+                    async with db.begin_nested():
+                        return await one_group(rt)
+                except Exception as exc:
+                    logger.exception("entry_cycle: group %s crashed", rt.group.name)
+                    return _EntryOutcome(f"error: {type(exc).__name__}",
+                                         {"error": _error_text(exc)}, crashed=True)
+
+            def add_runs():
+                for rt, out in outcomes:
+                    outcome = _entry_outcome(out)
+                    if outcome is not None:
+                        db.add(StrategyGroupRun(group_id=rt.group.id, cycle="entry",
+                                                session_date=today, seq=0,
+                                                outcome=outcome, meta=out.meta))
+
+            outcomes = [(rt, await guarded(rt)) for rt in runtimes]
+            first_crash: dict = {}
             if single:
                 out = outcomes[0][1]
                 if not out.silent_when_single:
+                    add_runs()
                     await _beat(db, "entry_cycle", **out.meta)
                     await db.commit()
             else:
+                for rt, out in outcomes:
+                    if out.crashed:
+                        first_crash[rt.group.id] = await _first_crash_today(
+                            db, rt, "entry", today)
+                add_runs()
                 await _beat(db, "entry_cycle",
                             groups={rt.group.name: out.meta for rt, out in outcomes})
                 await db.commit()
@@ -395,6 +495,10 @@ def entry_cycle():
                               event="config_rejected", severity="warning")
             for rt, out in outcomes:
                 label = _label(runtimes, rt)
+                if first_crash.get(rt.group.id):
+                    await _notify(f"{label}⛔ entry_cycle crashed: "
+                                  f"{out.result.removeprefix('error: ')} — 该组今天不进场",
+                                  event="data_fail_closed", severity="critical")
                 if out.missing and out.alerted_on != str(today):
                     # the once-a-day flag follows a send that actually LANDED
                     # (watchdog._alert's rule): stamping it first loses the whole
@@ -432,6 +536,9 @@ class _SignalRun:
     marks_raw_or_missing: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     screen: dict | None = None
+    error: str | None = None
+    kept_snapshot: object = None
+    crashed: list[str] = field(default_factory=list)
 
     def meta(self) -> dict:
         meta = {"recs": self.n, "explained": self.explained,
@@ -448,7 +555,19 @@ class _SignalRun:
             meta["fail_closed"] = "; ".join(self.issues)
         if self.screen is not None:
             meta["screen"] = self.screen
+        if self.error:
+            meta["error"] = self.error
         return meta
+
+
+def _signal_outcome(rt, run: _SignalRun, sync_fail_closed: bool) -> str:
+    if run.crashed:
+        return "error"
+    if run.issues or (sync_fail_closed and rt.group.status in SIGNAL_STATUSES):
+        return "fail_closed"
+    if rt.group.status not in SIGNAL_STATUSES:
+        return "skipped"
+    return "ok"
 
 
 def _screen_meta(res) -> dict:
@@ -639,8 +758,7 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                                  "bar sync — recommendations NOT published",
                                  failed, len(symbols))
 
-                async def one_group(rt) -> _SignalRun:
-                    run = _SignalRun()
+                async def _recs(rt, run) -> None:
                     held, watch = group_syms.get(rt.group.id, (set(), set()))
                     screened = (rt.screener is not None
                                 and rt.group.status in SIGNAL_STATUSES)
@@ -687,6 +805,7 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                             logger.warning("signal_cycle: explanation layer failed",
                                            exc_info=True)
 
+                async def _book(rt, run) -> None:
                     account = rt.account
                     if cycles.account_entry_mode(account) == cycles.ENTRY_MODE_OPEN_ONCE:
                         # sentinel: today's fills were priced off the SIP 09:30 1min
@@ -706,9 +825,9 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                     equity = SimLedgerService.equity(account, positions, cm.marks)
                     run.marks_stale_close = cm.stale_close
                     run.marks_raw_or_missing = cm.raw_or_missing
-                    kept_snapshot = None
+                    run.kept_snapshot = None
                     if cm.stale_close or cm.raw_or_missing:
-                        kept_snapshot = await cycles.snapshot_on(db, account.id, today)
+                        run.kept_snapshot = await cycles.snapshot_on(db, account.id, today)
                     if not cm.raw_or_missing:
                         if cm.stale_close:
                             # the store's own earlier close is a real market
@@ -738,6 +857,7 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                                                             positions=positions,
                                                             equity=equity)
 
+                def _loud(run) -> None:
                     # the guards are only protective if a bad night is LOUD: a cycle
                     # that scans 500 names and publishes none used to leave
                     # `recs: 0` and silence
@@ -766,17 +886,50 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                             f"snapshot SKIPPED — {len(run.marks_stale_close)} position(s) "
                             f"marked at an earlier session's close: "
                             f"{', '.join(run.marks_stale_close)} (protections still ran)")
-                    if kept_snapshot is not None:
+                    if run.kept_snapshot is not None:
                         # the date is not left empty: whatever row is already there
                         # stays the published point, and it may not be a real close
                         # (2026-09-21 was written 00:37 ET off pre-market quotes)
-                        created = kept_snapshot.created_at
+                        created = run.kept_snapshot.created_at
                         stamp = (created.astimezone(_ET).strftime("%H:%M")
                                  if created is not None else "?")
                         run.issues.append(
-                            f"snapshot SKIPPED but the {kept_snapshot.snapshot_date} row "
+                            f"snapshot SKIPPED but the {run.kept_snapshot.snapshot_date} row "
                             f"(created {stamp} ET, equity "
-                            f"{float(kept_snapshot.equity):.2f}) stands")
+                            f"{float(run.kept_snapshot.equity):.2f}) stands")
+
+                async def one_group(rt) -> _SignalRun:
+                    """With more than one group each phase runs in its own savepoint:
+                    a crash rolls back only that group's phase, clears what the phase
+                    left in `run`, and the book phase still runs after a recs crash
+                    (exits and stops are protective). A single group runs bare, so
+                    its SQL and failure behaviour stay exactly as before."""
+                    run = _SignalRun()
+                    for phase, body in (("recs", _recs), ("book", _book)):
+                        if len(runtimes) == 1:
+                            await body(rt, run)
+                            continue
+                        try:
+                            async with db.begin_nested():
+                                await body(rt, run)
+                        except Exception as exc:
+                            logger.exception("signal_cycle: group %s crashed in %s",
+                                             rt.group.name, phase)
+                            run.crashed.append(phase)
+                            run.error = _error_text(exc)
+                            run.issues.append(f"crashed in {phase}: {type(exc).__name__}")
+                            if phase == "recs":
+                                run.batch = cycles.RecommendationBatch()
+                                run.recs = []
+                                run.n = 0
+                                run.explained = 0
+                            else:
+                                run.exits = cycles.ExitPass()
+                                run.drift = []
+                                run.marks_stale_close = []
+                                run.marks_raw_or_missing = []
+                                run.kept_snapshot = None
+                    _loud(run)
                     return run
 
                 runs = [(rt, await one_group(rt)) for rt in runtimes]
@@ -808,12 +961,20 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                     meta["settings_rejected"] = list(eff.rejected)
                 if sync_fail_closed:
                     meta["fail_closed"] = "bar sync failures"
+                crashed = [f"{rt.group.name}:{p}" for rt, run in runs for p in run.crashed]
+                if crashed:
+                    meta["groups_crashed"] = crashed
                 rec_issues = [_label(runtimes, rt) + issue
                               for rt, run in runs for issue in run.issues] + refused_issues
                 if refused:
                     meta["groups_refused"] = list(refused)
                 if rec_issues:
                     meta["fail_closed"] = "; ".join(rec_issues)
+                for rt, run in runs:
+                    db.add(StrategyGroupRun(group_id=rt.group.id, cycle="signal",
+                                            session_date=today, seq=retry_seq,
+                                            outcome=_signal_outcome(rt, run, sync_fail_closed),
+                                            meta=run.meta()))
                 await _beat(db, "signal_cycle", **meta)
                 # same transaction as the heartbeat: the catch-up dispatcher must
                 # never see a landed attempt whose mutex is still held, or it books

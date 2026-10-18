@@ -22,6 +22,7 @@ from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, Recommendation, SimAccount
 from app.modules.simledger.service import SimLedgerService, _dec
 from app.modules.strategy_groups import service as group_service
+from app.modules.strategy_groups.models import StrategyGroupRun
 from app.modules.strategy_groups.service import GroupRuntime, validate_group
 from app.tasks import quant_tasks
 from tests._groups import group_for, groups_loader
@@ -61,6 +62,8 @@ class _Db:
         self.recs_by_group = recs_by_group or {}
         self.added = []
         self.committed = 0
+        self.savepoints = 0
+        self.rollbacks = 0
 
     def _group_recs(self, sql):
         for gid, recs in self.recs_by_group.items():
@@ -109,6 +112,29 @@ class _Db:
 
     async def commit(self):
         self.committed += 1
+
+    def begin_nested(self):
+        db = self
+
+        class _Savepoint:
+            async def __aenter__(self_inner):
+                db.savepoints += 1
+
+            async def __aexit__(self_inner, exc_type, *a):
+                if exc_type is not None:
+                    db.rollbacks += 1
+                return False
+        return _Savepoint()
+
+
+class _PriorErrorDb(_Db):
+    """Today already holds an error run row for every group and cycle."""
+
+    async def execute(self, stmt):
+        cols = getattr(stmt, "column_descriptions", None) or []
+        if cols and cols[0].get("entity") is StrategyGroupRun:
+            return SimpleNamespace(scalar_one_or_none=lambda: uuid4())
+        return await super().execute(stmt)
 
 
 class _Factory:
@@ -436,3 +462,213 @@ def test_position_cycle_with_no_groups_still_beats(monkeypatch, notes):
     assert quant_tasks.position_cycle() == "no strategy groups"
     assert [b.meta for b in _beats(factory, "position_cycle")] == [{"closed": []}]
     assert factory.dbs[0].committed == 1
+
+
+# --- P3a: one group's crash is isolated (N>1 only) --------------------------------
+
+def _runs(factory, cycle):
+    return {r.group_id: r for db in factory.dbs for r in db.added
+            if isinstance(r, StrategyGroupRun) and r.cycle == cycle}
+
+
+def _signal_db(factory):
+    return next(db for db in factory.dbs if _beats_in(db, "signal_cycle"))
+
+
+def _beats_in(db, name):
+    return [o for o in db.added if isinstance(o, HeartbeatRecord) and o.name == name]
+
+
+def test_recs_crash_rolls_back_one_group_and_its_book_still_runs(signal_world, notes):
+    a, b = _runtime("alpha"), _runtime("beta", strategy={"ma_fast": 7})
+    calls = signal_world.calls
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+
+    async def store(db, recs, *, group_id):
+        if group_id == a.group.id:
+            raise RuntimeError("boom")
+        calls.store.append(group_id)
+        return len(recs)
+
+    signal_world.monkeypatch.setattr(cycles, "store_recommendations", store)
+    out = quant_tasks.signal_cycle()
+
+    assert calls.store == [b.group.id]
+    assert [e[0] for e in calls.exits] == [a.account.id, b.account.id]
+    beat = _beats(signal_world.factory, "signal_cycle")[0]
+    assert beat.meta["groups_crashed"] == ["alpha:recs"]
+    assert beat.meta["groups"]["alpha"]["error"] == "RuntimeError: boom"
+    assert beat.meta["groups"]["alpha"]["recs"] == 0
+    assert "[alpha] crashed in recs: RuntimeError" in beat.meta["fail_closed"]
+    assert beat.meta["recs"] == 1
+    assert cycles.signal_cycle_data_failure(beat.meta) == \
+        "1 group step(s) crashed: alpha:recs"
+    runs = _runs(signal_world.factory, "signal")
+    assert runs[a.group.id].outcome == "error"
+    assert runs[a.group.id].meta["error"] == "RuntimeError: boom"
+    assert runs[b.group.id].outcome == "ok"
+    assert runs[b.group.id].session_date == SESSION and runs[b.group.id].seq == 0
+    db = _signal_db(signal_world.factory)
+    assert (db.savepoints, db.rollbacks) == (4, 1)
+    assert not any(n.startswith("[alpha] 🔎") for n in notes)
+    assert "[beta] 🔎 明日 shortlist: AAA" in notes
+    assert "[alpha] 📤 对照账户 daily exits: X1" in notes
+    assert out.startswith("recs=1 ")
+
+
+def test_book_crash_drops_that_groups_exit_report(signal_world, notes):
+    a, b = _runtime("alpha"), _runtime("beta")
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+
+    async def protections(db, account, equity, today, **kw):
+        if account is a.account:
+            raise ValueError("bad mark")
+
+    signal_world.monkeypatch.setattr(cycles, "update_protections", protections)
+    quant_tasks.signal_cycle()
+
+    beat = _beats(signal_world.factory, "signal_cycle")[0]
+    assert beat.meta["groups_crashed"] == ["alpha:book"]
+    assert beat.meta["groups"]["alpha"]["closed"] == []
+    assert beat.meta["closed"] == ["X2"]
+    assert signal_world.calls.store == [a.group.id, b.group.id]
+    runs = _runs(signal_world.factory, "signal")
+    assert (runs[a.group.id].outcome, runs[b.group.id].outcome) == ("error", "ok")
+    assert not any("daily exits: X1" in n for n in notes)
+    assert "[beta] 📤 对照账户 daily exits: X2" in notes
+    assert "[alpha] 🔎 明日 shortlist: AAA" in notes
+
+
+def test_paused_group_outcome_is_fail_closed_only_with_issues(signal_world, notes):
+    a = _runtime("alpha")
+    quiet, loud = _runtime("quiet", status="paused"), _runtime("loud", status="paused")
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups",
+                                     groups_loader(a, quiet, loud))
+
+    async def exits(db, account, today, **kw):
+        return cycles.ExitPass(unadjusted=["ZZZ"] if account is loud.account else [])
+
+    signal_world.monkeypatch.setattr(cycles, "daily_exit_management", exits)
+    quant_tasks.signal_cycle()
+    runs = _runs(signal_world.factory, "signal")
+    assert runs[a.group.id].outcome == "ok"
+    assert runs[quiet.group.id].outcome == "skipped"
+    assert runs[loud.group.id].outcome == "fail_closed"
+    assert "groups_crashed" not in _beats(signal_world.factory, "signal_cycle")[0].meta
+
+
+def test_single_group_crash_is_not_caught(signal_world, notes):
+    a = _runtime("alpha")
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a))
+
+    def build(symbols, session_date, **kw):
+        raise RuntimeError("boom")
+
+    signal_world.monkeypatch.setattr(cycles, "build_recommendations", build)
+    assert quant_tasks.signal_cycle() == "error"
+    added = [o for db in signal_world.factory.dbs for o in db.added]
+    assert not any(isinstance(o, StrategyGroupRun) for o in added)
+    assert _beats(signal_world.factory, "signal_cycle") == []
+    assert all(db.savepoints == 0 for db in signal_world.factory.dbs)
+
+
+def _entry_crash_world(entry_world, db_fn):
+    a, b = _runtime("alpha"), _runtime("beta")
+    recs = {a.group.id: [_rec("AAA", a.group.id)], b.group.id: [_rec("BBB", b.group.id)]}
+    factory = _Factory(lambda: db_fn(recs))
+    entry_world.monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    entry_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+
+    async def state(db, account, **kw):
+        if account is a.account:
+            raise RuntimeError("db hiccup")
+        return None
+
+    entry_world.monkeypatch.setattr(cycles, "get_safety_state", state)
+    return a, b, factory
+
+
+def test_entry_crash_is_isolated_and_alerted_once(entry_world, notes):
+    a, b, factory = _entry_crash_world(entry_world, _Db)
+    out = quant_tasks.entry_cycle()
+    assert entry_world.keys == [f"entry:{b.account.id}:BBB:2026-07-30"]
+    beat = _beats(factory, "entry_cycle")[0]
+    assert beat.meta["groups"]["alpha"] == {"error": "RuntimeError: db hiccup"}
+    runs = _runs(factory, "entry")
+    assert (runs[a.group.id].outcome, runs[b.group.id].outcome) == ("error", "ok")
+    assert runs[b.group.id].meta == {"booked": ["BBB"], "mode": "open_once"}
+    assert notes == ["[alpha] ⛔ entry_cycle crashed: RuntimeError — 该组今天不进场",
+                     "[beta] 📈 对照账户 entries booked: BBB"]
+    assert out == "[alpha] error: RuntimeError; [beta] booked: ['BBB']"
+    assert (factory.dbs[0].savepoints, factory.dbs[0].rollbacks) == (2, 1)
+
+
+def test_entry_crash_alert_is_deduped_per_day(entry_world, notes):
+    _entry_crash_world(entry_world, _PriorErrorDb)
+    quant_tasks.entry_cycle()
+    assert not any("entry_cycle crashed" in n for n in notes)
+
+
+def test_entry_skipped_groups_write_no_run_row(entry_world, notes):
+    a, b = _runtime("alpha"), _runtime("beta")
+    factory = _Factory()
+    entry_world.monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    entry_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+    entry_world.monkeypatch.setattr(quant_tasks, "_now_et",
+                                    lambda: datetime(2026, 7, 30, 11, 30, tzinfo=ET))
+    quant_tasks.entry_cycle()
+    assert _runs(factory, "entry") == {}
+    assert len(_beats(factory, "entry_cycle")) == 1
+
+
+def _position_crash_world(monkeypatch, db_fn=_Db):
+    a, b = _runtime("alpha"), _runtime("beta", status="paused")
+    factory = _Factory(db_fn)
+    monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    monkeypatch.setattr(quant_tasks, "_in_rth", lambda *a, **kw: True)
+    monkeypatch.setattr(quant_tasks, "_now_et",
+                        lambda: datetime(2026, 7, 30, 11, 0, tzinfo=ET))
+    monkeypatch.setattr(quant_tasks, "FinnhubClient", lambda *a, **kw: object())
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+
+    async def stops(db, account, *, quote_fn):
+        if account is a.account:
+            raise RuntimeError("quote feed")
+        return ["KDP"]
+
+    monkeypatch.setattr(cycles, "check_stops", stops)
+    return a, b, factory
+
+
+def test_position_crash_still_checks_the_other_group(monkeypatch, notes):
+    a, b, factory = _position_crash_world(monkeypatch)
+    out = quant_tasks.position_cycle()
+    beat = _beats(factory, "position_cycle")[0]
+    assert beat.meta == {"closed": ["KDP"], "groups_crashed": ["alpha"],
+                         "groups": {"alpha": {"closed": [], "error": "RuntimeError: quote feed"},
+                                    "beta": {"closed": ["KDP"]}}}
+    runs = _runs(factory, "position")
+    assert runs[a.group.id].outcome == "error"
+    assert runs[a.group.id].meta == {"closed": [], "error": "RuntimeError: quote feed"}
+    assert (runs[b.group.id].outcome, runs[b.group.id].meta) == ("ok", {"closed": ["KDP"]})
+    assert runs[b.group.id].session_date == SESSION
+    assert notes == ["[alpha] ⛔ position_cycle crashed: RuntimeError — 该组 stop 未检查",
+                     "[beta] 🛑 对照账户 stop exit: KDP"]
+    assert out == "[alpha] error: RuntimeError; [beta] closed: ['KDP']"
+    assert factory.dbs[0].committed == 1
+    assert (factory.dbs[0].savepoints, factory.dbs[0].rollbacks) == (2, 1)
+
+
+def test_single_group_position_crash_is_not_caught(monkeypatch, notes):
+    a, _, factory = _position_crash_world(monkeypatch)
+    monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a))
+    assert quant_tasks.position_cycle() == "error"
+    added = [o for db in factory.dbs for o in db.added]
+    assert not any(isinstance(o, StrategyGroupRun) for o in added)
+    assert all(db.savepoints == 0 for db in factory.dbs)
+
+
+def test_position_crash_alert_is_deduped_per_day(monkeypatch, notes):
+    _position_crash_world(monkeypatch, _PriorErrorDb)
+    quant_tasks.position_cycle()
+    assert notes == ["[beta] 🛑 对照账户 stop exit: KDP"]
