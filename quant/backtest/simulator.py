@@ -116,7 +116,9 @@ def prepare_features(symbols: list[str], sectors: dict[str, str], cfg: SimConfig
 
 def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
         benchmark_symbol: str = "SPY", progress=lambda *_: None,
-        features: dict[str, pd.DataFrame] | None = None) -> SimResult:
+        features: dict[str, pd.DataFrame] | None = None,
+        etf_exempt: bool = True,
+        pool_held_exclude: frozenset[str] | None = None) -> SimResult:
     # 1) per-symbol features (precomputed via prepare_features for sweeps)
     feats = features if features is not None else prepare_features(
         symbols, sectors, cfg, progress=progress)
@@ -246,8 +248,14 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 # B3: entries draw only from D-1 as-of index members — a name
                 # added in 2024 must not be tradable in 2017. ETFs exempt.
                 allowed = cfg.membership_on(prev)
-                cand = cand[cand["symbol"].isin(allowed)
-                            | cand["symbol"].isin(etf_set)]
+                if allowed is None:      # screen gap: live published nothing that night
+                    allowed = frozenset()
+                elif pool_held_exclude is not None:
+                    allowed = set(allowed) | (held_at_open - pool_held_exclude)
+                mask = cand["symbol"].isin(allowed)
+                if etf_exempt:
+                    mask = mask | cand["symbol"].isin(etf_set)
+                cand = cand[mask]
             shortlist = fn.build_shortlist(cand, cfg.funnel)
             shortlist += fn.select_etfs(cand)
 

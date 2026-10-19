@@ -169,3 +169,84 @@ def test_ui_schema_bounds_every_field_around_its_default():
             assert {k: entry[k] for k in ("type", "default")} == base[section][name]
             assert entry["min"] <= entry["default"] <= entry["max"]
     assert "min" not in spec.params_schema()["strategy"]["ma_fast"]
+
+
+def _grid_error(grid) -> str:
+    from quant.engine.strategies import validate_grid
+
+    with pytest.raises(StrategyParamsError) as e:
+        validate_grid(V1_COMPOSITE_KEY, grid)
+    return str(e.value)
+
+
+def test_validate_grid_none_returns_a_copy_of_the_default_grid():
+    from quant.engine.strategies import GRIDS, validate_grid
+
+    got = validate_grid(V1_COMPOSITE_KEY, None)
+    assert got == GRIDS[V1_COMPOSITE_KEY]
+    got["exits.reversal_bars"] = (9,)
+    got.pop("funnel.min_confidence")
+    assert GRIDS[V1_COMPOSITE_KEY]["exits.reversal_bars"] == (2, 3, 5)
+    assert "funnel.min_confidence" in GRIDS[V1_COMPOSITE_KEY]
+
+
+def test_validate_grid_unknown_strategy_key_raises():
+    from quant.engine.strategies import validate_grid
+
+    with pytest.raises(StrategyParamsError, match="unknown strategy_key"):
+        validate_grid("cat.v2.unknown", None)
+
+
+def test_validate_grid_rejects_strategy_section():
+    assert "unknown knob" in _grid_error({"strategy.ma_fast": [5]})
+
+
+def test_validate_grid_rejects_unknown_field():
+    assert _grid_error({"exits.nope": [1]}) == \
+        "grid.exits.nope: unknown knob (only funnel.* and exits.*)"
+
+
+def test_validate_grid_rejects_bool_for_int():
+    assert "expected int" in _grid_error({"exits.reversal_bars": [True]})
+
+
+def test_validate_grid_rejects_float_for_int():
+    assert "expected int" in _grid_error({"exits.reversal_bars": [2.0]})
+
+
+def test_validate_grid_rejects_duplicate_after_coercion():
+    assert _grid_error({"exits.trailing_start_r": [1, 1.0]}) == \
+        "grid.exits.trailing_start_r: duplicate value 1.0"
+
+
+def test_validate_grid_knob_and_value_limits():
+    knobs = {f"exits.{k}": [1.0] for k in ("trailing_start_r", "trailing_atr_mult")}
+    knobs.update({f"funnel.{k}": [1] for k in ("max_per_sector", "shortlist_max")})
+    knobs.update({"funnel.min_confidence": [70.0], "funnel.min_price": [5.0],
+                  "funnel.min_adv": [1e6]})
+    assert _grid_error(knobs) == "grid: at most 6 knobs"
+    assert _grid_error({"exits.reversal_bars": [1, 2, 3, 4, 5, 6]}) == \
+        "grid.exits.reversal_bars: 1-5 values"
+    assert _grid_error({"exits.reversal_bars": []}) == "grid.exits.reversal_bars: 1-5 values"
+    assert _grid_error({}) == "grid: must be a non-empty object"
+    assert _grid_error([("exits.reversal_bars", [2])]) == "grid: must be a non-empty object"
+
+
+def test_validate_grid_rejects_out_of_bounds_value():
+    assert _grid_error({"exits.reversal_bars": [0]}) == (
+        "grid.exits.reversal_bars: 0 out of bounds: "
+        "params_json.exits.reversal_bars: 0 < min 1")
+
+
+def test_validate_grid_applies_cross_rules_against_defaults():
+    assert "must be < funnel.atr_pct_max" in _grid_error({"funnel.atr_pct_min": [0.09]})
+
+
+def test_validate_grid_custom_grid_keeps_order_and_coerces():
+    from quant.engine.strategies import validate_grid
+
+    got = validate_grid(V1_COMPOSITE_KEY, {"exits.stagnation_bars": [45, 20],
+                                           "funnel.min_confidence": [70, 80.5]})
+    assert list(got) == ["exits.stagnation_bars", "funnel.min_confidence"]
+    assert got == {"exits.stagnation_bars": (45, 20), "funnel.min_confidence": (70.0, 80.5)}
+    assert all(type(v) is float for v in got["funnel.min_confidence"])

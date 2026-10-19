@@ -358,3 +358,90 @@ def test_simulator_entry_and_stop_exit(monkeypatch, small_params):
     assert t.symbol == "AAA"
     assert t.exit_reason in ("hard_stop", "trailing", "reversal")
     assert t.exit_date > t.entry_date
+
+
+# --- P3b: screener pool kwargs ----------------------------------------------
+
+def _pool_world(monkeypatch, small_params):
+    sp, fp, ep = small_params
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=30)]
+    dates = [pd.Timestamp(s).date() for s in sessions]
+    closes = [10 * 1.03 ** i for i in range(25)] + [12, 9, 8, 7, 6]   # climb, then stop out
+    _patch_bars(monkeypatch, {"AAA": _synth_bars(sessions, closes),
+                              "SPY": _synth_bars(sessions, closes)})
+
+    def run(membership, **kw):
+        cfg = simulator.SimConfig(start="2024-01-01", end="2024-03-01",
+                                  starting_capital=2000, adv_window=2,
+                                  strategy=sp, funnel=fp, exits=ep,
+                                  membership_on=membership)
+        return simulator.run(["AAA", "SPY"], {"AAA": "tech", "SPY": "etf"}, cfg, **kw)
+
+    first = min(t.entry_date for t in run(lambda d: {"AAA"}).trades if t.symbol == "AAA")
+    return run, dates[dates.index(first) - 1]
+
+
+def test_pool_kwargs_defaults_are_the_legacy_behaviour(monkeypatch, small_params):
+    run, _ = _pool_world(monkeypatch, small_params)
+    a = run(lambda d: {"AAA"})
+    b = run(lambda d: {"AAA"}, etf_exempt=True, pool_held_exclude=None)
+    assert a.equity.equals(b.equity)
+    assert a.trades == b.trades and a.trades
+
+
+def test_etf_exempt_false_keeps_etfs_out_of_a_pool_without_them(monkeypatch, small_params):
+    run, _ = _pool_world(monkeypatch, small_params)
+    assert "SPY" in {t.symbol for t in run(lambda d: {"AAA"}, etf_exempt=True).trades}
+    assert "SPY" not in {t.symbol for t in run(lambda d: {"AAA"}, etf_exempt=False).trades}
+
+
+def test_pool_held_exclude_lets_a_held_name_pyramid_after_leaving_the_pool(
+        monkeypatch, small_params):
+    run, prev0 = _pool_world(monkeypatch, small_params)
+    member_once = lambda d: {"AAA"} if d == prev0 else set()   # noqa: E731
+    gated = run(member_once, etf_exempt=False)
+    held_ok = run(member_once, etf_exempt=False, pool_held_exclude=frozenset())
+    assert [t.symbol for t in gated.trades] == [t.symbol for t in held_ok.trades] == ["AAA"]
+    assert held_ok.trades[0].shares > gated.trades[0].shares
+
+
+def test_screen_gap_blocks_pyramiding_even_for_held_names(monkeypatch, small_params):
+    run, prev0 = _pool_world(monkeypatch, small_params)
+    gated = run(lambda d: {"AAA"} if d == prev0 else set(), etf_exempt=False)
+    gap = run(lambda d: {"AAA"} if d == prev0 else (set() if d < prev0 else None),
+              etf_exempt=False, pool_held_exclude=frozenset())
+    assert [t.symbol for t in gap.trades] == ["AAA"]
+    assert gap.trades[0].shares == gated.trades[0].shares
+
+
+def test_turnover_hand_value():
+    eq = pd.Series([100.0, 110.0, 90.0])
+    trades = [Trade("A", date(2024, 1, 2), date(2024, 1, 3), 10.0, 11.0, 2.0, 1.0, 2.0, "x"),
+              Trade("B", date(2024, 1, 2), date(2024, 1, 3), 5.0, 4.0, 4.0, 1.0, -4.0, "x")]
+    assert metrics.turnover(trades, eq) == pytest.approx(40.0 / 100.0 * 252 / 2)
+    assert metrics.turnover(trades, eq.iloc[:1]) == 0.0
+    assert metrics.turnover(trades, pd.Series([0.0, 0.0])) == 0.0
+
+
+def test_payload_has_exactly_fourteen_keys():
+    eq = pd.Series([2000.0, 2010.0, 1990.0],
+                   index=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)])
+    p = metrics.payload(eq, [])
+    assert set(p) == {"cagr", "sharpe", "sortino", "max_drawdown", "return_over_maxdd",
+                      "win_rate", "profit_factor", "avg_r", "num_trades", "final_equity",
+                      "turnover", "n_sessions", "start", "end"}
+    assert (p["n_sessions"], p["start"], p["end"]) == (3, "2024-01-02", "2024-01-04")
+    assert metrics.payload(pd.Series(dtype="float64"), [])["start"] is None
+
+
+def test_payload_is_strict_json_with_inf_and_numpy_inputs():
+    import json
+
+    eq = pd.Series(np.array([2000.0, 2010.0, 2020.0]),
+                   index=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)])
+    win = Trade("A", date(2024, 1, 2), date(2024, 1, 3), np.float64(10.0), np.float64(11.0),
+                np.int64(2), np.float64(1.0), np.float64(2.0), "x")
+    p = metrics.payload(eq, [win])
+    assert p["profit_factor"] is None and p["return_over_maxdd"] is None   # both inf
+    assert all(not isinstance(v, np.generic) for v in p.values())
+    json.dumps(p, allow_nan=False)

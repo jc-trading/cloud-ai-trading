@@ -167,3 +167,52 @@ def ui_schema(key: str) -> dict:
         for name, entry in entries.items():
             entry["min"], entry["max"] = BOUNDS[key][section][name]
     return schema
+
+
+GRIDS: dict[str, dict[str, tuple]] = {
+    V1_COMPOSITE_KEY: {
+        "funnel.min_confidence": (65.0, 70.0, 75.0),
+        "exits.reversal_bars": (2, 3, 5),
+        "exits.stagnation_bars": (20, 30, 45),
+        "exits.trailing_start_r": (1.0, 1.5, 2.0),
+        "exits.trailing_atr_mult": (2.0, 3.0, 4.0),
+    },
+}
+GRID_MAX_KNOBS = 6
+GRID_MAX_VALUES = 5
+GRID_SECTIONS = ("funnel", "exits")
+
+
+def validate_grid(key: str, grid) -> dict[str, tuple]:
+    """Validate a walk-forward search grid. None means the strategy's default
+    grid; otherwise only funnel.* / exits.* knobs, 1-5 distinct values each,
+    every value type-checked like params_json and within bounds when applied
+    on top of the defaults. Keeps the caller's knob order."""
+    spec = get_spec(key)
+    if grid is None:
+        return {k: tuple(v) for k, v in GRIDS[key].items()}
+    if not isinstance(grid, dict) or not grid:
+        raise StrategyParamsError("grid: must be a non-empty object")
+    if len(grid) > GRID_MAX_KNOBS:
+        raise StrategyParamsError(f"grid: at most {GRID_MAX_KNOBS} knobs")
+    out: dict[str, tuple] = {}
+    for knob, values in grid.items():
+        section, _, name = str(knob).partition(".")
+        cls = _SECTIONS.get(section) if section in GRID_SECTIONS else None
+        if cls is None or name not in {f.name for f in fields(cls)}:
+            raise StrategyParamsError(
+                f"grid.{knob}: unknown knob (only funnel.* and exits.*)")
+        if not isinstance(values, (list, tuple)) or not 1 <= len(values) <= GRID_MAX_VALUES:
+            raise StrategyParamsError(f"grid.{knob}: 1-{GRID_MAX_VALUES} values")
+        hint = typing.get_type_hints(cls)[name]
+        coerced: list = []
+        for v in values:
+            c = _coerce(section, name, hint, v)
+            if c in coerced:
+                raise StrategyParamsError(f"grid.{knob}: duplicate value {v}")
+            problems = check_bounds(key, spec.build({section: {name: c}}))
+            if problems:
+                raise StrategyParamsError(f"grid.{knob}: {v} out of bounds: {problems[0]}")
+            coerced.append(c)
+        out[knob] = tuple(coerced)
+    return out

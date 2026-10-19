@@ -142,6 +142,7 @@ COMMISSION_PER_SHARE: float = 0.0             # US equities/ETF ~ $0 (tiny reg f
 PANEL_ROOT: Path = DATA_ROOT / "panel" / "us" / "daily"
 ELIGIBLE_ASSET_TYPES: tuple[str, ...] = ("stock", "adr", "etf")
 SCREEN_POOL_MAX: int = 1500
+BACKTEST_PANEL_MIN_COVERAGE: float = 0.97   # P3b: an un-flagged historical session screens only above this
 UNIVERSE_FRESH_PER_NIGHT: int = 300
 UNIVERSE_FAIL_RATIO: float = 0.2
 SEC_MAX_RPS: int = 8

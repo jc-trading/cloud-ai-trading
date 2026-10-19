@@ -28,6 +28,7 @@ celery_app = Celery(
         "app.tasks.quant_tasks",
         "app.tasks.telegram_tasks",
         "app.tasks.news_tasks",
+        "app.tasks.research_tasks",
     ],
 )
 
@@ -50,7 +51,8 @@ celery_app.conf.update(
     # the whole-market sync runs for up to two hours: its own worker (-Q bulk)
     # keeps it off the slots signal_cycle and the heartbeat need
     task_routes={"market.universe_sync": {"queue": "bulk"},
-                 "news.cycle": {"queue": "news"}},
+                 "news.cycle": {"queue": "news"},
+                 "research.dispatch": {"queue": "research"}},
 )
 
 # NOTE: no autodiscover_tasks() — every task module is registered explicitly via
@@ -133,6 +135,7 @@ celery_app.conf.beat_schedule.update({
         "schedule": 900.0,
         "options": {"expires": 840},
     },
+    "research-dispatch": {"task": "research.dispatch", "schedule": 60.0, "options": {"expires": 55}},
 })
 
 

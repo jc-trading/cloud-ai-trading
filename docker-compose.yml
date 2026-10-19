@@ -226,6 +226,52 @@ services:
     mem_limit: 2g
     command: celery -A tasks.celery_app worker -Q bulk,news --concurrency=1 --loglevel=info -n bulk@%h
 
+  # Research worker (P3b): consumes ONLY the research queue — one backtest at a
+  # time, off the trading and bulk workers. No broker/data API keys on purpose:
+  # a backtest reads cached data only. Reuses the worker image; no build.
+  celery-research:
+    container_name: cat_celery_research
+    image: cloud-ai-trading-celery-worker:latest
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/cloudaitrading
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      AI_PROVIDER: ${AI_PROVIDER:-claude}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DEBUG: ${DEBUG:-False}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_APP_PASSWORD: ${SMTP_APP_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tasks:/app/tasks
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/tests:/app/tests
+      - ./quant:/app/quant
+      - ./cat-data:/app/cat-data
+      - ./stock-market-data:/app/stock-market-data
+      - ./runtime:/app/runtime
+    networks:
+      - cat_network
+    restart: unless-stopped
+    cpus: 2.0
+    mem_limit: 3g
+    oom_score_adj: 500
+    command: celery -A tasks.celery_app worker -Q research --concurrency=1 --max-memory-per-child=524288 --loglevel=info -n research@%h
+
   # Celery Beat (Scheduler)
   celery-beat:
     container_name: cat_celery_beat

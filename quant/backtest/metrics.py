@@ -119,3 +119,28 @@ def summary(equity: pd.Series, trades: list[Trade],
         out["beats_spy_sharpe"] = out["sharpe"] > out["spy_sharpe"]
         out["beats_spy_return_over_maxdd"] = out["return_over_maxdd"] > out["spy_return_over_maxdd"]
     return out
+
+
+def turnover(trades, equity):
+    if len(equity) < 2 or equity.mean() <= 0:
+        return 0.0
+    return float(sum(t.shares * t.entry_price for t in trades) / equity.mean() * 252 / (len(equity) - 1))
+
+
+def _plain(v):
+    if isinstance(v, np.generic):
+        v = v.item()
+    if isinstance(v, float) and not np.isfinite(v):
+        return None
+    return v
+
+
+def payload(equity: pd.Series, trades: list[Trade]) -> dict:
+    """summary() without a benchmark plus turnover, session count and span —
+    the one metrics shape shared by backtests and live accounts, with numpy
+    scalars unwrapped and inf/NaN as None so it fits JSONB."""
+    out = {**summary(equity, trades), "turnover": turnover(trades, equity),
+           "n_sessions": int(len(equity)),
+           "start": str(equity.index[0]) if len(equity) else None,
+           "end": str(equity.index[-1]) if len(equity) else None}
+    return {k: _plain(v) for k, v in out.items()}
