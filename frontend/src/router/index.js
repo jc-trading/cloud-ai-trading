@@ -62,6 +62,12 @@ const routes = [
         name: 'Settings',
         component: () => import('@/views/Settings.vue'),
       },
+      { path: 'groups', name: 'Groups', component: () => import('@/views/GroupsList.vue') },
+      { path: 'groups/new', name: 'GroupNew', component: () => import('@/views/GroupForm.vue'), props: { mode: 'create' } },
+      { path: 'groups/:id', name: 'GroupDetail', component: () => import('@/views/GroupDetail.vue'), props: true },
+      { path: 'groups/:id/clone', name: 'GroupClone', component: () => import('@/views/GroupForm.vue'), props: (r) => ({ mode: 'clone', sourceId: r.params.id }) },
+      { path: 'backtests/:id', name: 'BacktestDetail', component: () => import('@/views/BacktestDetail.vue'), props: true },
+      { path: 'compare', name: 'Compare', component: () => import('@/views/Compare.vue') },
       {
         // Catch-all for deleted/unknown routes (/portfolio, /trading, ...):
         // lowest match score, so it only fires when nothing above matched.

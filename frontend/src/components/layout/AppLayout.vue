@@ -27,6 +27,12 @@
         </div>
 
         <div class="jd-nav-section">
+          <div class="jd-nav-label">Strategy Lab</div>
+          <SidebarItem to="/groups" icon="pi-sitemap" label="Groups" :isActive="route.path.startsWith('/groups') || route.path.startsWith('/backtests')" />
+          <SidebarItem to="/compare" icon="pi-chart-line" label="Compare" :isActive="route.path === '/compare'" />
+        </div>
+
+        <div class="jd-nav-section">
           <div class="jd-nav-label">Market Data</div>
           <SidebarItem to="/market" icon="pi-globe" label="Market Overview" :isActive="route.path.startsWith('/market')" />
           <SidebarItem to="/watchlist" icon="pi-star-fill" label="Watchlist" :isActive="route.path === '/watchlist'" />
@@ -180,6 +186,12 @@ const pageTitles = {
   'Market': 'Market Overview',
   'SymbolDetail': 'Market Detail',
   'Settings': 'Settings',
+  'Groups': 'Strategy Groups',
+  'GroupNew': 'New Group',
+  'GroupClone': 'Clone Group',
+  'GroupDetail': 'Strategy Group',
+  'BacktestDetail': 'Backtest',
+  'Compare': 'Compare',
 }
 
 const pageDescriptions = {
@@ -191,6 +203,12 @@ const pageDescriptions = {
   'Market': 'Live US stock prices',
   'SymbolDetail': 'In-depth market analysis',
   'Settings': 'Account preferences',
+  'Groups': 'Strategy groups and their status',
+  'GroupNew': 'Create a strategy group',
+  'GroupClone': 'Copy a group with overrides',
+  'GroupDetail': 'Config, account, cycles and backtests',
+  'BacktestDetail': 'Run progress, metrics, windows and calibration',
+  'Compare': 'Live accounts and backtests side by side',
 }
 
 const currentPageTitle       = computed(() => pageTitles[route.name]       || 'Recommendations')

@@ -51,6 +51,36 @@
       </div>
     </div>
 
+    <div v-if="groups.selectedId" class="jd-card">
+      <div class="jd-card-header"><h2 class="jd-card-title">Group cycles — {{ groups.selected?.name }}</h2></div>
+      <div class="jd-card-body">
+        <DataTable
+          :columns="runColumns"
+          :data="runs"
+          row-key="id"
+          :page-size="10"
+          :loading="runsLoading"
+          :error="runsError"
+        >
+          <template #cell:created_at="{ value }">
+            <span class="font-mono" style="color: var(--jd-text-muted)">{{ fmtTime(value) }}</span>
+          </template>
+          <template #cell:outcome="{ value }">
+            <span class="jd-badge" :class="outcomeColor(value)">{{ value }}</span>
+          </template>
+          <template #cell:meta="{ row }">
+            <span class="font-mono" style="font-size:11px" :title="JSON.stringify(row.meta ?? {})">{{ metaText(row.meta) }}</span>
+          </template>
+          <template #empty>
+            <div class="jd-empty">
+              <i class="pi pi-history"></i>
+              <p>No cycle runs in the last 30 days for this group.</p>
+            </div>
+          </template>
+        </DataTable>
+      </div>
+    </div>
+
     <!-- Per-night table -->
     <div v-if="groups.selectedId" class="jd-card">
       <div class="jd-card-header"><h2 class="jd-card-title">Nights</h2></div>
@@ -161,6 +191,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import DataTable from '@/components/common/DataTable.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import { getNightWatchLog } from '@/api/nightwatch'
+import { getGroupRuns } from '@/api/strategyGroups'
 import { useStrategyGroupsStore } from '@/stores/strategyGroups'
 
 const groups = useStrategyGroupsStore()
@@ -170,6 +201,9 @@ const heartbeats = ref([])
 const safety = ref(null)
 const loading = ref(false)
 const error = ref(null)
+const runs = ref([])
+const runsLoading = ref(false)
+const runsError = ref(null)
 let shownGroupId = null
 
 const safetyActive = computed(() =>
@@ -214,6 +248,22 @@ const orderColumns = [
     filterable: true, filterLabel: 'Status' },
 ]
 
+const runColumns = [
+  { key: 'created_at', header: 'Time', sortable: true },
+  { key: 'session_date', header: 'Session', sortable: true },
+  { key: 'cycle', header: 'Cycle', filterable: true, filterLabel: 'Cycle' },
+  { key: 'seq', header: 'Seq', align: 'right' },
+  { key: 'outcome', header: 'Outcome', align: 'center', filterable: true, filterLabel: 'Outcome' },
+  { key: 'meta', header: 'Meta' },
+]
+
+const outcomeColor = (o) => ({ ok: 'green', skipped: 'gray', blocked: 'yellow', fail_closed: 'orange', error: 'red' }[o] || 'gray')
+
+const metaText = (meta) => {
+  const s = JSON.stringify(meta ?? {})
+  return s.length > 120 ? `${s.slice(0, 120)}…` : s
+}
+
 const fmtTime = (iso) => {
   if (!iso) return '—'
   return new Date(iso).toLocaleString(undefined, {
@@ -238,6 +288,22 @@ const beatClass = (h) => {
   return ''
 }
 
+async function loadRuns(groupId) {
+  runsLoading.value = true
+  try {
+    const { data } = await getGroupRuns(groupId, { days: 30 })
+    if (groupId !== groups.selectedId) return
+    runs.value = data
+    runsError.value = null
+  } catch (e) {
+    if (groupId === groups.selectedId) {
+      runsError.value = e?.response?.data?.detail || 'Failed to load group cycles'
+    }
+  } finally {
+    if (groupId === groups.selectedId) runsLoading.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = null
@@ -253,9 +319,11 @@ async function load() {
       nightsRaw.value = []
       heartbeats.value = []
       safety.value = null
+      runs.value = []
       shownGroupId = groupId
     }
     if (!groupId) return
+    loadRuns(groupId)
     const { data } = await getNightWatchLog(groupId, 30)
     if (groupId !== groups.selectedId) return
     nightsRaw.value = data.nights || []
