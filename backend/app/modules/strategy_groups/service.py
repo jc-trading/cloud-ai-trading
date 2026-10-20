@@ -9,18 +9,23 @@ its configuration silently ignored.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quant.backtest.calibration import max_p, score_threshold
 from quant.engine.screener import ScreenerSpec, ScreenerSpecError, parse_spec
 from quant.engine.strategies import StrategyParamsError, V1Config, check_bounds, get_spec
+from quant.engine.trade_rules import (TradeSettings, TradeSettingsError, normalize,
+                                      parse_trade_settings)
 
+from app.modules.backtests.models import BacktestRun
 from app.modules.simledger import cycles
 from app.modules.simledger.models import HeartbeatRecord, SafetyState, SimAccount
 from app.modules.simledger.service import SimLedgerService, _dec
@@ -47,12 +52,14 @@ class GroupRuntime:
     account: SimAccount
     config: V1Config
     screener: ScreenerSpec | None = None
+    trade: TradeSettings | None = None
+    score_floor: float | None = None
 
 
 def validate_group(group: StrategyGroup) -> V1Config:
     """The engine config for a group, or GroupRefused naming why it cannot run:
-    only the US daily v1 chain exists, the screener spec must parse, and trade
-    settings / risk overrides are not implemented yet."""
+    only the US daily v1 chain exists, the screener spec and trade settings must
+    parse, and risk overrides are not implemented yet."""
     def refuse(reason: str) -> GroupRefused:
         return GroupRefused(f"{group.name}: {reason}")
 
@@ -64,9 +71,12 @@ def validate_group(group: StrategyGroup) -> V1Config:
         parse_spec(group.screener_json)
     except ScreenerSpecError as e:
         raise refuse(f"screener_json invalid: {e}") from None
-    for field in ("trade_settings_json", "risk_json"):
-        if getattr(group, field):
-            raise refuse(f"{field} is not supported yet and must be empty")
+    try:
+        parse_trade_settings(group.trade_settings_json, timeframe=group.timeframe)
+    except TradeSettingsError as e:
+        raise refuse(str(e)) from None
+    if group.risk_json:
+        raise refuse("risk_json is not supported yet and must be empty")
     try:
         cfg = get_spec(group.strategy_key).build(group.params_json)
     except StrategyParamsError as e:
@@ -75,6 +85,19 @@ def validate_group(group: StrategyGroup) -> V1Config:
     if problems:
         raise refuse(f"params out of bounds: {'; '.join(problems)}")
     return cfg
+
+
+def calibration_problem(run) -> str | None:
+    if run is None:
+        return "not found"
+    if run.status != "succeeded":
+        return f"status {run.status}"
+    if run.kind != "walk_forward":
+        return f"kind {run.kind}"
+    status = (run.calibration_json or {}).get("status")
+    if status != "ok":
+        return f"calibration {status}"
+    return None
 
 
 async def load_groups(db: AsyncSession, statuses) -> tuple[list[GroupRuntime], list[str]]:
@@ -88,8 +111,20 @@ async def load_groups(db: AsyncSession, statuses) -> tuple[list[GroupRuntime], l
     refused: list[str] = []
     for group, account in rows:
         try:
-            runtimes.append(GroupRuntime(group, account, validate_group(group),
-                                         parse_spec(group.screener_json)))
+            cfg = validate_group(group)
+            trade = parse_trade_settings(group.trade_settings_json, timeframe=group.timeframe)
+            floor = None
+            if trade is not None and trade.entry_prob_min is not None:
+                run = await db.get(BacktestRun, UUID(trade.calibration_run_id))
+                problem = calibration_problem(run)
+                if problem is not None:
+                    raise GroupRefused(f"{group.name}: calibration run "
+                                       f"{trade.calibration_run_id} unusable: {problem}")
+                floor = score_threshold(run.calibration_json, trade.entry_prob_min)
+                if floor is None:
+                    floor = math.inf
+            runtimes.append(GroupRuntime(group, account, cfg, parse_spec(group.screener_json),
+                                         trade=trade, score_floor=floor))
         except GroupRefused as e:
             logger.error("strategy group refused: %s", e)
             refused.append(str(e))
@@ -166,12 +201,19 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
         parse_spec(screener_json)
     except ScreenerSpecError as e:
         raise GroupInvalid(str(e)) from None
-    if trade_settings_json != {}:
-        raise GroupInvalid("trade_settings_json: not supported yet")
+    try:
+        trade = parse_trade_settings(trade_settings_json, timeframe="1d")
+    except TradeSettingsError as e:
+        raise GroupInvalid(str(e)) from None
+    trade_json = normalize(trade_settings_json)
     if status not in ("active", "paused"):
         raise GroupInvalid("status: must be active or paused")
     if not 500 <= starting_capital <= 1_000_000:
         raise GroupInvalid("starting_capital: must be between 500 and 1000000")
+    if trade is not None and trade.entry_prob_min is not None:
+        await _check_calibration(db, trade, StrategyGroup(
+            strategy_key=strategy_key, params_json=params, screener_json=screener_json,
+            trade_settings_json=trade_json, timeframe="1d", market="us"))
     if status == "active":
         reason = await platform_block_reason(db)
         if reason is not None:
@@ -191,7 +233,7 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
     await db.flush()
     group = StrategyGroup(id=gid, name=name, market="us", strategy_key=strategy_key,
                           params_json=params, screener_json=screener_json,
-                          trade_settings_json={}, risk_json={}, timeframe="1d",
+                          trade_settings_json=trade_json, risk_json={}, timeframe="1d",
                           status=status, sim_account_id=acct.id, account_is_system=True,
                           notes=notes)
     db.add(group)
@@ -203,6 +245,27 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
     except GroupRefused as e:
         raise GroupInvalid(str(e)) from None
     return group
+
+
+async def _check_calibration(db: AsyncSession, trade: TradeSettings,
+                             core_group: StrategyGroup) -> None:
+    from app.modules.backtests.service import config_core, config_hash
+
+    rid = trade.calibration_run_id
+    p = trade.entry_prob_min
+    run = await db.get(BacktestRun, UUID(rid))
+    if run is None:
+        raise GroupInvalid(f"trade_settings_json.calibration_run_id: run {rid} not found")
+    problem = calibration_problem(run)
+    if problem is not None:
+        raise GroupConflict(f"calibration run {rid} unusable: {problem}")
+    if (run.config_snapshot or {}).get("calibration_ref") is not None:
+        raise GroupConflict(f"calibration run {rid} was itself filtered by entry_prob_min")
+    if config_hash(config_core(core_group)) != run.config_hash:
+        raise GroupConflict("calibration run was produced by a different config")
+    if score_threshold(run.calibration_json, p) is None:
+        raise GroupInvalid(f"trade_settings_json.entry_prob_min: no calibrated bucket reaches "
+                           f"p={p} (max {round(max_p(run.calibration_json), 4)})")
 
 
 async def set_status(db: AsyncSession, group: StrategyGroup, new: str) -> StrategyGroup:
@@ -242,7 +305,7 @@ async def set_status(db: AsyncSession, group: StrategyGroup, new: str) -> Strate
 
 async def clone_group(db: AsyncSession, src: StrategyGroup, *, user_id, name: str,
                       params_json=None, screener_json=None, notes=None,
-                      starting_capital=None, status: str = "paused",
+                      trade_settings_json=None, starting_capital=None, status: str = "paused",
                       archive_source: bool = False) -> StrategyGroup:
     override = params_json or {}
     unknown = sorted(set(override) - set(src.params_json))
@@ -259,7 +322,9 @@ async def clone_group(db: AsyncSession, src: StrategyGroup, *, user_id, name: st
         db, user_id=user_id, name=name, strategy_key=src.strategy_key,
         params_json=merged,
         screener_json=screener_json if screener_json is not None else src.screener_json,
-        trade_settings_json={}, notes=notes, starting_capital=starting_capital,
+        trade_settings_json=(trade_settings_json if trade_settings_json is not None
+                             else src.trade_settings_json),
+        notes=notes, starting_capital=starting_capital,
         status=status)
     if archive_source:
         await set_status(db, src, "archived")

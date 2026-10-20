@@ -445,3 +445,113 @@ def test_payload_is_strict_json_with_inf_and_numpy_inputs():
     assert p["profit_factor"] is None and p["return_over_maxdd"] is None   # both inf
     assert all(not isinstance(v, np.generic) for v in p.values())
     json.dumps(p, allow_nan=False)
+
+
+# --- P3c trade settings (take-profit, open limit, max hold) ---------------
+
+def _trade_world(monkeypatch, small_params, post, *, entry_bar=(12.0, 12.1, 11.9, 12.0)):
+    """Flat to day 13, breakout on day 14 -> entry at day 15's open, then the
+    explicit ``post`` (open, high, low, close) bars."""
+    sp, fp, ep = small_params
+    n = 16 + len(post)
+    sessions = [d.date().isoformat() for d in pd.bdate_range("2024-01-01", periods=n)]
+    closes = [10.0] * 14 + [11.0, entry_bar[3]] + [b[3] for b in post]
+    opens = list(closes); highs = [c * 1.001 for c in closes]; lows = [c * 0.999 for c in closes]
+    opens[15], highs[15], lows[15] = entry_bar[0], entry_bar[1], entry_bar[2]
+    for k, b in enumerate(post, 16):
+        opens[k], highs[k], lows[k] = b[0], b[1], b[2]
+    frames = {"AAA": _ohlc_bars(sessions, opens, highs, lows, closes),
+              "SPY": _synth_bars(sessions, [400] * n)}
+    _patch_bars(monkeypatch, frames)
+    cfg = simulator.SimConfig(start="2024-01-01", end="2024-03-01",
+                              starting_capital=2000, adv_window=2,
+                              strategy=sp, funnel=fp, exits=ep)
+    return cfg, [pd.Timestamp(s).date() for s in sessions]
+
+
+def _run(cfg, **kw):
+    return simulator.run(["AAA"], {"AAA": "tech"}, cfg, **kw)
+
+
+def _adv_on(cfg, day):
+    f = simulator.prepare_features(["AAA"], {"AAA": "tech"}, cfg)["AAA"]
+    return float(f.set_index("date").loc[day, "adv"])
+
+
+FLAT_POST = [(12.05, 12.1, 12.0, 12.05)] * 4
+
+
+def test_trade_none_and_default_settings_change_nothing(monkeypatch, small_params):
+    from quant.engine.trade_rules import TradeSettings
+
+    cfg, _ = _trade_world(monkeypatch, small_params, [(12.0, 12.1, 9.0, 9.5)] + FLAT_POST)
+    plain = _run(cfg)
+    assert plain.trades
+    for res in (_run(cfg, trade=None), _run(cfg, trade=TradeSettings())):
+        assert res.equity.equals(plain.equity)
+        assert res.trades == plain.trades
+
+
+def test_take_profit_inside_the_bar_fills_at_target(monkeypatch, small_params):
+    from quant.engine.trade_rules import TradeSettings
+
+    cfg, days = _trade_world(monkeypatch, small_params,
+                             [(12.1, 13.5, 12.0, 12.3)] + FLAT_POST)
+    res = _run(cfg, trade=TradeSettings(take_profit_pct=0.05))
+    t = res.trades[0]
+    assert (t.entry_date, t.exit_date, t.exit_reason) == (days[15], days[16], "take_profit")
+    assert t.exit_price == pytest.approx(
+        CostModel().exit_fill(t.entry_price * 1.05, adv=_adv_on(cfg, days[16])))
+
+
+def test_take_profit_gap_fills_at_the_open(monkeypatch, small_params):
+    from quant.engine.trade_rules import TradeSettings
+
+    cfg, days = _trade_world(monkeypatch, small_params,
+                             [(13.0, 13.2, 12.9, 13.1)] + FLAT_POST)
+    res = _run(cfg, trade=TradeSettings(take_profit_pct=0.05))
+    t = res.trades[0]
+    assert t.exit_reason == "take_profit" and t.exit_date == days[16]
+    assert t.exit_price == pytest.approx(CostModel().exit_fill(13.0, adv=_adv_on(cfg, days[16])))
+
+
+def test_open_limit_blocks_the_entry(monkeypatch, small_params):
+    from quant.engine.exits import Position
+    from quant.engine.trade_rules import TradeSettings
+
+    cfg, _ = _trade_world(monkeypatch, small_params, FLAT_POST)
+    created = []
+
+    class _Recorded(Position):
+        def __init__(self, **kw):
+            created.append(kw["symbol"])
+            super().__init__(**kw)
+
+    monkeypatch.setattr(simulator, "Position", _Recorded)
+    _run(cfg)
+    assert "AAA" in created
+    created.clear()
+    _run(cfg, trade=TradeSettings(entry_limit_offset_pct=-0.10))
+    assert created == []
+
+
+def test_max_hold_exits_on_the_nth_session_at_the_close(monkeypatch, small_params):
+    from quant.engine.trade_rules import TradeSettings
+
+    post = [(12.05, 12.15, 12.0, 12.1), (12.1, 12.2, 12.05, 12.15),
+            (12.15, 12.25, 12.1, 12.2), (12.2, 12.3, 12.15, 12.25)]
+    cfg, days = _trade_world(monkeypatch, small_params, post)
+    res = _run(cfg, trade=TradeSettings(max_hold_days=3))
+    t = res.trades[0]
+    assert (t.exit_date, t.exit_reason) == (days[18], "max_hold")
+    assert t.exit_price == pytest.approx(CostModel().exit_fill(12.2, adv=_adv_on(cfg, days[18])))
+
+
+def test_entry_day_high_above_target_is_not_a_take_profit(monkeypatch, small_params):
+    from quant.engine.trade_rules import TradeSettings
+
+    cfg, days = _trade_world(monkeypatch, small_params, FLAT_POST,
+                             entry_bar=(12.0, 13.5, 11.95, 12.0))
+    res = _run(cfg, trade=TradeSettings(take_profit_pct=0.05))
+    assert not any(t.exit_date == days[15] for t in res.trades)
+    assert not any(t.exit_reason == "take_profit" for t in res.trades)

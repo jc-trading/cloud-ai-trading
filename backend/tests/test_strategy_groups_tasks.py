@@ -672,3 +672,81 @@ def test_position_crash_alert_is_deduped_per_day(monkeypatch, notes):
     _position_crash_world(monkeypatch, _PriorErrorDb)
     quant_tasks.position_cycle()
     assert notes == ["[beta] 🛑 对照账户 stop exit: KDP"]
+
+
+# --- P3c trade settings reach only their own group --------------------------------
+
+def _with_trade(rt, **kw):
+    from quant.engine.trade_rules import TradeSettings
+
+    return replace(rt, trade=TradeSettings(take_profit_pct=0.05), **kw)
+
+
+def test_score_floor_tightens_only_its_own_group(signal_world, notes):
+    a = _with_trade(_runtime("alpha"), score_floor=80.0)
+    b = _runtime("beta")
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+    quant_tasks.signal_cycle()
+    assert [kw["funnel_params"].min_confidence
+            for kw in signal_world.calls.build] == [65.0, 65.0]
+
+    signal_world.calls.build.clear()
+    from quant.engine.trade_rules import TradeSettings
+    a = replace(a, trade=TradeSettings(entry_prob_min=0.55,
+                                       calibration_run_id=str(uuid4())))
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+    quant_tasks.signal_cycle()
+    assert [kw["funnel_params"].min_confidence
+            for kw in signal_world.calls.build] == [80.0, 65.0]
+
+
+def test_exit_pass_gets_each_groups_own_trade_settings(signal_world, notes):
+    a, b = _with_trade(_runtime("alpha")), _runtime("beta")
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+    seen = []
+
+    async def exits(db, account, today, **kw):
+        seen.append((account.id, kw.get("trade_settings")))
+        return cycles.ExitPass()
+
+    signal_world.monkeypatch.setattr(cycles, "daily_exit_management", exits)
+    quant_tasks.signal_cycle()
+    assert seen == [(a.account.id, a.trade), (b.account.id, None)]
+
+
+def test_entries_get_each_groups_own_trade_settings(entry_world, notes):
+    a, b = _with_trade(_runtime("alpha")), _runtime("beta")
+    recs = {a.group.id: [_rec("AAA", a.group.id)], b.group.id: [_rec("BBB", b.group.id)]}
+    factory = _Factory(lambda: _Db(recs))
+    entry_world.monkeypatch.setattr(quant_tasks, "CeleryAsyncSessionLocal", factory)
+    entry_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a, b))
+
+    async def no_state(db, account, **kw):
+        return None
+
+    entry_world.monkeypatch.setattr(cycles, "get_safety_state", no_state)
+    real = cycles.run_entries
+    seen = []
+
+    async def spy(db, account, today, **kw):
+        seen.append((account.id, kw.get("trade_settings")))
+        return await real(db, account, today, **kw)
+
+    entry_world.monkeypatch.setattr(cycles, "run_entries", spy)
+    quant_tasks.entry_cycle()
+    assert seen == [(a.account.id, a.trade), (b.account.id, None)]
+    assert entry_world.keys == [f"entry:{a.account.id}:AAA:2026-07-30",
+                                f"entry:{b.account.id}:BBB:2026-07-30"]
+
+
+def test_unreachable_score_floor_still_runs_the_build(signal_world, notes):
+    import math
+
+    from quant.engine.trade_rules import TradeSettings
+
+    a = replace(_runtime("alpha"), score_floor=math.inf,
+                trade=TradeSettings(entry_prob_min=0.9, calibration_run_id=str(uuid4())))
+    signal_world.monkeypatch.setattr(quant_tasks, "load_groups", groups_loader(a))
+    quant_tasks.signal_cycle()
+    assert [kw["funnel_params"].min_confidence
+            for kw in signal_world.calls.build] == [math.inf]

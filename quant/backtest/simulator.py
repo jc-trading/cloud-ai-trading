@@ -27,7 +27,8 @@ from quant.data import bars as barsmod
 from quant.engine import funnel as fn
 from quant.engine import sizing
 from quant.engine import strategy as strat
-from quant.engine.exits import (ExitParams, Position, evaluate_exit,
+from quant.engine import trade_rules
+from quant.engine.exits import (ExitParams, Position,
                                 maybe_raise_trailing, update_position_bar)
 from quant.engine.signal import Direction
 
@@ -118,7 +119,8 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
         benchmark_symbol: str = "SPY", progress=lambda *_: None,
         features: dict[str, pd.DataFrame] | None = None,
         etf_exempt: bool = True,
-        pool_held_exclude: frozenset[str] | None = None) -> SimResult:
+        pool_held_exclude: frozenset[str] | None = None,
+        trade: trade_rules.TradeSettings | None = None) -> SimResult:
     # 1) per-symbol features (precomputed via prepare_features for sweeps)
     feats = features if features is not None else prepare_features(
         symbols, sectors, cfg, progress=progress)
@@ -197,11 +199,11 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
             bench_ret = None
             if d in spy.index and pos.entry_date in spy.index:
                 bench_ret = spy.loc[d] / spy.loc[pos.entry_date] - 1.0
-            decision = evaluate_exit(
+            decision = trade_rules.decide_exit(
                 pos, float(row["low"]), float(row["close"]),
                 signal_direction=direction, expected_move=float(row["expected_move"]),
                 params=cfg.exits, benchmark_return_since_entry=bench_ret,
-                bar_open=float(row["open"]))
+                bar_open=float(row["open"]), bar_high=float(row["high"]), settings=trade)
             if decision is not None:
                 record_exit(sym, pos, d, decision.price, decision.action,
                             adv=float(row["adv"]))
@@ -266,6 +268,9 @@ def run(symbols: list[str], sectors: dict[str, str], cfg: SimConfig, *,
                 d1 = bars_by_symbol[sym].loc[prev] if prev in bars_by_symbol[sym].index else None
                 open_px = price_on(sym, d, "open")
                 if d1 is None or open_px is None:
+                    continue
+                if trade is not None and not trade_rules.allows_entry_at_open(
+                        open_px, float(d1["close"]), trade):
                     continue
                 entry = cfg.costs.entry_fill(open_px, adv=float(d1["adv"]))
                 stop = entry - float(d1["stop_distance"])

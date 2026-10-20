@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from sqlalchemy import func, select
 
 import app.models_registry  # noqa: F401
+from quant.engine import trade_rules
 from quant.engine.strategies import V1_COMPOSITE_KEY, get_spec
 
 from app.database import get_db
@@ -375,7 +376,7 @@ async def test_registry_is_not_swallowed_by_the_group_id_route(api):
     assert {"left": "strategy.ma_fast", "op": "<", "right": "strategy.ma_slow"} \
         in strat["cross_rules"]
     assert body["screener"]["asset_types"] == ["stock", "adr", "etf"]
-    assert body["trade_settings"] == {"available": False}
+    assert body["trade_settings"] == trade_rules.registry_entry() and body["trade_settings"]["available"] is True
 
 
 @pytest.mark.asyncio
@@ -406,3 +407,152 @@ async def test_runs_rejects_bad_filters(api, query):
 @pytest.mark.asyncio
 async def test_runs_of_a_missing_group_is_404(api):
     assert (await api.client.get(f"{URL}/{uuid4()}/runs")).status_code == 404
+
+
+# --- P3c trade settings ------------------------------------------------------------
+
+CAL_OK = {"status": "ok", "blocks": [
+    {"lo": 40.0, "hi": 60.0, "n": 30, "wins": 15, "p": 0.5},
+    {"lo": 61.0, "hi": 90.0, "n": 30, "wins": 20, "p": 0.6667}]}
+
+
+async def _cal_run(api, src_id, **over):
+    from app.modules.backtests.models import BacktestRun
+    from app.modules.backtests.service import config_core, config_hash
+
+    src = await _group(api, src_id)
+    fields = dict(group_id=src.id, kind="walk_forward", status="succeeded",
+                  finished_at=datetime.now(timezone.utc), metrics_json={},
+                  calibration_json=CAL_OK, config_hash=config_hash(config_core(src)),
+                  config_snapshot={}, data_start=date(2020, 1, 1), data_end=date(2024, 1, 1),
+                  universe_label="pit_sp500", survivorship_biased=False)
+    fields.update(over)
+    run = BacktestRun(id=uuid4(), **fields)
+    api.db.add(run)
+    await api.db.commit()
+    return str(run.id)
+
+
+def _prob(rid, p=0.55):
+    return {"entry_prob_min": p, "calibration_run_id": rid}
+
+
+async def _clone(api, src_id, **body):
+    return await api.client.post(f"{URL}/{src_id}/clone",
+                                 json={"name": f"zz-p3c-{uuid4().hex[:8]}", **body})
+
+
+@pytest.mark.asyncio
+async def test_create_stores_trade_settings_verbatim(api):
+    ts = {"take_profit_pct": 0.05, "max_hold_days": 10, "holding_style": "long"}
+    out = await _create(api, trade_settings_json=ts)
+    assert (await _group(api, out["id"])).trade_settings_json == ts
+    assert out["trade_settings_json"] == ts
+
+
+@pytest.mark.asyncio
+async def test_create_stores_default_swing_as_empty(api):
+    out = await _create(api, trade_settings_json={"holding_style": "swing"})
+    assert (await _group(api, out["id"])).trade_settings_json == {}
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_scalping_with_the_exact_message(api):
+    r = await api.client.post(URL, json=_body(trade_settings_json={"holding_style": "scalping"}))
+    assert r.status_code == 422
+    assert r.json()["detail"] == \
+        "trade_settings_json.holding_style: scalping requires timeframe 1m (P5)"
+
+
+@pytest.mark.asyncio
+async def test_clone_without_trade_settings_inherits_the_source(api):
+    src = await _create(api, trade_settings_json={"take_profit_pct": 0.05})
+    r = await _clone(api, src["id"])
+    assert r.status_code == 201, r.text
+    assert (await _group(api, r.json()["id"])).trade_settings_json == {"take_profit_pct": 0.05}
+
+
+@pytest.mark.asyncio
+async def test_clone_with_a_usable_calibration_run(api):
+    src = await _create(api)
+    rid = await _cal_run(api, src["id"])
+    r = await _clone(api, src["id"], trade_settings_json=_prob(rid))
+    assert r.status_code == 201, r.text
+    assert (await _group(api, r.json()["id"])).trade_settings_json == _prob(rid)
+
+
+@pytest.mark.asyncio
+async def test_calibration_run_not_found_is_422(api):
+    src = await _create(api)
+    rid = str(uuid4())
+    r = await _clone(api, src["id"], trade_settings_json=_prob(rid))
+    assert r.status_code == 422
+    assert r.json()["detail"] == f"trade_settings_json.calibration_run_id: run {rid} not found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("over, problem", [
+    ({"status": "failed", "metrics_json": None}, "status failed"),
+    ({"kind": "single"}, "kind single"),
+    ({"calibration_json": {"status": "insufficient", "blocks": []}}, "calibration insufficient"),
+])
+async def test_unusable_calibration_run_is_409(api, over, problem):
+    src = await _create(api)
+    rid = await _cal_run(api, src["id"], **over)
+    r = await _clone(api, src["id"], trade_settings_json=_prob(rid))
+    assert r.status_code == 409
+    assert r.json()["detail"] == f"calibration run {rid} unusable: {problem}"
+
+
+@pytest.mark.asyncio
+async def test_a_filtered_calibration_run_is_409(api):
+    src = await _create(api)
+    rid = await _cal_run(api, src["id"], config_snapshot={"calibration_ref": {"run_id": "x"}})
+    r = await _clone(api, src["id"], trade_settings_json=_prob(rid))
+    assert r.status_code == 409
+    assert r.json()["detail"] == f"calibration run {rid} was itself filtered by entry_prob_min"
+
+
+@pytest.mark.asyncio
+async def test_a_different_config_is_409(api):
+    src = await _create(api)
+    rid = await _cal_run(api, src["id"])
+    r = await _clone(api, src["id"], trade_settings_json=_prob(rid),
+                     params_json={"exits": {"reversal_bars": 4}})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "calibration run was produced by a different config"
+
+
+@pytest.mark.asyncio
+async def test_a_probability_above_every_bucket_is_422(api):
+    src = await _create(api)
+    rid = await _cal_run(api, src["id"])
+    r = await _clone(api, src["id"], trade_settings_json=_prob(rid, p=0.9))
+    assert r.status_code == 422
+    assert r.json()["detail"] == \
+        "trade_settings_json.entry_prob_min: no calibrated bucket reaches p=0.9 (max 0.6667)"
+
+
+@pytest.mark.asyncio
+async def test_load_groups_refuses_a_group_whose_calibration_turns_unusable(api):
+    from sqlalchemy import text
+
+    from app.modules.strategy_groups.models import MANAGED_STATUSES
+    from app.modules.strategy_groups.service import load_groups
+
+    src = await _create(api)
+    rid = await _cal_run(api, src["id"])
+    r = await _clone(api, src["id"], trade_settings_json=_prob(rid))
+    assert r.status_code == 201, r.text
+    name = r.json()["name"]
+    runtimes, refused = await load_groups(api.db, MANAGED_STATUSES)
+    mine = [rt for rt in runtimes if rt.group.name == name]
+    assert len(mine) == 1 and mine[0].score_floor == 61.0
+    await api.db.execute(text(
+        "UPDATE backtest_runs SET calibration_json = "
+        "jsonb_set(calibration_json, '{status}', '\"insufficient\"') WHERE id = :id"),
+        {"id": rid})
+    await api.db.commit()
+    runtimes, refused = await load_groups(api.db, MANAGED_STATUSES)
+    assert name not in [rt.group.name for rt in runtimes]
+    assert any(x.startswith(f"{name}: ") and "calibration insufficient" in x for x in refused)

@@ -197,14 +197,14 @@ async def test_create_rejects_invalid_requests(api, over, detail):
 
 
 @pytest.mark.asyncio
-async def test_create_rejects_non_empty_trade_settings(api):
+async def test_create_rejects_invalid_trade_settings(api):
     g = await _group(api)
     await api.db.execute(update(StrategyGroup).where(StrategyGroup.id == g.id)
                          .values(trade_settings_json={"take_profit_r": 3}))
     await api.db.commit()
     r = await _post(api, _single(g))
     assert r.status_code == 422
-    assert r.json()["detail"] == "trade settings backtests arrive in P3c"
+    assert r.json()["detail"] == "trade_settings_json: unknown key 'take_profit_r'"
 
 
 @pytest.mark.asyncio
@@ -355,3 +355,68 @@ async def test_live_series_joins_fills_through_orders(api):
     assert t.exit_reason == "trailing" and t.r_unit == 1.5
     eq2, trades2 = await service.live_series(api.db, g, start=date(2026, 9, 2))
     assert list(eq2.index) == [date(2026, 9, 2), date(2026, 9, 3)] and len(trades2) == 1
+
+
+# --- P3c trade settings ----------------------------------------------------------
+
+CAL_OK = {"status": "ok", "blocks": [
+    {"lo": 40.0, "hi": 60.0, "n": 30, "wins": 15, "p": 0.5},
+    {"lo": 61.0, "hi": 90.0, "n": 30, "wins": 20, "p": 0.6667}]}
+
+
+async def _set_trade(api, g, ts):
+    await api.db.execute(update(StrategyGroup).where(StrategyGroup.id == g.id)
+                         .values(trade_settings_json=ts))
+    await api.db.commit()
+
+
+async def _calibration_run(api, g, **over) -> str:
+    fields = dict(group_id=g.id, kind="walk_forward", status="succeeded",
+                  config_snapshot={}, config_hash="x" * 64, data_start=date(2020, 1, 1),
+                  data_end=date(2024, 1, 1), metrics_json={}, calibration_json=CAL_OK,
+                  universe_label="pit_sp500", survivorship_biased=False,
+                  finished_at=datetime.now(timezone.utc))
+    fields.update(over)
+    run = BacktestRun(id=uuid4(), **fields)
+    api.db.add(run)
+    await api.db.commit()
+    return str(run.id)
+
+
+@pytest.mark.asyncio
+async def test_take_profit_group_snapshot_carries_its_trade_settings(api):
+    g = await _group(api)
+    await _set_trade(api, g, {"take_profit_pct": 0.05})
+    r = await _post(api, _single(g))
+    assert r.status_code == 201, r.text
+    snap = r.json()["config_snapshot"]
+    assert snap["trade_settings_base"] == {"take_profit_pct": 0.05}
+    assert "calibration_ref" not in snap
+
+
+@pytest.mark.asyncio
+async def test_probability_group_snapshot_carries_the_calibration_ref(api):
+    from quant.backtest.calibration import score_threshold
+
+    g = await _group(api)
+    rid = await _calibration_run(api, g)
+    await _set_trade(api, g, {"entry_prob_min": 0.55, "calibration_run_id": rid})
+    r = await _post(api, _single(g))
+    assert r.status_code == 201, r.text
+    snap = r.json()["config_snapshot"]
+    assert snap["trade_settings_base"] == {}
+    assert snap["calibration_ref"] == {"run_id": rid, "entry_prob_min": 0.55,
+                                       "blocks": CAL_OK["blocks"],
+                                       "score_floor": score_threshold(CAL_OK, 0.55)}
+    assert snap["calibration_ref"]["score_floor"] == 61.0
+
+
+@pytest.mark.asyncio
+async def test_unusable_calibration_run_is_409(api):
+    g = await _group(api)
+    rid = await _calibration_run(api, g, calibration_json={"status": "insufficient",
+                                                           "blocks": []})
+    await _set_trade(api, g, {"entry_prob_min": 0.55, "calibration_run_id": rid})
+    r = await _post(api, _single(g))
+    assert r.status_code == 409
+    assert r.json()["detail"] == f"calibration run {rid} unusable: calibration insufficient"

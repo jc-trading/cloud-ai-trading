@@ -434,7 +434,7 @@ def entry_cycle():
                     quote_fn=_quote_fn(client), entry_mode=mode,
                     open_prices=open_prices, risk_pct=settings.per_trade_risk_pct,
                     chase_cap=settings.intraday_entry_chase_cap,
-                    max_slots=settings.max_concurrent_slots)
+                    max_slots=settings.max_concurrent_slots, trade_settings=rt.trade)
 
                 meta = {"booked": booked, "mode": mode}
                 if alerted_on is not None:
@@ -597,6 +597,7 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
     from quant.data import fetch as qfetch
     from quant.data import sectors as qsectors
     from quant.data import universe as quniverse
+    from quant.engine import trade_rules as qtrade
 
     now_et = _now_et()
     today = now_et.date()
@@ -782,8 +783,11 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                                                | watch | held)
                     if rt.group.status in SIGNAL_STATUSES and not sync_fail_closed \
                             and screen_issue is None:
-                        funnel = replace(rt.config.funnel, min_confidence=max(
-                            rt.config.funnel.min_confidence, eff.min_confidence))
+                        funnel = replace(rt.config.funnel,
+                                         min_confidence=qtrade.effective_min_confidence(
+                                             max(rt.config.funnel.min_confidence,
+                                                 eff.min_confidence),
+                                             rt.trade, rt.score_floor))
                         run.batch = cycles.build_recommendations(
                             group_symbols, today, bars_fn=bars_fn, sectors=sectors,
                             funnel_params=funnel, strategy_params=rt.config.strategy)
@@ -814,7 +818,8 @@ def signal_cycle(expect_session: str | None = None, retry_seq: int = 0):
                                                                  bars_fn=bars_fn)
                     run.exits = await cycles.daily_exit_management(
                         db, account, today, bars_fn=bars_fn,
-                        exit_params=rt.config.exits, strategy_params=rt.config.strategy)
+                        exit_params=rt.config.exits, strategy_params=rt.config.strategy,
+                        trade_settings=rt.trade)
                     # snapshot + protections on end-of-day marks: the session's own
                     # daily close (what the backtest marks equity at), quote as the
                     # fallback. The memo means the close costs no extra bar read.

@@ -32,6 +32,7 @@ from quant.backtest.metrics import Trade
 from quant.backtest.walkforward import walk_forward_windows
 from quant.data import calendar, screen, securities, universe
 from quant.data import sectors as sectorsmod
+from quant.engine import trade_rules
 from quant.engine.screener import ScreenerSpec, parse_spec
 from quant.engine.strategies import V1_COMPOSITE_KEY, V1Config, get_spec, validate_grid
 from quant.research import r09
@@ -57,12 +58,21 @@ class GroupConfig:
     screener: ScreenerSpec | None
     starting_capital: float
     platform: dict
+    trade: trade_rules.TradeSettings | None = None
+    score_floor: float | None = None
 
     @classmethod
     def from_snapshot(cls, snap: dict) -> GroupConfig:
+        base = dict(snap.get("trade_settings_base") or {})
+        ref = snap.get("calibration_ref")
+        if ref:
+            base["entry_prob_min"] = ref["entry_prob_min"]
+            base["calibration_run_id"] = ref["run_id"]
         return cls(snap["strategy_key"], get_spec(snap["strategy_key"]).build(snap["params"]),
                    parse_spec(snap["screener"]), float(snap["starting_capital"]),
-                   dict(snap["platform"]))
+                   dict(snap["platform"]),
+                   trade=trade_rules.parse_trade_settings(base, timeframe=snap.get("timeframe", "1d")),
+                   score_floor=(ref or {}).get("score_floor"))
 
 
 @dataclass(frozen=True)
@@ -88,8 +98,9 @@ def sim_config(gcfg: GroupConfig, start, end, membership_on) -> simulator.SimCon
     return simulator.SimConfig(
         start=str(start), end=str(end), starting_capital=gcfg.starting_capital,
         strategy=gcfg.cfg.strategy,
-        funnel=replace(gcfg.cfg.funnel, min_confidence=max(
-            gcfg.cfg.funnel.min_confidence, float(p["min_confidence"]))),
+        funnel=replace(gcfg.cfg.funnel, min_confidence=trade_rules.effective_min_confidence(
+            max(gcfg.cfg.funnel.min_confidence, float(p["min_confidence"])),
+            gcfg.trade, gcfg.score_floor)),
         exits=gcfg.cfg.exits,
         risk_pct=float(p["per_trade_risk_pct"]),
         daily_loss_pause_pct=float(p["daily_loss_pause_pct"]),
@@ -106,8 +117,9 @@ def apply_knobs(gcfg: GroupConfig, base: simulator.SimConfig, knobs: dict, start
             funnel = replace(funnel, **{name: v})
         else:
             exits = replace(exits, **{name: v})
-    funnel = replace(funnel, min_confidence=max(funnel.min_confidence,
-                                                float(gcfg.platform["min_confidence"])))
+    funnel = replace(funnel, min_confidence=trade_rules.effective_min_confidence(
+        max(funnel.min_confidence, float(gcfg.platform["min_confidence"])),
+        gcfg.trade, gcfg.score_floor))
     return replace(base, funnel=funnel, exits=exits, start=str(start), end=str(end))
 
 
@@ -180,10 +192,12 @@ def prepare_features(gcfg: GroupConfig, uni: Universe, start, end, *,
                                           progress=progress)
 
 
-def _run(uni: Universe, feats: dict, cfg: simulator.SimConfig, check) -> simulator.SimResult:
+def _run(uni: Universe, feats: dict, cfg: simulator.SimConfig, check,
+         trade: trade_rules.TradeSettings | None = None) -> simulator.SimResult:
     check()
     return simulator.run(list(feats), uni.sectors, cfg, features=feats,
-                         etf_exempt=uni.etf_exempt, pool_held_exclude=uni.pool_held_exclude)
+                         etf_exempt=uni.etf_exempt, pool_held_exclude=uni.pool_held_exclude,
+                         trade=trade)
 
 
 def stitch(equities: list[pd.Series], starting_capital: float) -> pd.Series:
@@ -199,7 +213,7 @@ def fixed_oos(gcfg: GroupConfig, uni: Universe, feats: dict, base_cfg: simulator
     for wi, win in enumerate(windows, 1):
         oos = r09.slice_features(feats, win.oos_start, win.oos_end)
         cfg = replace(base_cfg, start=str(win.oos_start.date()), end=str(win.oos_end.date()))
-        res = _run(uni, oos, cfg, check)
+        res = _run(uni, oos, cfg, check, gcfg.trade)
         equities.append(res.equity)
         trades += res.trades
         rows.append({"window": wi, "oos": f"{win.oos_start.date()}..{win.oos_end.date()}",
@@ -212,7 +226,7 @@ def run_single(gcfg: GroupConfig, start, end, *, check=lambda: None,
                progress=lambda *_: None) -> dict:
     uni = prepare_universe(gcfg, start, end, progress=progress, check=check)
     feats = prepare_features(gcfg, uni, start, end, progress=progress)
-    res = _run(uni, feats, sim_config(gcfg, start, end, uni.membership_on), check)
+    res = _run(uni, feats, sim_config(gcfg, start, end, uni.membership_on), check, gcfg.trade)
     return {"kind": "single", "universe": uni, "equity": res.equity, "trades": res.trades,
             "metrics": {"summary": metrics.payload(res.equity, res.trades),
                         "universe": uni.info}}
@@ -229,7 +243,7 @@ def _calibrate_window(gcfg, uni, feats, base, win, grid, check) -> tuple[dict, d
         cfg = apply_knobs(gcfg, base, kv, win.is_start.date(), win.is_end.date())
         key = tuple(_knob_value(cfg, k) for k in grid)
         if key not in cache:
-            cache[key] = r09.objective(_run(uni, is_feats, cfg, check))
+            cache[key] = r09.objective(_run(uni, is_feats, cfg, check, gcfg.trade))
         return cache[key]
 
     current = {k: _knob_value(gcfg.cfg, k) for k in grid}
@@ -274,7 +288,7 @@ def run_walk_forward(gcfg: GroupConfig, start, end, *, is_years: int, oos_years:
         params, trail = _calibrate_window(gcfg, uni, feats, base, win, grid, check)
         oos = r09.slice_features(feats, win.oos_start, win.oos_end)
         res = _run(uni, oos, apply_knobs(gcfg, base, params, win.oos_start.date(),
-                                         win.oos_end.date()), check)
+                                         win.oos_end.date()), check, gcfg.trade)
         sel_equities.append(res.equity)
         sel_trades += res.trades
         rows.append({"window": wi, "is": f"{win.is_start.date()}..{win.is_end.date()}",

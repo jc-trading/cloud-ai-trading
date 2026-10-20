@@ -308,3 +308,100 @@ def test_recommendations_are_unique_per_group_not_globally(pg):
     pg.flush()                                  # same (symbol, date), two groups: OK
     _expect_violation(pg, "uq_recommendation_group_symbol_date",
                       lambda: pg.add(rec(g1)))
+
+
+# --- P3c trade settings ----------------------------------------------------------
+
+CAL_RID = "0b8a2f7e-5d1c-4c3e-9a77-2f1e6d4b9c01"
+CAL_OK = {"status": "ok", "blocks": [
+    {"lo": 40.0, "hi": 60.0, "n": 30, "wins": 15, "p": 0.5},
+    {"lo": 61.0, "hi": 90.0, "n": 30, "wins": 20, "p": 0.6667}]}
+
+
+class _TradeDb:
+    def __init__(self, rows, runs=None):
+        self.rows, self.runs, self.gets = rows, runs or {}, []
+
+    async def execute(self, stmt):
+        rows = self.rows
+
+        class _R:
+            def all(self):
+                return rows
+        return _R()
+
+    async def get(self, model, key):
+        self.gets.append((model.__name__, str(key)))
+        return self.runs.get(str(key))
+
+
+def _cal_run(**kw):
+    from types import SimpleNamespace
+
+    base = dict(status="succeeded", kind="walk_forward", calibration_json=CAL_OK)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _load(group, acct, runs=None):
+    db = _TradeDb([(group, acct)], runs)
+    return asyncio.run(load_groups(db, ("active",))), db
+
+
+def test_a_take_profit_group_passes_validate_group():
+    group = group_for(_acct(), name="tp", trade_settings_json={"take_profit_pct": 0.05})
+    assert validate_group(group) == get_spec(V1_COMPOSITE_KEY).defaults
+
+
+def test_load_groups_carries_trade_settings_without_a_floor():
+    acct = _acct()
+    (runtimes, refused), db = _load(group_for(acct, name="tp", trade_settings_json={
+        "take_profit_pct": 0.05}), acct)
+    assert refused == [] and db.gets == []
+    assert runtimes[0].trade.take_profit_pct == 0.05
+    assert runtimes[0].score_floor is None
+
+
+def test_default_swing_settings_load_as_none():
+    acct = _acct()
+    (runtimes, _), _ = _load(group_for(acct, trade_settings_json={"holding_style": "swing"}),
+                             acct)
+    assert runtimes[0].trade is None and runtimes[0].score_floor is None
+
+
+def _prob_group(acct, p=0.55):
+    return group_for(acct, name="prob", trade_settings_json={
+        "entry_prob_min": p, "calibration_run_id": CAL_RID})
+
+
+def test_missing_calibration_run_refuses_the_group():
+    acct = _acct()
+    (runtimes, refused), db = _load(_prob_group(acct), acct)
+    assert runtimes == [] and len(refused) == 1
+    assert "unusable: not found" in refused[0] and refused[0].startswith("prob: ")
+    assert db.gets == [("BacktestRun", CAL_RID)]
+
+
+def test_insufficient_calibration_refuses_the_group():
+    acct = _acct()
+    run = _cal_run(calibration_json={"status": "insufficient", "blocks": []})
+    (runtimes, refused), _ = _load(_prob_group(acct), acct, {CAL_RID: run})
+    assert runtimes == [] and "unusable: calibration insufficient" in refused[0]
+
+
+def test_ok_calibration_sets_the_score_floor():
+    from quant.backtest.calibration import score_threshold
+
+    acct = _acct()
+    (runtimes, refused), _ = _load(_prob_group(acct), acct, {CAL_RID: _cal_run()})
+    assert refused == []
+    assert runtimes[0].score_floor == score_threshold(CAL_OK, 0.55) == 61.0
+    assert runtimes[0].trade.entry_prob_min == 0.55
+
+
+def test_unreachable_probability_floors_at_infinity():
+    import math
+
+    acct = _acct()
+    (runtimes, _), _ = _load(_prob_group(acct, p=0.9), acct, {CAL_RID: _cal_run()})
+    assert runtimes[0].score_floor == math.inf

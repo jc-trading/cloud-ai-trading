@@ -265,3 +265,75 @@ def test_walk_forward_keeps_selected_and_fixed_apart(golden, sim_calls, monkeypa
     assert len(pd.read_csv(out / "trades_fixed.csv")) == len(res["trades_fixed"])
     assert len(pd.read_csv(out / "trades_selected.csv")) == len(res["trades_selected"])
     assert json.loads((out / "windows.json").read_text())[0]["params"] == picked
+
+
+# --- P3c trade settings --------------------------------------------------------
+
+RID = "0b8a2f7e-5d1c-4c3e-9a77-2f1e6d4b9c01"
+
+
+def _snap(**extra):
+    return {"strategy_key": V1_COMPOSITE_KEY, "params": {}, "screener": {},
+            "starting_capital": 2000.0, "platform": dict(gb.PLATFORM_CONSTANTS),
+            "timeframe": "1d", **extra}
+
+
+def _prob_gcfg(floor=80.0, **settings):
+    from dataclasses import replace
+
+    from quant.engine.trade_rules import TradeSettings
+
+    trade = TradeSettings(entry_prob_min=0.55, calibration_run_id=RID, **settings)
+    return replace(_gcfg(min_confidence=65.0), trade=trade, score_floor=floor)
+
+
+def test_from_snapshot_reads_trade_settings_and_calibration_ref():
+    from quant.engine.trade_rules import TradeSettings
+
+    old = gb.GroupConfig.from_snapshot(_snap())
+    assert old.trade is None and old.score_floor is None
+    assert gb.GroupConfig.from_snapshot(_snap(trade_settings_base={})).trade is None
+    new = gb.GroupConfig.from_snapshot(_snap(
+        trade_settings_base={"take_profit_pct": 0.05},
+        calibration_ref={"run_id": RID, "entry_prob_min": 0.55, "blocks": [],
+                         "score_floor": 80.0}))
+    assert new.trade == TradeSettings(take_profit_pct=0.05, entry_prob_min=0.55,
+                                      calibration_run_id=RID)
+    assert new.score_floor == 80.0
+
+
+def test_sim_config_applies_the_calibrated_score_floor():
+    assert gb.sim_config(_prob_gcfg(), "2024-01-01", "2024-12-31",
+                         None).funnel.min_confidence == 80.0
+    assert gb.sim_config(_gcfg(min_confidence=65.0), "2024-01-01", "2024-12-31",
+                         None).funnel.min_confidence == 65.0
+
+
+def test_apply_knobs_keeps_the_score_floor_over_a_lower_grid_threshold():
+    gcfg = _prob_gcfg()
+    base = gb.sim_config(gcfg, "2024-01-01", "2024-12-31", None)
+    low = gb.apply_knobs(gcfg, base, {"funnel.min_confidence": 65.0}, "2024-01-01", "2024-06-30")
+    high = gb.apply_knobs(gcfg, base, {"funnel.min_confidence": 90.0}, "2024-01-01", "2024-06-30")
+    assert (low.funnel.min_confidence, high.funnel.min_confidence) == (80.0, 90.0)
+
+
+def test_trade_settings_reach_every_simulator_run(golden, monkeypatch):
+    from dataclasses import replace
+
+    from quant.engine.trade_rules import TradeSettings
+
+    seen = []
+    real = simulator.run
+
+    def spy(*a, **k):
+        seen.append(k.get("trade"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(simulator, "run", spy)
+    gcfg = replace(_gcfg(min_confidence=65.0), trade=TradeSettings(take_profit_pct=0.05))
+    gb.run_single(gcfg, "2024-01-01", "2024-12-31")
+    res = gb.run_walk_forward(gcfg, "2020-01-01", "2022-01-01", is_years=1, oos_years=1,
+                              grid={"exits.reversal_bars": [3, 4]})
+    assert len(res["metrics"]["windows"]) == 1
+    assert len(seen) >= 4
+    assert all(t is gcfg.trade for t in seen)

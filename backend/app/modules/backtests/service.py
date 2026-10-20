@@ -9,6 +9,7 @@ import hashlib
 import json
 from dataclasses import asdict
 from datetime import date
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -16,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quant import config as qconfig
+from quant.backtest.calibration import score_threshold
 from quant.backtest.costs import CostModel
 from quant.backtest.metrics import Trade
 from quant.backtest.walkforward import walk_forward_windows
@@ -23,6 +25,7 @@ from quant.data import calendar as qcal
 from quant.data import screen as qscreen
 from quant.engine.screener import ScreenerSpecError, parse_spec, required_lookback
 from quant.engine.strategies import StrategyParamsError, validate_grid
+from quant.engine.trade_rules import TradeSettingsError, parse_trade_settings
 
 from app.modules.backtests.models import KINDS, BacktestRun
 from app.modules.simledger import cycles
@@ -31,6 +34,7 @@ from app.modules.simledger.models import (
 )
 from app.modules.simledger.settings import effective_settings
 from app.modules.strategy_groups.models import StrategyGroup
+from app.modules.strategy_groups.service import calibration_problem
 
 BACKTEST_MIN_START = date(2016, 1, 1)
 BACKTEST_MAX_ACTIVE = 3
@@ -72,12 +76,12 @@ def engine_fingerprint() -> str:
 
 
 async def build_snapshot(db: AsyncSession, group: StrategyGroup, *, kind: str, is_years: int,
-                         oos_years: int, grid: dict | None) -> dict:
+                         oos_years: int, grid: dict | None, trade=None) -> dict:
     from quant.research.sensitivity import _store_latest_session
 
     account = await db.get(SimAccount, group.sim_account_id)
     eff = await effective_settings(db)
-    return {
+    snap = {
         **config_core(group),
         "group": {"id": str(group.id), "name": group.name},
         "starting_capital": float(account.starting_capital),
@@ -88,6 +92,20 @@ async def build_snapshot(db: AsyncSession, group: StrategyGroup, *, kind: str, i
         "run": {"kind": kind, "is_years": is_years, "oos_years": oos_years,
                 "grid": None if grid is None else {k: list(v) for k, v in grid.items()}},
     }
+    if trade is not None and trade.entry_prob_min is not None:
+        rid = trade.calibration_run_id
+        run = await db.get(BacktestRun, UUID(rid))
+        problem = calibration_problem(run)
+        if problem is not None:
+            raise RunConflict(f"calibration run {rid} unusable: {problem}")
+        floor = score_threshold(run.calibration_json, trade.entry_prob_min)
+        if floor is None:
+            raise RunConflict(f"calibration run {rid}: no calibrated bucket reaches "
+                              f"p={trade.entry_prob_min}")
+        snap["calibration_ref"] = {"run_id": rid, "entry_prob_min": trade.entry_prob_min,
+                                   "blocks": run.calibration_json["blocks"],
+                                   "score_floor": floor}
+    return snap
 
 
 async def create_run(db: AsyncSession, *, group: StrategyGroup, kind: str, start: date,
@@ -123,8 +141,10 @@ async def create_run(db: AsyncSession, *, group: StrategyGroup, kind: str, start
             grid = validate_grid(group.strategy_key, grid)
         except StrategyParamsError as e:
             raise RunInvalid(str(e)) from None
-    if group.trade_settings_json:
-        raise RunInvalid("trade settings backtests arrive in P3c")
+    try:
+        trade = parse_trade_settings(group.trade_settings_json, timeframe=group.timeframe)
+    except TradeSettingsError as e:
+        raise RunInvalid(str(e)) from None
     try:
         spec = parse_spec(group.screener_json)
     except ScreenerSpecError as e:
@@ -142,7 +162,7 @@ async def create_run(db: AsyncSession, *, group: StrategyGroup, kind: str, start
         raise RunConflict(f"{active} backtests already queued or running "
                           f"(max {BACKTEST_MAX_ACTIVE})")
     snapshot = await build_snapshot(db, group, kind=kind, is_years=is_years,
-                                    oos_years=oos_years, grid=grid)
+                                    oos_years=oos_years, grid=grid, trade=trade)
     run = BacktestRun(group_id=group.id, kind=kind, status="queued",
                       config_snapshot=snapshot, config_hash=config_hash(config_core(group)),
                       data_start=start, data_end=end,

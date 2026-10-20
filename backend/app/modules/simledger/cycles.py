@@ -39,7 +39,8 @@ from quant.engine import funnel as qfunnel
 from quant.engine import phase as qphase
 from quant.engine import sizing as qsizing
 from quant.engine import strategy as qstrategy
-from quant.engine.exits import (ExitParams, Position, evaluate_exit,
+from quant.engine import trade_rules as qtrade
+from quant.engine.exits import (ExitParams, Position,
                                 maybe_raise_trailing, update_position_bar)
 from quant.engine.signal import Direction
 
@@ -559,7 +560,8 @@ async def daily_exit_management(db: AsyncSession, account: SimAccount,
                                 session_date: date, *,
                                 exit_params: ExitParams = RECOMMENDED_EXITS,
                                 bars_fn=qbars.get_bars,
-                                strategy_params: qstrategy.StrategyParams | None = None
+                                strategy_params: qstrategy.StrategyParams | None = None,
+                                trade_settings: qtrade.TradeSettings | None = None
                                 ) -> ExitPass:
     """Post-close exit pass on the system account — the simulator's exact
     ordering: trailing ratchet from info through D-1, fold D's bar into state,
@@ -643,12 +645,14 @@ async def daily_exit_management(db: AsyncSession, account: SimAccount,
             maybe_raise_trailing(p, prev_atr, exit_params)
             update_position_bar(p, float(last_bar["close"]), float(last_bar["high"]),
                                 direction, below_ma)
-            decision = evaluate_exit(
+            decision = qtrade.decide_exit(
                 p, float(last_bar["low"]), float(last_bar["close"]),
                 signal_direction=direction, expected_move=float(row["expected_move"]),
                 params=exit_params, bar_open=float(last_bar["open"]),
+                bar_high=float(last_bar["high"]),
                 benchmark_return_since_entry=benchmark_return_since(
-                    benchmark, sp.entry_date, session_date))
+                    benchmark, sp.entry_date, session_date),
+                settings=trade_settings)
             if decision is not None:
                 await SimLedgerService.close_position(
                     db, account, sp, raw_price=decision.price, reason=decision.action,
@@ -780,7 +784,8 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
                       chase_cap: float | None = qconfig.INTRADAY_ENTRY_CHASE_CAP,
                       entry_mode: str = ENTRY_MODE_LADDER,
                       open_prices: dict[str, float] | None = None,
-                      max_slots: int | None = None) -> list[str]:
+                      max_slots: int | None = None,
+                      trade_settings: qtrade.TradeSettings | None = None) -> list[str]:
     """Book today's shortlisted entries. Idempotent per (account, symbol,
     session); protections are checked by the caller.
 
@@ -853,6 +858,11 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
                 and price > ref_price * (1 + source.chase_cap):
             logger.info("entry_cycle: %s at %.2f is >%.0f%% above ref %.2f — "
                         "not chasing", sym, price, source.chase_cap * 100, ref_price)
+            continue
+        if trade_settings is not None and entry_mode == ENTRY_MODE_OPEN_ONCE \
+                and not qtrade.allows_entry_at_open(price, ref_price, trade_settings):
+            logger.info("entry_cycle: %s open %.2f above limit (ref %.2f) — not entered",
+                        sym, price, ref_price)
             continue
         adv = float(feats.get("adv") or 0) or None
         # review #26: size against the COST-INCLUSIVE buy price, exactly like

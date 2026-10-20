@@ -721,3 +721,28 @@ def test_fill_off_the_daily_open_is_reported(caplog):
 def test_stale_daily_bar_is_not_reconciled():
     assert _drift([_fill("AAA", 100.5)],
                   {"AAA": _daily(100.0, day=date(2026, 7, 29))}) == []
+
+
+# --- P3c: the open limit is an open_once rule; the ladder ignores it ----------------
+
+def test_ladder_mode_ignores_the_open_limit(monkeypatch):
+    from quant.engine.trade_rules import TradeSettings
+
+    ts = TradeSettings(entry_limit_offset_pct=-0.10)
+    session = _Session(recs=[_rec("AAA", price=100.0)], snapshot=_snapshot(2000))
+    out, _ = _run(session, _acct(), monkeypatch=monkeypatch,
+                  open_prices={"AAA": 101.0}, trade_settings=ts)
+    assert out == []                       # control: 101 is above the 90 limit
+
+    booked = []
+
+    async def fake_open(db, account, **kw):
+        booked.append(kw)
+        return object()
+
+    monkeypatch.setattr(SimLedgerService, "open_or_add", staticmethod(fake_open))
+    out = asyncio.run(cycles.run_entries(
+        _Session(recs=[_rec("AAA", price=100.0)]), _acct(), SESSION, group_id=uuid4(),
+        now=NOW, quote_fn=lambda s: cycles.QuoteReading(price=101.0, at=NOW),
+        entry_mode=cycles.ENTRY_MODE_LADDER, trade_settings=ts))
+    assert out == ["AAA"] and booked[0]["raw_price"] == 101.0

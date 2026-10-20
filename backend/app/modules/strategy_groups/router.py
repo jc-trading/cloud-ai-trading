@@ -34,6 +34,7 @@ from quant import config as qconfig
 from quant.data import calendar as qcal
 from quant.data import panel as qpanel
 from quant.data import screen as qscreen
+from quant.engine import trade_rules
 from quant.engine.screener import (
     DEFAULT_SCREENER, FIELDS, MAX_LIST, MAX_RULES, OPS, VALUE_BOUNDS, ScreenerSpecError,
     parse_spec,
@@ -93,6 +94,7 @@ class CloneGroupRequest(BaseModel):
     name: str
     params_json: dict | None = None
     screener_json: dict | None = None
+    trade_settings_json: dict | None = None
     notes: str | None = Field(default=None, max_length=2000)
     starting_capital: float | None = None
     status: Literal["active", "paused"] = "paused"
@@ -114,7 +116,7 @@ async def get_registry(user: CurrentUser):
                      "max_rules": MAX_RULES, "max_list": MAX_LIST,
                      "asset_types": list(qconfig.ELIGIBLE_ASSET_TYPES),
                      "default": DEFAULT_SCREENER},
-        "trade_settings": {"available": False},
+        "trade_settings": trade_rules.registry_entry(),
         "timeframes": ["1d"],
         "markets": ["us"],
     }
