@@ -20,6 +20,7 @@ import os
 import re
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from dotenv import dotenv_values
 
@@ -177,9 +178,13 @@ def fetch_alpaca_assets() -> list:
     key, sec = _keys()
     mode = (dotenv_values(str(config.REPO_ROOT / ".env")).get("ALPACA_MODE")
             or os.environ.get("ALPACA_MODE") or "paper")
-    client = TradingClient(key, sec, paper=(mode != "live"))
-    return client.get_all_assets(GetAssetsRequest(status=AssetStatus.ACTIVE,
-                                                  asset_class=AssetClass.US_EQUITY))
+    # raw dicts: the SDK's Asset model rejects any exchange code missing from its enum
+    client = TradingClient(key, sec, paper=(mode != "live"), raw_data=True)
+    raw = client.get_all_assets(GetAssetsRequest(status=AssetStatus.ACTIVE,
+                                                 asset_class=AssetClass.US_EQUITY))
+    return [SimpleNamespace(symbol=a["symbol"], name=a.get("name"),
+                            exchange=a.get("exchange"), tradable=a.get("tradable"))
+            for a in raw]
 
 
 _DEFAULT_FETCHERS = {"alpaca": fetch_alpaca_assets, "symdir": fetch_symdir,

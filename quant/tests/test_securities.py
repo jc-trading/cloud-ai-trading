@@ -126,6 +126,56 @@ def test_first_refresh_has_no_guard(monkeypatch):
     assert securities.refresh(date(2026, 10, 17), fetchers=_fetchers(3))["active"] == 4
 
 
+def test_fetch_alpaca_assets_keeps_an_exchange_the_sdk_enum_lacks(monkeypatch):
+    from alpaca.trading.enums import AssetClass, AssetStatus
+
+    from quant.data.providers import alpaca_rest
+
+    seen = {}
+
+    class _FakeClient:
+        def __init__(self, key, sec, **kwargs):
+            seen["init"] = (key, sec, kwargs)
+
+        def get_all_assets(self, request):
+            seen["request"] = request
+            return [{"symbol": "TXCO", "name": "Texas Co Common Stock", "exchange": "TXSE",
+                     "tradable": True, "class": "us_equity"},
+                    {"symbol": "BRK.B", "name": "Berkshire Hathaway Inc.", "exchange": "NYSE",
+                     "tradable": False}]
+
+    monkeypatch.setattr("alpaca.trading.client.TradingClient", _FakeClient)
+    monkeypatch.setattr(alpaca_rest, "_keys", lambda: ("k", "s"))
+    monkeypatch.setattr(securities, "dotenv_values", lambda path: {})
+    monkeypatch.delenv("ALPACA_MODE", raising=False)
+    out = securities.fetch_alpaca_assets()
+    assert seen["init"] == ("k", "s", {"paper": True, "raw_data": True})
+    assert seen["request"].status == AssetStatus.ACTIVE
+    assert seen["request"].asset_class == AssetClass.US_EQUITY
+    assert [(a.symbol, a.name, a.exchange, a.tradable) for a in out] == [
+        ("TXCO", "Texas Co Common Stock", "TXSE", True),
+        ("BRK.B", "Berkshire Hathaway Inc.", "NYSE", False)]
+
+
+def test_refresh_stores_a_plain_string_exchange(monkeypatch):
+    reg = _FakeRegistry(active=0)
+    monkeypatch.setattr(securities, "registry", reg)
+    assets = [SimpleNamespace(symbol="TXCO", name="Texas Co Common Stock", exchange="TXSE",
+                              tradable=True),
+              SimpleNamespace(symbol="TXNEW", name="Texas New Co", exchange="TXSE",
+                              tradable=True)]
+    out = securities.refresh(date(2026, 10, 20), fetchers={
+        "alpaca": lambda: assets, "symdir": lambda: {"TXCO": ROW("Texas Co Common Stock")},
+        "sec": lambda: {}})
+    _, rows = reg.many[0]
+    assert rows == [
+        ("TXCO", "Texas Co Common Stock", "TXSE", "stock", True, None,
+         date(2026, 10, 20), date(2026, 10, 20)),
+        ("TXNEW", "Texas New Co", "TXSE", "unknown", True, None,
+         date(2026, 10, 20), date(2026, 10, 20))]
+    assert out["by_type"] == {"stock": 1, "unknown": 1}
+
+
 # Real symbol-directory rows (cached 2026-10-17) that the first C1 rules misread.
 REAL_ROWS = {
     "AMX": ROW("America Movil, S.A.B. de C.V. American Depositary Shares (each representing "
