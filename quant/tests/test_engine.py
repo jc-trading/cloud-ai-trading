@@ -95,6 +95,14 @@ def test_position_size_risk_cap_binds():
     assert abs(sh - 3.0) < 1e-6   # 60 / (100-80)
 
 
+def test_position_size_below_min_notional_is_zero():
+    # a sub-cent cash residue (cents-rounded cash minus exact exit proceeds)
+    assert sizing.position_size(2000, 780.0, 770.0, slots=3, settled_cash=7.39e-7) == 0.0
+    assert sizing.position_size(2000, 100, 95, slots=3, settled_cash=0.99) == 0.0
+    sh = sizing.position_size(2000, 100, 95, slots=3, settled_cash=1.0)
+    assert sh > 0 and abs(sh - 0.01) < 1e-12
+
+
 def test_ladder_slots():
     assert sizing.concurrent_slots(2000) == 3
     assert sizing.concurrent_slots(4999) == 3

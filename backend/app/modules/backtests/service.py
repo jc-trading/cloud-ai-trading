@@ -212,6 +212,8 @@ async def live_series(db: AsyncSession, group: StrategyGroup, start: date | None
         if start is not None and exit_date < start:
             continue
         sold = sum(q for _, q in sells)
+        if sold <= 0:
+            continue
         trades.append(Trade(
             symbol=pos.symbol, entry_date=pos.entry_date, exit_date=exit_date,
             entry_price=float(pos.avg_cost), exit_price=sum(p * q for p, q in sells) / sold,

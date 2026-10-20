@@ -357,6 +357,37 @@ async def test_live_series_joins_fills_through_orders(api):
     assert list(eq2.index) == [date(2026, 9, 2), date(2026, 9, 3)] and len(trades2) == 1
 
 
+@pytest.mark.asyncio
+async def test_live_series_skips_a_zero_share_lot(api):
+    """A lot booked at a qty that stored as 0 shares (and was later sold as 0)
+    is no trade; dividing by its sold qty used to 500 the compare."""
+    g = await _group(api)
+    await _seed_ledger(api, g)
+    pos = SimPosition(account_id=g.sim_account_id, symbol="SPY", status="closed",
+                      shares=Decimal(0), avg_cost=Decimal("660.53"), stop=Decimal(650),
+                      r_unit=Decimal("10.53"), high_water=Decimal("660.53"),
+                      entry_date=date(2026, 9, 1),
+                      closed_at=datetime(2026, 9, 3, 20, 0, tzinfo=timezone.utc),
+                      close_reason="hard_stop")
+    api.db.add(pos)
+    await api.db.flush()
+    for side, price in (("buy", "660.53"), ("sell", "649.48")):
+        order = SimOrder(account_id=g.sim_account_id, position_id=pos.id, symbol="SPY",
+                         side=side, qty=Decimal(0), status="filled", reason="entry",
+                         idempotency_key=f"p3b-test-{uuid4()}")
+        api.db.add(order)
+        await api.db.flush()
+        api.db.add(SimFill(order_id=order.id, price=Decimal(price), raw_price=Decimal(price),
+                           qty=Decimal(0), commission=Decimal(0)))
+    await api.db.commit()
+
+    _, trades = await service.live_series(api.db, await _orm_group(api, g.id))
+    assert [t.symbol for t in trades] == ["AAA"]
+    r = await api.client.get(f"{URL}/compare", params={"group_ids": str(g.id)})
+    assert r.status_code == 200, r.text
+    assert r.json()["items"][0]["metrics"]["num_trades"] == 1
+
+
 # --- P3c trade settings ----------------------------------------------------------
 
 CAL_OK = {"status": "ok", "blocks": [

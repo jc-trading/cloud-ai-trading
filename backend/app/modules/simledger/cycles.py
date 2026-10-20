@@ -894,6 +894,7 @@ async def run_entries(db: AsyncSession, account: SimAccount, today: date, *,
         qty = qsizing.position_size(equity, entry_eff, stop, risk_pct=risk_pct,
                                     slots=ladder_slots, settled_cash=avail, adv=adv)
         if qty <= 0:
+            logger.info("entry_cycle: %s sizes below a tradable lot — skipped", sym)
             continue
         try:
             order = await SimLedgerService.open_or_add(

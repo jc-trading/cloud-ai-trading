@@ -27,8 +27,10 @@ def position_size(equity: float, entry: float, stop: float, *,
                   risk_pct: float = config.PER_TRADE_RISK_PCT,
                   slots: int | None = None, settled_cash: float | None = None,
                   adv: float | None = None, adv_cap_pct: float = 0.01,
-                  fractional: bool = config.FRACTIONAL_SHARES) -> float:
-    """Shares to buy for a long entry. Returns 0 if the trade can't be sized."""
+                  fractional: bool = config.FRACTIONAL_SHARES,
+                  min_notional: float = config.MIN_POSITION_NOTIONAL) -> float:
+    """Shares to buy for a long entry. Returns 0 if the trade can't be sized or
+    the lot is under min_notional."""
     if entry <= 0 or stop <= 0 or entry <= stop:
         return 0.0
     if slots is None:
@@ -47,6 +49,8 @@ def position_size(equity: float, entry: float, stop: float, *,
     shares = min(caps)
     if not fractional:
         shares = math.floor(shares)
+    if shares * entry < min_notional:
+        return 0.0
     return max(shares, 0.0)
 
 

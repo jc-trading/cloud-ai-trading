@@ -292,6 +292,18 @@ def test_no_cash_left_at_the_open_books_nothing(monkeypatch):
     assert out == [] and booked == []
 
 
+def test_sub_cent_cash_residue_books_nothing(monkeypatch, caplog):
+    """Cash is stored to the cent, exit proceeds to 6 decimals: the difference
+    leaves ~7.4e-7 "opening cash" that sizes to a lot which stores as 0 shares."""
+    caplog.set_level(logging.INFO)
+    session = _Session(recs=[_rec("SPY", price=660.0)], snapshot=_snapshot(2000),
+                       sell_fills=[_fill("AMD", 587.649504, qty=1.463083)])
+    out, booked = _run(session, _acct(cash=859.78), monkeypatch=monkeypatch,
+                       open_prices={"SPY": 660.0})
+    assert out == [] and booked == []
+    assert "entry_cycle: SPY sizes below a tradable lot — skipped" in caplog.text
+
+
 # --- the platform may only tighten the ladder --------------------------------
 
 def test_max_slots_tightens_the_equity_ladder(monkeypatch):

@@ -108,6 +108,7 @@ POSITION_LADDER: tuple[tuple[float, int], ...] = (
 )
 
 FRACTIONAL_SHARES: bool = True                # [A2] $2k/3 slots needs fractionals
+MIN_POSITION_NOTIONAL: float = 1.0            # a lot under $1 is cash-precision dust, never a position
 
 # --------------------------------------------------------------------------
 # Strategy defaults (design §6.3) — indicator params are [C2] starting points,

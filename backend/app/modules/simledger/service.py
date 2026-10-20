@@ -146,7 +146,7 @@ class SimLedgerService:
         """BUY: open a new lot, or pyramid into the existing open lot (the lot
         mutates — one open lot per account+symbol by schema). Returns None when
         this idempotency key was already booked (re-run safe)."""
-        if qty <= 0 or raw_price <= 0:
+        if qty <= 0 or raw_price <= 0 or _dec(qty) <= 0:
             raise SimLedgerError(f"bad qty/price for {symbol}: {qty}/{raw_price}")
         if await SimLedgerService.already_booked(db, idempotency_key):
             return None

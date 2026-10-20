@@ -11,7 +11,7 @@ import pytest
 
 from app.modules.simledger.models import SimAccount, SimFill, SimOrder, SimPosition
 from app.modules.simledger.service import (
-    InsufficientCash, SimLedgerService, _dec,
+    InsufficientCash, SimLedgerError, SimLedgerService, _dec,
 )
 
 
@@ -96,6 +96,17 @@ def test_insufficient_cash_refuses():
         asyncio.run(SimLedgerService.open_or_add(
             db, acct, symbol="AAPL", qty=5.0, raw_price=100.0, stop=95.0,
             reason="entry", idempotency_key="k2", trade_date=date(2026, 7, 30)))
+
+
+def test_open_or_add_refuses_a_qty_that_stores_as_zero():
+    acct = _account(cash=2000.0)
+    db = _FakeSession([None, None])
+    with pytest.raises(SimLedgerError, match="bad qty/price"):
+        asyncio.run(SimLedgerService.open_or_add(
+            db, acct, symbol="SPY", qty=9.5e-10, raw_price=780.0, stop=770.0,
+            reason="entry", idempotency_key="k-dust", trade_date=date(2026, 10, 12)))
+    assert db.added == []
+    assert float(acct.cash) == pytest.approx(2000.0)
 
 
 def test_pyramid_blends_cost_never_lowers_stop():
