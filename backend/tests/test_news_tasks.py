@@ -275,3 +275,63 @@ async def test_database_rejected_article_does_not_wedge_the_cycle(cycle, monkeyp
     meta = await _meta(cycle.db)
     assert (meta["fetched"], meta["new"], meta["invalid"]) == (3, 2, 1)
     assert await _added(cycle.db, NewsItem) == 2
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm_or_message(monkeypatch):
+    async def not_sent(message, *, event, severity):
+        return False
+
+    monkeypatch.setattr(news_tasks.settings, "AI_PROVIDER", "deepseek")
+    monkeypatch.setattr(news_tasks.settings, "DEEPSEEK_API_KEY", "")
+    monkeypatch.setattr(news_tasks.notify_mod, "_notify", not_sent)
+
+
+def _fake_steps(monkeypatch, fetch, *, extract_raises=False):
+    events = []
+
+    async def run_extraction(db, *, now):
+        events.append(("extract", len(fetch.calls)))
+        if extract_raises:
+            raise RuntimeError("boom")
+        return {"llm": "ok", "calls": 0}
+
+    async def maybe_notify(db, *, now):
+        events.append(("notify", len(fetch.calls)))
+        return 2
+
+    monkeypatch.setattr(news_tasks.extract, "run_extraction", run_extraction)
+    monkeypatch.setattr(news_tasks.notify_mod, "maybe_notify", maybe_notify)
+    return events
+
+
+@pytest.mark.asyncio
+async def test_extraction_and_notify_run_after_the_fetch(cycle, monkeypatch):
+    fetch = cycle.install(([_raw(1, datetime.now(timezone.utc) - timedelta(hours=1))],
+                           False, None))
+    events = _fake_steps(monkeypatch, fetch)
+    assert await news_tasks._news_cycle() == "ok"
+    assert events == [("extract", 1), ("notify", 1)]
+    meta = await _meta(cycle.db)
+    assert meta["extract"] == {"llm": "ok", "calls": 0} and meta["notified"] == 2
+
+
+@pytest.mark.asyncio
+async def test_extraction_failure_keeps_the_ingest(cycle, monkeypatch):
+    fetch = cycle.install(([_raw(1, datetime.now(timezone.utc) - timedelta(hours=1))],
+                           False, None))
+    events = _fake_steps(monkeypatch, fetch, extract_raises=True)
+    assert await news_tasks._news_cycle() == "ok"
+    meta = await _meta(cycle.db)
+    assert meta["extract"] == {"llm": "error"} and meta["new"] == 1
+    assert [name for name, _ in events] == ["extract", "notify"]
+    assert await _added(cycle.db, NewsItem) == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_runs_neither_extraction_nor_notify(cycle, monkeypatch):
+    fetch = cycle.install(([], False, None))
+    events = _fake_steps(monkeypatch, fetch)
+    monkeypatch.setattr(news_tasks.settings, "NEWS_ENABLED", False)
+    assert await news_tasks._news_cycle() == "disabled"
+    assert events == [] and fetch.calls == []

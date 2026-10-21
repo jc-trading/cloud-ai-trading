@@ -5,7 +5,7 @@
       <h1 class="text-3xl font-bold mb-1">LLM Log</h1>
       <p class="text-sm" style="color: var(--jd-text-muted)">
         Every LLM call the system makes — platform, model, tokens, unit price, cost.
-        <span style="color: var(--jd-text-faint)">v3 uses the LLM for recommendation explanations only (no trading decisions).</span>
+        <span style="color: var(--jd-text-faint)">v3 uses the LLM for recommendation explanations and news extraction only (no trading decisions).</span>
       </p>
     </div>
 
@@ -17,7 +17,7 @@
       </div>
       <div class="jd-stat-card" style="--accent: var(--jd-blue)">
         <div class="jd-stat-label">Total tokens (in / out)</div>
-        <div class="jd-stat-value">{{ fmtInt(allTime.input_tokens) }} / {{ fmtInt(allTime.output_tokens) }}</div>
+        <div class="jd-stat-value" :title="tokenBreakdown(allTime)">{{ fmtInt(allTime.total_input_tokens) }} / {{ fmtInt(allTime.output_tokens) }}</div>
       </div>
       <div class="jd-stat-card" style="--accent: var(--jd-green)">
         <div class="jd-stat-label">API cost (USD)</div>
@@ -83,8 +83,8 @@
           <template #cell:model="{ value }">
             <span class="font-mono" style="font-size:12px">{{ value }}</span>
           </template>
-          <template #cell:input_tokens="{ value }">
-            <span class="font-mono">{{ fmtInt(value) }}</span>
+          <template #cell:total_input_tokens="{ row, value }">
+            <span class="font-mono" :title="tokenBreakdown(row)">{{ fmtInt(value) }}</span>
           </template>
           <template #cell:output_tokens="{ value }">
             <span class="font-mono">{{ fmtInt(value) }}</span>
@@ -130,6 +130,9 @@ const error = ref(null)
 const allTime = computed(() => ({
   calls: summary.value.all_time?.calls ?? 0,
   input_tokens: summary.value.all_time?.input_tokens ?? 0,
+  total_input_tokens: summary.value.all_time?.total_input_tokens ?? 0,
+  cache_read_tokens: summary.value.all_time?.cache_read_tokens ?? 0,
+  cache_creation_tokens: summary.value.all_time?.cache_creation_tokens ?? 0,
   output_tokens: summary.value.all_time?.output_tokens ?? 0,
   cost_api_usd: summary.value.all_time?.cost_api_usd ?? 0,
   cost_subscription_est_usd: summary.value.all_time?.cost_subscription_est_usd ?? 0,
@@ -147,7 +150,7 @@ const columns = [
   { key: 'symbol', header: 'Symbol', sortable: true },
   { key: 'model', header: 'Model', sortable: true,
     filterable: true, filterLabel: 'Model' },
-  { key: 'input_tokens', header: 'In', sortable: true, align: 'right' },
+  { key: 'total_input_tokens', header: 'In', sortable: true, align: 'right' },
   { key: 'output_tokens', header: 'Out', sortable: true, align: 'right' },
   { key: 'billing', header: 'Billing', align: 'center',
     filterable: true, filterLabel: 'Billing' },
@@ -158,6 +161,7 @@ const columns = [
 ]
 
 const fmtInt = (v) => (v ?? 0).toLocaleString()
+const tokenBreakdown = (r) => `uncached ${fmtInt(r.input_tokens)} · cache read ${fmtInt(r.cache_read_tokens)} · cache write ${fmtInt(r.cache_creation_tokens)} · out ${fmtInt(r.output_tokens)}`
 const fmtUsd = (v) => Number(v ?? 0).toFixed(6)
 const fmtTime = (iso) => {
   if (!iso) return '—'

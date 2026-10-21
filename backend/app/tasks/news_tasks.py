@@ -17,7 +17,7 @@ from sqlalchemy import func, select, text
 
 from app.celery_database import CeleryAsyncSessionLocal, celery_engine
 from app.config import settings
-from app.modules.news import alpaca_news
+from app.modules.news import alpaca_news, extract, notify as notify_mod
 from app.modules.news.ingest import COUNT_KEYS, ingest_alpaca
 from app.modules.news.models import NewsItem, NewsItemSource
 from app.modules.news.relevance import relevance_map
@@ -69,8 +69,22 @@ async def _news_cycle() -> str:
                 else:
                     counts = dict.fromkeys(COUNT_KEYS, 0)
 
+                try:
+                    ext = await extract.run_extraction(db, now=now)
+                except Exception:
+                    logger.exception("news extraction failed")
+                    await db.rollback()
+                    ext = {"llm": "error"}
+                try:
+                    sent = await notify_mod.maybe_notify(db, now=datetime.now(timezone.utc))
+                except Exception:
+                    logger.exception("news notify failed")
+                    await db.rollback()
+                    sent = 0
+
                 await _beat(db, "news_cycle", **counts, truncated=truncated,
-                            fetch_error=fetch_error, bootstrap_at=bootstrap_at.isoformat())
+                            fetch_error=fetch_error, bootstrap_at=bootstrap_at.isoformat(),
+                            extract=ext, notified=sent)
                 await db.commit()
         return "ok"
     except Exception:

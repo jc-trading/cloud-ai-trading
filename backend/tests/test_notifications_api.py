@@ -356,3 +356,27 @@ def test_llm_and_nightwatch_split_api_from_subscription(ctx):
     assert round(nw1["cost_usd"] - nw0["cost_usd"], 8) == 1.5
     assert round(nw1["subscription_est_usd"] - nw0["subscription_est_usd"], 8) == 0.25
     assert nw1["calls"] - nw0["calls"] == 2
+
+
+def test_llm_log_total_input_includes_cache_tokens(ctx):
+    def snapshot():
+        return ctx.client.get("/api/v1/llm/log", params={"limit": 2000}).json()
+
+    keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "total_input_tokens",
+            "output_tokens")
+    llm0 = snapshot()
+    _sql("INSERT INTO llm_calls (id, context, platform, model, input_tokens, cache_read_tokens, "
+         "cache_creation_tokens, output_tokens, billing) VALUES (gen_random_uuid(), :c, "
+         "'claude-cli', 'zztest-model', 2, 100, 641, 205, 'subscription')",
+         {"c": f"{_P}tokens"})
+    llm1 = snapshot()
+
+    def delta(key, part="all_time"):
+        return llm1["summary"][part][key] - llm0["summary"][part][key]
+
+    assert tuple(delta(k) for k in keys) == (2, 100, 641, 743, 205)
+    assert delta("total_input_tokens", "today") == 743
+    mine = [i for i in llm1["items"] if i["context"] == f"{_P}tokens"]
+    assert len(mine) == 1
+    assert (mine[0]["total_input_tokens"], mine[0]["input_tokens"],
+            mine[0]["cache_creation_tokens"]) == (743, 2, 641)
