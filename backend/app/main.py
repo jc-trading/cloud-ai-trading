@@ -29,6 +29,7 @@ from app.modules.system.routes import router as system_router
 from app.modules.admin.router import router as admin_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.backtests.router import router as backtests_router
+from app.modules.news.router import router as news_router
 
 settings = get_settings()
 
@@ -139,6 +140,7 @@ app.include_router(system_router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 app.include_router(notifications_router, prefix=settings.API_V1_PREFIX)
 app.include_router(backtests_router, prefix=settings.API_V1_PREFIX)
+app.include_router(news_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/api/health")

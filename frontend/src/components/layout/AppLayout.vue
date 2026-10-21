@@ -33,6 +33,12 @@
         </div>
 
         <div class="jd-nav-section">
+          <div class="jd-nav-label">News</div>
+          <SidebarItem to="/news" icon="pi-megaphone" label="News" :isActive="route.path === '/news'" />
+          <SidebarItem to="/news/sources" icon="pi-shield" label="Sources" :isActive="route.path === '/news/sources'" />
+        </div>
+
+        <div class="jd-nav-section">
           <div class="jd-nav-label">Market Data</div>
           <SidebarItem to="/market" icon="pi-globe" label="Market Overview" :isActive="route.path.startsWith('/market')" />
           <SidebarItem to="/watchlist" icon="pi-star-fill" label="Watchlist" :isActive="route.path === '/watchlist'" />
@@ -192,6 +198,8 @@ const pageTitles = {
   'GroupDetail': 'Strategy Group',
   'BacktestDetail': 'Backtest',
   'Compare': 'Compare',
+  'News': 'News',
+  'NewsSources': 'News Sources',
 }
 
 const pageDescriptions = {
@@ -209,6 +217,8 @@ const pageDescriptions = {
   'GroupDetail': 'Config, account, cycles and backtests',
   'BacktestDetail': 'Run progress, metrics, windows and calibration',
   'Compare': 'Live accounts and backtests side by side',
+  'News': 'Extracted news claims and the review queue',
+  'NewsSources': 'Source scores and enable / disable',
 }
 
 const currentPageTitle       = computed(() => pageTitles[route.name]       || 'Recommendations')
