@@ -27,6 +27,9 @@ CLAIM_TYPES = ("price", "non_price")
 DIRECTIONS = ("up", "down")
 ACTIONS = ("buy", "sell", "review", "ignore")
 REVIEW_STATUSES = ("none", "open", "done", "dismissed")
+OUTCOME_STATUSES = ("scored", "no_data", "excluded")
+OUTCOME_METHODS = ("price", "llm")
+VERDICTS = ("happened", "not_happened", "no_evidence")
 PLATFORM_BENZINGA = "benzinga"
 
 _CLAIM_COLUMNS = ("claim_type", "direction", "probability", "expected_move_pct",
@@ -195,4 +198,80 @@ class NewsItemSymbol(Base):
         Index("ix_news_item_symbols_symbol", "symbol"),
         Index("ix_news_item_symbols_review", "review_status", "review_at"),
         Index("ix_news_item_symbols_evaluate", "evaluate_after"),
+    )
+
+
+class NewsOutcome(Base):
+    __tablename__ = "news_outcomes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    news_symbol_id = Column(UUID(as_uuid=True),
+                            ForeignKey("news_item_symbols.id", ondelete="CASCADE",
+                                       name="fk_news_outcome_symbol"),
+                            nullable=False)
+    status = Column(String(10), nullable=False)
+    method = Column(String(6), nullable=False)
+    scoring_eligible = Column(Boolean(), nullable=False)
+    anchor_session = Column(Date, nullable=False)
+    end_session = Column(Date, nullable=False)
+    anchor_price = Column(Numeric(18, 6), nullable=True)
+    end_price = Column(Numeric(18, 6), nullable=True)
+    realized_move_pct = Column(Numeric(9, 4), nullable=True)
+    spy_move_pct = Column(Numeric(9, 4), nullable=True)
+    excess_move_pct = Column(Numeric(9, 4), nullable=True)
+    sector_etf = Column(String(10), nullable=True)
+    sector_move_pct = Column(Numeric(9, 4), nullable=True)
+    hit = Column(Boolean(), nullable=True)
+    score = Column(Numeric(6, 4), nullable=True)
+    magnitude_error_pct = Column(Numeric(9, 4), nullable=True)
+    verdict = Column(String(14), nullable=True)
+    evidence = Column(String(300), nullable=True)
+    llm_call_id = Column(UUID(as_uuid=True),
+                         ForeignKey("llm_calls.id", ondelete="SET NULL",
+                                    name="fk_news_outcome_llm_call"),
+                         nullable=True)
+    reason = Column(String(200), nullable=True)
+    evaluated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("news_symbol_id", name="uq_news_outcome_symbol_row"),
+        CheckConstraint(_in("status", OUTCOME_STATUSES), name="ck_news_outcome_status"),
+        CheckConstraint(_in("method", OUTCOME_METHODS), name="ck_news_outcome_method"),
+        CheckConstraint(_in("verdict", VERDICTS), name="ck_news_outcome_verdict_value"),
+        CheckConstraint("((status = 'scored') = (hit IS NOT NULL)) "
+                        "AND ((status = 'scored') = (score IS NOT NULL))",
+                        name="ck_news_outcome_scored"),
+        CheckConstraint("(method = 'llm' AND status = 'scored') = (verdict IS NOT NULL)",
+                        name="ck_news_outcome_verdict"),
+        CheckConstraint("score BETWEEN 0 AND 1", name="ck_news_outcome_score"),
+        CheckConstraint("(status = 'scored') = (reason IS NULL)", name="ck_news_outcome_reason"),
+        CheckConstraint("method <> 'price' OR status <> 'scored' OR "
+                        "(anchor_price IS NOT NULL AND end_price IS NOT NULL "
+                        "AND realized_move_pct IS NOT NULL AND spy_move_pct IS NOT NULL "
+                        "AND excess_move_pct IS NOT NULL AND magnitude_error_pct IS NOT NULL)",
+                        name="ck_news_outcome_price"),
+        Index("ix_news_outcomes_evaluated", "evaluated_at"),
+    )
+
+
+class NewsSourceScoreHistory(Base):
+    __tablename__ = "news_source_score_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    source_id = Column(UUID(as_uuid=True),
+                       ForeignKey("news_sources.id", ondelete="CASCADE",
+                                  name="fk_news_source_score_source"),
+                       nullable=False)
+    as_of = Column(Date, nullable=False)
+    n = Column(Integer, nullable=False)
+    hits = Column(Integer, nullable=False)
+    score = Column(Numeric(6, 4), nullable=False)
+    lift = Column(Numeric(8, 4), nullable=False)
+    prior_mean = Column(Numeric(6, 4), nullable=False)
+    brier = Column(Numeric(6, 4), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "as_of", name="uq_news_source_score_day"),
+        CheckConstraint("n >= 1 AND hits >= 0 AND hits <= n", name="ck_news_source_score_counts"),
     )

@@ -52,6 +52,7 @@ celery_app.conf.update(
     # keeps it off the slots signal_cycle and the heartbeat need
     task_routes={"market.universe_sync": {"queue": "bulk"},
                  "news.cycle": {"queue": "news"},
+                 "news.evaluate": {"queue": "news"},
                  "research.dispatch": {"queue": "research"}},
 )
 
@@ -135,6 +136,8 @@ celery_app.conf.beat_schedule.update({
         "schedule": 900.0,
         "options": {"expires": 840},
     },
+    "news-evaluate": {"task": "news.evaluate", "schedule": crontab(minute=40, hour=3),
+                      "options": {"expires": 3300}},
     "research-dispatch": {"task": "research.dispatch", "schedule": 60.0, "options": {"expires": 55}},
 })
 

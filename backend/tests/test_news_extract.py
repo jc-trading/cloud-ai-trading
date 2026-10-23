@@ -559,3 +559,23 @@ async def test_call_row_is_committed_before_the_batch_is_stored(db, monkeypatch)
         LLMCall.id == fake.call_ids[0]))).scalar_one() == fake.call_ids[0]
     item = await _reload(db, item)
     assert (item.status, item.extract_attempts) == ("pending", 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind, action", [("platform", "review"), ("feed", "buy")])
+async def test_platform_aggregate_never_verifies_a_claim(db, monkeypatch, kind, action):
+    for key, value in (("NEWS_SOURCE_MIN_N", 20), ("NEWS_ACTION_MIN_LIFT", 1.2),
+                       ("NEWS_ACTION_MIN_PROB", 70), ("NEWS_REVIEW_MIN_PROB", 60)):
+        monkeypatch.setattr(settings, key, value)
+    source = NewsSource(id=uuid4(), kind=kind, name=f"ZZTEST {kind} {uuid4().hex[:8]}",
+                        n_evaluated=25, hits=20, lift=1.5)
+    db.add(source)
+    await db.flush()
+    db.info["source"] = source
+    item = await _item(db)
+    _install(monkeypatch, lambda prompt: _valid_for(prompt, probability=85))
+    await _run(db)
+    claimed = await _symbol_row(db, item, "ZQXA")
+    assert claimed.suggested_action == action
+    if kind == "platform":
+        assert "source unverified" in claimed.action_reason

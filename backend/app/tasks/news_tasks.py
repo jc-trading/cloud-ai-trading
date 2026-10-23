@@ -17,7 +17,7 @@ from sqlalchemy import func, select, text
 
 from app.celery_database import CeleryAsyncSessionLocal, celery_engine
 from app.config import settings
-from app.modules.news import alpaca_news, extract, notify as notify_mod
+from app.modules.news import alpaca_news, evaluate, extract, notify as notify_mod
 from app.modules.news.ingest import COUNT_KEYS, ingest_alpaca
 from app.modules.news.models import NewsItem, NewsItemSource
 from app.modules.news.relevance import relevance_map
@@ -95,3 +95,37 @@ async def _news_cycle() -> str:
 @shared_task(name="news.cycle", soft_time_limit=600, time_limit=660)
 def news_cycle():
     return _run_async(_news_cycle())
+
+
+async def _news_evaluate() -> str:
+    try:
+        now = datetime.now(timezone.utc)
+        if not settings.NEWS_ENABLED:
+            async with CeleryAsyncSessionLocal() as db:
+                await _beat(db, "news_evaluate", disabled=True)
+                await db.commit()
+            return "disabled"
+
+        async with celery_engine.connect() as lock_conn:
+            got = (await lock_conn.execute(text("select pg_try_advisory_xact_lock(:k)"),
+                                           {"k": NEWS_LOCK_KEY})).scalar()
+            if not got:
+                return "busy"
+            async with CeleryAsyncSessionLocal() as db:
+                try:
+                    counts = await evaluate.run_evaluation(db, now=now)
+                except Exception:
+                    logger.exception("news evaluation failed")
+                    await db.rollback()
+                    counts = {"error": "evaluation failed"}
+                await _beat(db, "news_evaluate", **counts)
+                await db.commit()
+        return "error" if "error" in counts else "ok"
+    except Exception:
+        logger.exception("news.evaluate failed")
+        return "error"
+
+
+@shared_task(name="news.evaluate", soft_time_limit=1200, time_limit=1260)
+def news_evaluate():
+    return _run_async(_news_evaluate())

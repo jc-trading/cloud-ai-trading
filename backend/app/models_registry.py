@@ -47,7 +47,9 @@ from app.modules.news.models import (  # noqa: F401
     NewsItem,
     NewsItemSource,
     NewsItemSymbol,
+    NewsOutcome,
     NewsSource,
+    NewsSourceScoreHistory,
 )
 
 __all__ = [
@@ -79,4 +81,6 @@ __all__ = [
     "NewsItem",
     "NewsItemSource",
     "NewsItemSymbol",
+    "NewsOutcome",
+    "NewsSourceScoreHistory",
 ]

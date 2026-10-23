@@ -246,7 +246,7 @@ async def _source_stats(db, news_ids) -> dict:
         select(NewsItemSource.news_id, NewsSource.enabled, NewsSource.kind,
                NewsSource.n_evaluated, NewsSource.lift)
         .join(NewsSource, NewsSource.id == NewsItemSource.source_id)
-        .where(NewsItemSource.news_id.in_(news_ids))
+        .where(NewsItemSource.news_id.in_(news_ids), NewsSource.kind != "platform")
     )).all():
         stats[r.news_id].append(rules.SourceStat(
             r.enabled, r.kind, r.n_evaluated, float(r.lift) if r.lift is not None else None))
