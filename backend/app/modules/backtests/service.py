@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from quant import config as qconfig
 from quant.backtest.calibration import score_threshold
 from quant.backtest.costs import CostModel
+from quant.backtest.intraday_costs import IntradayCostModel
 from quant.backtest.metrics import Trade
 from quant.backtest.walkforward import walk_forward_windows
 from quant.data import calendar as qcal
@@ -39,6 +40,7 @@ from app.modules.strategy_groups.service import calibration_problem
 BACKTEST_MIN_START = date(2016, 1, 1)
 BACKTEST_MAX_ACTIVE = 3
 SINGLE_MIN_SESSIONS = 120
+INTRADAY_SINGLE_MIN_SESSIONS = 5
 PLATFORM_KEYS = ("per_trade_risk_pct", "daily_loss_pause_pct", "portfolio_drawdown_halt_pct",
                  "min_confidence")
 _ET = ZoneInfo("America/New_York")
@@ -76,7 +78,7 @@ def engine_fingerprint() -> str:
 
 
 async def build_snapshot(db: AsyncSession, group: StrategyGroup, *, kind: str, is_years: int,
-                         oos_years: int, grid: dict | None, trade=None) -> dict:
+                         oos_years: int, grid: dict | None, trade=None, run_spec=None) -> dict:
     from quant.research.sensitivity import _store_latest_session
 
     account = await db.get(SimAccount, group.sim_account_id)
@@ -92,6 +94,9 @@ async def build_snapshot(db: AsyncSession, group: StrategyGroup, *, kind: str, i
         "run": {"kind": kind, "is_years": is_years, "oos_years": oos_years,
                 "grid": None if grid is None else {k: list(v) for k, v in grid.items()}},
     }
+    if group.timeframe == "1m":
+        snap["costs"] = asdict(IntradayCostModel())
+        snap["run"] = run_spec
     if trade is not None and trade.entry_prob_min is not None:
         rid = trade.calibration_run_id
         run = await db.get(BacktestRun, UUID(rid))
@@ -108,9 +113,47 @@ async def build_snapshot(db: AsyncSession, group: StrategyGroup, *, kind: str, i
     return snap
 
 
+def _intraday_run_spec(group: StrategyGroup, kind: str, start: date, end: date, *,
+                       is_years, oos_years, is_sessions, oos_sessions, grid) -> dict:
+    """Validate a 1m group's run request and return its snapshot ``run``:
+    sessions instead of years, and no start before the 1min backfill horizon."""
+    if is_years is not None or oos_years is not None:
+        raise RunInvalid("is_years / oos_years do not apply to 1m groups — "
+                         "use is_sessions / oos_sessions")
+    floor = (pd.Timestamp(cycles.now_et().date())
+             - pd.DateOffset(years=qconfig.INTRADAY_BACKFILL_YEARS_1M)).date()
+    if start < floor:
+        raise RunInvalid(f"1m runs: start must be >= {floor}")
+    if kind == "single":
+        if grid is not None:
+            raise RunInvalid("grid applies to walk_forward runs only")
+        n = len(qcal.sessions_in_range(start, end))
+        if n < INTRADAY_SINGLE_MIN_SESSIONS:
+            raise RunInvalid(f"a 1m single run needs >= {INTRADAY_SINGLE_MIN_SESSIONS} "
+                             f"sessions, got {n}")
+        return {"kind": kind, "is_sessions": None, "oos_sessions": None, "grid": None}
+    is_sessions = 60 if is_sessions is None else is_sessions
+    oos_sessions = 20 if oos_sessions is None else oos_sessions
+    if not 20 <= is_sessions <= 250:
+        raise RunInvalid("is_sessions must be 20-250")
+    if not 10 <= oos_sessions <= 120:
+        raise RunInvalid("oos_sessions must be 10-120")
+    from quant.research.intraday_backtest import session_windows
+
+    if not session_windows(qcal.sessions_in_range(start, end), is_sessions, oos_sessions):
+        raise RunInvalid(f"no walk-forward window fits {start}..{end} "
+                         f"(IS {is_sessions} + OOS {oos_sessions} sessions)")
+    try:
+        grid = validate_grid(group.strategy_key, grid)
+    except StrategyParamsError as e:
+        raise RunInvalid(str(e)) from None
+    return {"kind": kind, "is_sessions": is_sessions, "oos_sessions": oos_sessions,
+            "grid": {k: list(v) for k, v in grid.items()}}
+
+
 async def create_run(db: AsyncSession, *, group: StrategyGroup, kind: str, start: date,
-                     end: date, is_years: int = 3, oos_years: int = 1, grid=None,
-                     user_id=None) -> BacktestRun:
+                     end: date, is_years=None, oos_years=None, is_sessions=None,
+                     oos_sessions=None, grid=None, user_id=None) -> BacktestRun:
     """Validate a backtest request (RunInvalid -> 422, RunConflict -> 409) and
     insert it as ``queued`` with its config snapshot."""
     if kind not in KINDS:
@@ -122,7 +165,17 @@ async def create_run(db: AsyncSession, *, group: StrategyGroup, kind: str, start
         raise RunInvalid(f"end must be <= {last} (the last closed session)")
     if not start < end:
         raise RunInvalid("start must be before end")
-    if kind == "single":
+    if group.timeframe != "1m":
+        if is_sessions is not None or oos_sessions is not None:
+            raise RunInvalid("is_sessions / oos_sessions apply to 1m groups only")
+        is_years = 3 if is_years is None else is_years
+        oos_years = 1 if oos_years is None else oos_years
+    run_spec = None
+    if group.timeframe == "1m":
+        run_spec = _intraday_run_spec(group, kind, start, end, is_years=is_years,
+                                      oos_years=oos_years, is_sessions=is_sessions,
+                                      oos_sessions=oos_sessions, grid=grid)
+    elif kind == "single":
         if grid is not None:
             raise RunInvalid("grid applies to walk_forward runs only")
         n = len(qcal.sessions_in_range(start, end))
@@ -162,7 +215,8 @@ async def create_run(db: AsyncSession, *, group: StrategyGroup, kind: str, start
         raise RunConflict(f"{active} backtests already queued or running "
                           f"(max {BACKTEST_MAX_ACTIVE})")
     snapshot = await build_snapshot(db, group, kind=kind, is_years=is_years,
-                                    oos_years=oos_years, grid=grid, trade=trade)
+                                    oos_years=oos_years, grid=grid, trade=trade,
+                                    run_spec=run_spec)
     run = BacktestRun(group_id=group.id, kind=kind, status="queued",
                       config_snapshot=snapshot, config_hash=config_hash(config_core(group)),
                       data_start=start, data_end=end,

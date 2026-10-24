@@ -40,8 +40,10 @@ class CreateRunRequest(BaseModel):
     kind: str
     start: date
     end: date
-    is_years: int = 3
-    oos_years: int = 1
+    is_years: int | None = None
+    oos_years: int | None = None
+    is_sessions: int | None = None
+    oos_sessions: int | None = None
     grid: dict | None = None
 
 
@@ -100,6 +102,7 @@ async def create_backtest(data: CreateRunRequest, admin: AdminUser, db: DB = Non
     try:
         run = await create_run(db, group=group, kind=data.kind, start=data.start, end=data.end,
                                is_years=data.is_years, oos_years=data.oos_years,
+                               is_sessions=data.is_sessions, oos_sessions=data.oos_sessions,
                                grid=data.grid, user_id=admin.id)
     except RunInvalid as e:
         raise HTTPException(status_code=422, detail=str(e)) from None

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -155,8 +155,7 @@ _IN_FLIGHT = "signal_cycle is running — activate after it finishes"
 
 def normalize_params(key: str, params_json) -> dict:
     cfg = get_spec(key).build(params_json)
-    return {"strategy": asdict(cfg.strategy), "funnel": asdict(cfg.funnel),
-            "exits": asdict(cfg.exits)}
+    return {f.name: asdict(getattr(cfg, f.name)) for f in fields(cfg)}
 
 
 async def platform_block_reason(db: AsyncSession) -> str | None:
@@ -200,21 +199,22 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
         raise GroupInvalid("name: must be 1-100 characters")
     if any(ord(ch) < 0x20 for ch in name):
         raise GroupInvalid("name: must not contain control characters")
-    if strategy_key in REGISTRY and REGISTRY[strategy_key].timeframe != "1d":
-        raise GroupInvalid("timeframe '1d' is not supported")
     try:
+        timeframe = get_spec(strategy_key).timeframe
         params = normalize_params(strategy_key, params_json)
     except StrategyParamsError as e:
         raise GroupInvalid(str(e)) from None
     try:
-        parse_spec(screener_json)
+        screener = parse_spec(screener_json)
     except ScreenerSpecError as e:
         raise GroupInvalid(str(e)) from None
+    if timeframe == "1m" and screener is None:
+        raise GroupInvalid("screener_json: 1m groups need screener rules")
     try:
-        trade = parse_trade_settings(trade_settings_json, timeframe="1d")
+        trade = parse_trade_settings(trade_settings_json, timeframe=timeframe)
     except TradeSettingsError as e:
         raise GroupInvalid(str(e)) from None
-    trade_json = normalize(trade_settings_json)
+    trade_json = normalize(trade_settings_json, timeframe=timeframe)
     if status not in ("active", "paused"):
         raise GroupInvalid("status: must be active or paused")
     if not 500 <= starting_capital <= 1_000_000:
@@ -222,7 +222,7 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
     if trade is not None and trade.entry_prob_min is not None:
         await _check_calibration(db, trade, StrategyGroup(
             strategy_key=strategy_key, params_json=params, screener_json=screener_json,
-            trade_settings_json=trade_json, timeframe="1d", market="us"))
+            trade_settings_json=trade_json, timeframe=timeframe, market="us"))
     if status == "active":
         reason = await platform_block_reason(db)
         if reason is not None:
@@ -242,7 +242,7 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
     await db.flush()
     group = StrategyGroup(id=gid, name=name, market="us", strategy_key=strategy_key,
                           params_json=params, screener_json=screener_json,
-                          trade_settings_json=trade_json, risk_json={}, timeframe="1d",
+                          trade_settings_json=trade_json, risk_json={}, timeframe=timeframe,
                           status=status, sim_account_id=acct.id, account_is_system=True,
                           notes=notes)
     db.add(group)

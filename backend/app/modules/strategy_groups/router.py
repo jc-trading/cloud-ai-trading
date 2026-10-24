@@ -110,14 +110,15 @@ async def get_registry(user: CurrentUser):
     return {
         "strategies": [
             {"key": key, "description": spec.description, "params_schema": ui_schema(key),
-             "cross_rules": [{"left": a, "op": "<", "right": b} for a, b in CROSS_RULES[key]]}
+             "cross_rules": [{"left": a, "op": "<", "right": b} for a, b in CROSS_RULES[key]],
+             "timeframe": spec.timeframe}
             for key, spec in REGISTRY.items()],
         "screener": {"fields": FIELDS, "ops": OPS, "value_bounds": VALUE_BOUNDS,
                      "max_rules": MAX_RULES, "max_list": MAX_LIST,
                      "asset_types": list(qconfig.ELIGIBLE_ASSET_TYPES),
                      "default": DEFAULT_SCREENER},
         "trade_settings": trade_rules.registry_entry(),
-        "timeframes": ["1d"],
+        "timeframes": ["1d", "1m"],
         "markets": ["us"],
     }
 

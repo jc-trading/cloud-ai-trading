@@ -93,6 +93,8 @@ def _default_runner(run: BacktestRun, *, progress, check) -> dict:
     from quant.research import group_backtest as gb
 
     snap = run.config_snapshot
+    if snap.get("timeframe") == "1m":
+        return _intraday_runner(run, progress=progress, check=check)
     gcfg = gb.GroupConfig.from_snapshot(snap)
     if run.kind == "single":
         result = gb.run_single(gcfg, run.data_start, run.data_end, check=check,
@@ -106,6 +108,39 @@ def _default_runner(run: BacktestRun, *, progress, check) -> dict:
         calibration_json = gb.jsonable(result["calibration"])
     rel = f"backtests/{run.id}"
     gb.write_artifacts(qconfig.DATA_ROOT / rel, result)
+    return {"metrics_json": gb.jsonable(result["metrics"]),
+            "calibration_json": calibration_json, "artifact_path": rel}
+
+
+def _intraday_runner(run: BacktestRun, *, progress, check) -> dict:
+    """The 1m path of ``_default_runner``. Missing 1min data fails the run and
+    leaves a need file for the backfill CLI instead of fetching anything here."""
+    from quant import config as qconfig
+    from quant.research import group_backtest as gb
+    from quant.research import intraday_backtest as ib
+
+    snap = run.config_snapshot
+    gcfg = ib.IntradayGroupConfig.from_snapshot(snap)
+    try:
+        if run.kind == "single":
+            result = ib.run_single_1m(gcfg, run.data_start, run.data_end, check=check,
+                                      progress=progress)
+            calibration_json = None
+        else:
+            spec = snap["run"]
+            result = ib.run_walk_forward_1m(gcfg, run.data_start, run.data_end,
+                                            is_sessions=spec["is_sessions"],
+                                            oos_sessions=spec["oos_sessions"],
+                                            grid=spec["grid"], check=check, progress=progress)
+            calibration_json = gb.jsonable(result["calibration"])
+    except ib.MissingIntradayData as e:
+        need = qconfig.INTRADAY_ROOT / "needs" / f"bt-{run.id}.parquet"
+        need.parent.mkdir(parents=True, exist_ok=True)
+        ib.write_need(need, e.pairs)
+        raise RuntimeError(f"missing 1min data: {len(e.pairs)} symbol-days — need file "
+                           f"bt-{run.id}.parquet; run backfill then resubmit") from None
+    rel = f"backtests/{run.id}"
+    ib.write_artifacts_1m(qconfig.DATA_ROOT / rel, result)
     return {"metrics_json": gb.jsonable(result["metrics"]),
             "calibration_json": calibration_json, "artifact_path": rel}
 

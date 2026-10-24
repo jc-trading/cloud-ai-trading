@@ -281,3 +281,107 @@ async def test_none_in_a_jsonb_column_is_sql_null_not_json_null(pg_session_rollb
                                      BacktestRun.calibration_json.is_(None))
                               .where(BacktestRun.id == run.id))).one()
     assert tuple(nulls) == (True, True)
+
+
+# --- P5a-2: 1m snapshots run through the intraday backtest ------------------------
+
+def _snap(timeframe):
+    from quant.engine.strategies import M1_ORB_KEY, V1_COMPOSITE_KEY, get_spec
+    from quant.research.group_backtest import PLATFORM_CONSTANTS
+
+    key = M1_ORB_KEY if timeframe == "1m" else V1_COMPOSITE_KEY
+    return {"strategy_key": key, "params": get_spec(key).default_params(),
+            "screener": {"rules": [{"field": "price", "op": ">=", "value": 1}]},
+            "trade_settings_base": {}, "timeframe": timeframe, "market": "us",
+            "starting_capital": 2000.0, "platform": dict(PLATFORM_CONSTANTS),
+            "run": {"kind": "single", "is_sessions": None, "oos_sessions": None, "grid": None}}
+
+
+def _run(snap, kind="single"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=uuid4(), kind=kind, data_start=date(2026, 9, 1),
+                           data_end=date(2026, 9, 30), config_snapshot=snap)
+
+
+def _forbid(*a, **k):
+    raise AssertionError("wrong backtest engine")
+
+
+def test_a_1m_snapshot_runs_the_intraday_backtest(monkeypatch, tmp_path):
+    from quant import config as qconfig
+    from quant.research import group_backtest as gb
+    from quant.research import intraday_backtest as ib
+
+    monkeypatch.setattr(qconfig, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(gb, "run_single", _forbid)
+    seen = {}
+
+    def single(gcfg, start, end, **kw):
+        seen["gcfg"], seen["span"] = gcfg, (start, end)
+        return {"metrics": {"summary": {"num_trades": 3}}}
+
+    def walk_forward(gcfg, start, end, **kw):
+        seen["wf"] = kw
+        return {"metrics": {"fixed": {}}, "calibration": {"status": "insufficient"}}
+    monkeypatch.setattr(ib, "run_single_1m", single)
+    monkeypatch.setattr(ib, "run_walk_forward_1m", walk_forward)
+    monkeypatch.setattr(ib, "write_artifacts_1m", lambda d, r: seen.setdefault("dir", d))
+    run = _run(_snap("1m"))
+    out = rt._default_runner(run, progress=lambda m: None, check=lambda: None)
+    assert out == {"metrics_json": {"summary": {"num_trades": 3}}, "calibration_json": None,
+                   "artifact_path": f"backtests/{run.id}"}
+    assert seen["dir"] == tmp_path / f"backtests/{run.id}"
+    assert isinstance(seen["gcfg"], ib.IntradayGroupConfig)
+    assert seen["span"] == (date(2026, 9, 1), date(2026, 9, 30))
+    snap = _snap("1m")
+    snap["run"] = {"kind": "walk_forward", "is_sessions": 40, "oos_sessions": 15,
+                   "grid": {"signal.range_minutes": [5, 30]}}
+    out = rt._default_runner(_run(snap, "walk_forward"), progress=lambda m: None,
+                             check=lambda: None)
+    assert out["calibration_json"] == {"status": "insufficient"}
+    assert (seen["wf"]["is_sessions"], seen["wf"]["oos_sessions"], seen["wf"]["grid"]) == (
+        40, 15, {"signal.range_minutes": [5, 30]})
+
+
+def test_missing_1min_data_leaves_a_need_file_and_fails(monkeypatch, tmp_path):
+    import pandas as pd
+    from quant import config as qconfig
+    from quant.research import intraday_backtest as ib
+
+    monkeypatch.setattr(qconfig, "INTRADAY_ROOT", tmp_path / "intraday")
+    monkeypatch.setattr(qconfig, "DATA_ROOT", tmp_path)
+    pairs = [("MSFT", date(2026, 9, 2)), ("AAPL", date(2026, 9, 1))]
+
+    def missing(*a, **k):
+        raise ib.MissingIntradayData(pairs)
+    monkeypatch.setattr(ib, "run_single_1m", missing)
+    monkeypatch.setattr(ib, "write_artifacts_1m", _forbid)
+    run = _run(_snap("1m"))
+    with pytest.raises(RuntimeError) as e:
+        rt._default_runner(run, progress=lambda m: None, check=lambda: None)
+    assert str(e.value) == (f"missing 1min data: 2 symbol-days — need file bt-{run.id}.parquet; "
+                            f"run backfill then resubmit")
+    need = pd.read_parquet(tmp_path / "intraday" / "needs" / f"bt-{run.id}.parquet")
+    assert list(need["symbol"]) == ["AAPL", "MSFT"]
+
+
+def test_a_1d_snapshot_still_runs_the_daily_backtest(monkeypatch, tmp_path):
+    from quant import config as qconfig
+    from quant.research import group_backtest as gb
+    from quant.research import intraday_backtest as ib
+
+    monkeypatch.setattr(qconfig, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(ib, "run_single_1m", _forbid)
+    monkeypatch.setattr(ib, "write_artifacts_1m", _forbid)
+    seen = {}
+
+    def single(gcfg, start, end, **kw):
+        seen["gcfg"] = gcfg
+        return {"metrics": {"summary": {}}}
+    monkeypatch.setattr(gb, "run_single", single)
+    monkeypatch.setattr(gb, "write_artifacts", lambda d, r: seen.setdefault("dir", d))
+    run = _run(_snap("1d"))
+    out = rt._default_runner(run, progress=lambda m: None, check=lambda: None)
+    assert out["artifact_path"] == f"backtests/{run.id}"
+    assert isinstance(seen["gcfg"], gb.GroupConfig)
