@@ -29,13 +29,14 @@ from app.dependencies import DB, AdminUser, CurrentUser
 from app.modules.llm.models import LLMCall
 from app.modules.news.models import (
     ACTIONS, ITEM_STATUSES, ORIGINS, SOURCE_KINDS,
-    NewsItem, NewsItemSource, NewsItemSymbol, NewsSource,
+    NewsItem, NewsItemSource, NewsItemSymbol, NewsOutcome, NewsSource, NewsSourceScoreHistory,
 )
 from app.modules.simledger.models import HeartbeatRecord
 
 router = APIRouter(prefix="/news", tags=["News"])
 
 NEWS_CONTEXT = "news_extraction"
+_HISTORY_DAYS = 60
 
 
 class _Strict(BaseModel):
@@ -118,6 +119,21 @@ def _symbol_out(s: NewsItemSymbol, full: bool = False) -> dict:
             "reviewed_at": _iso(s.reviewed_at), "review_note": s.review_note,
         })
     return out
+
+
+def _outcome_out(o: Optional[NewsOutcome]) -> Optional[dict]:
+    if o is None:
+        return None
+    return {
+        "status": o.status, "method": o.method, "scoring_eligible": o.scoring_eligible,
+        "anchor_session": _iso(o.anchor_session), "end_session": _iso(o.end_session),
+        "anchor_price": _num(o.anchor_price), "end_price": _num(o.end_price),
+        "realized_move_pct": _num(o.realized_move_pct), "spy_move_pct": _num(o.spy_move_pct),
+        "excess_move_pct": _num(o.excess_move_pct), "sector_etf": o.sector_etf,
+        "sector_move_pct": _num(o.sector_move_pct), "hit": o.hit, "score": _num(o.score),
+        "magnitude_error_pct": _num(o.magnitude_error_pct), "verdict": o.verdict,
+        "evidence": o.evidence, "reason": o.reason, "evaluated_at": _iso(o.evaluated_at),
+    }
 
 
 def _item_out(item: NewsItem, symbols: list, sources: list) -> dict:
@@ -211,6 +227,9 @@ async def get_item(item_id: UUID, user: CurrentUser, db: DB):
     if item is None:
         raise HTTPException(status_code=404, detail="news item not found")
     symbols, sources = await _children(db, [item.id])
+    outs = {o.news_symbol_id: o for o in (await db.execute(
+        select(NewsOutcome).where(NewsOutcome.news_symbol_id.in_([s.id for s in symbols[item.id]]))
+    )).scalars()}
     llm = None
     call = await db.get(LLMCall, item.llm_call_id) if item.llm_call_id else None
     if call is not None:
@@ -232,7 +251,8 @@ async def get_item(item_id: UUID, user: CurrentUser, db: DB):
         "summary": item.summary, "llm_feedback": item.llm_feedback,
         "priority": item.priority, "extract_attempts": item.extract_attempts,
         "updated_at": _iso(item.updated_at),
-        "symbols": [_symbol_out(s, full=True) for s in symbols[item.id]],
+        "symbols": [{**_symbol_out(s, full=True), "outcome": _outcome_out(outs.get(s.id))}
+                    for s in symbols[item.id]],
         "sources": [{
             "id": str(link.id), "provider": link.provider, "external_id": link.external_id,
             "url": link.url, "published_at": _iso(link.published_at),
@@ -286,8 +306,22 @@ async def list_sources(user: CurrentUser, db: DB, kind: Optional[str] = Query(de
     if kind is not None:
         stmt = stmt.where(NewsSource.kind == kind)
     rows = (await db.execute(stmt.order_by(NewsSource.kind, NewsSource.name))).all()
+    h = NewsSourceScoreHistory
+    ranked = select(h.source_id, h.as_of, h.lift, h.n, h.brier,
+                    func.row_number().over(partition_by=h.source_id, order_by=h.as_of.desc())
+                    .label("rn")).subquery()
+    history, brier = {}, {}
+    for r in (await db.execute(
+        select(ranked).where(ranked.c.rn <= _HISTORY_DAYS)
+        .order_by(ranked.c.source_id, ranked.c.as_of)
+    )).all():
+        history.setdefault(r.source_id, []).append(
+            {"as_of": _iso(r.as_of), "lift": _num(r.lift), "n": r.n})
+        if r.rn == 1:
+            brier[r.source_id] = _num(r.brier)
     return {
-        "sources": [_source_out(src, parent_name) for src, parent_name in rows],
+        "sources": [{**_source_out(src, parent_name), "history": history.get(src.id, []),
+                     "brier": brier.get(src.id)} for src, parent_name in rows],
         "thresholds": {
             "min_n": settings.NEWS_SOURCE_MIN_N,
             "action_min_lift": settings.NEWS_ACTION_MIN_LIFT,

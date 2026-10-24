@@ -23,10 +23,11 @@ from app.dependencies import get_current_user
 from app.modules.auth.models import User, UserRole
 from app.modules.llm import client as llm_client
 from app.modules.llm.models import LLMCall
-from app.modules.news import extract, notify
+from app.modules.news import extract, judge, notify
 from app.modules.news import router as news_router
 from app.modules.news.models import (
-    PLATFORM_BENZINGA, NewsItem, NewsItemSource, NewsItemSymbol, NewsSource
+    PLATFORM_BENZINGA, NewsItem, NewsItemSource, NewsItemSymbol, NewsOutcome, NewsSource,
+    NewsSourceScoreHistory,
 )
 from app.modules.news.router import router
 from app.modules.simledger.models import HeartbeatRecord
@@ -269,7 +270,8 @@ async def test_b1_detail_with_shared_llm_call(api):
     body = r.json()
     assert set(body) == ITEM_KEYS | {"summary", "llm_feedback", "priority",
                                      "extract_attempts", "updated_at", "llm"}
-    assert set(body["symbols"][0]) == SYMBOL_FULL_KEYS
+    assert set(body["symbols"][0]) == SYMBOL_FULL_KEYS | {"outcome"}
+    assert body["symbols"][0]["outcome"] is None
     assert body["symbols"][0]["claim_text"] == "Deal closes by Q1"
     assert body["symbols"][0]["anchor_session"] == "2026-10-19"
     link = body["sources"][0]
@@ -413,7 +415,8 @@ async def test_d1_sources_list_and_filter(api):
         "disable_below_lift": settings.NEWS_DISABLE_BELOW_LIFT,
         "consecutive_days": settings.NEWS_DISABLE_CONSECUTIVE_DAYS}
     mine = next(s for s in body["sources"] if s["id"] == str(src))
-    assert set(mine) == SOURCE_KEYS and mine["parent"] == "benzinga" and mine["lift"] is None
+    assert set(mine) == SOURCE_KEYS | {"history", "brier"}
+    assert mine["parent"] == "benzinga" and mine["lift"] is None
     kinds = [s["kind"] for s in body["sources"]]
     assert kinds == sorted(kinds)
     authors = (await api.client.get(f"{URL}/sources", params={"kind": "author"})).json()
@@ -539,7 +542,8 @@ async def test_e2_no_endpoint_reaches_llm_extraction_or_notify(api, monkeypatch)
 
     for target, name in ((llm_client, "call_llm"), (extract, "call_llm"),
                          (extract, "run_extraction"), (notify, "maybe_notify"),
-                         (quant_tasks, "_notify")):
+                         (quant_tasks, "_notify"), (judge, "call_llm"),
+                         (judge, "run_judgement")):
         monkeypatch.setattr(target, name, _boom)
     item = await _review_rows(api)
     src = await _source(api)
@@ -637,3 +641,83 @@ async def test_c1_queue_limit_keeps_the_earliest_due(api):
     assert r.status_code == 200
     assert [row["id"] for row in r.json()] == [str(item.symbols["ZQXP6C1"]),
                                               str(item.symbols["ZQXP6C2"])]
+
+
+# ---- P7b: outcomes on the detail, score history on the sources -----------------
+
+OUTCOME_KEYS = {"status", "method", "scoring_eligible", "anchor_session", "end_session",
+                "anchor_price", "end_price", "realized_move_pct", "spy_move_pct",
+                "excess_move_pct", "sector_etf", "sector_move_pct", "hit", "score",
+                "magnitude_error_pct", "verdict", "evidence", "reason", "evaluated_at"}
+
+
+@pytest.mark.asyncio
+async def test_b4_detail_carries_price_and_llm_outcomes(api):
+    item = await _item(api, symbols=(("ZQXP6CA", _claim()),
+                                     ("ZQXP6CB", _claim(claim_type="non_price")),
+                                     ("ZQXP6CC", None)))
+    window = {"anchor_session": date(2026, 10, 19), "end_session": date(2026, 10, 23)}
+    api.db.add(NewsOutcome(
+        news_symbol_id=item.symbols["ZQXP6CA"], status="scored", method="price",
+        scoring_eligible=True, anchor_price=100, end_price=105, realized_move_pct=5,
+        spy_move_pct=1.9, excess_move_pct=3.1, sector_etf="XLK", sector_move_pct=2.25,
+        hit=True, score=0.8857, magnitude_error_pct=-0.4, **window))
+    api.db.add(NewsOutcome(
+        news_symbol_id=item.symbols["ZQXP6CB"], status="scored", method="llm",
+        scoring_eligible=True, verdict="happened", evidence="[2]", hit=True, score=1,
+        **window))
+    await api.db.commit()
+    body = (await api.client.get(f"{URL}/items/{item.id}")).json()
+    by = {s["symbol"]: s["outcome"] for s in body["symbols"]}
+    assert set(by["ZQXP6CA"]) == OUTCOME_KEYS and set(by["ZQXP6CB"]) == OUTCOME_KEYS
+    price = by["ZQXP6CA"]
+    assert (price["status"], price["method"], price["hit"], price["score"]) == (
+        "scored", "price", True, 0.8857)
+    assert (price["excess_move_pct"], price["sector_etf"], price["sector_move_pct"]) == (
+        3.1, "XLK", 2.25)
+    assert (price["anchor_session"], price["end_session"]) == ("2026-10-19", "2026-10-23")
+    assert price["verdict"] is None and price["evaluated_at"]
+    llm = by["ZQXP6CB"]
+    assert (llm["method"], llm["verdict"], llm["evidence"], llm["score"]) == (
+        "llm", "happened", "[2]", 1.0)
+    assert llm["anchor_price"] is None and llm["reason"] is None
+    assert by["ZQXP6CC"] is None
+
+
+async def _history(api, source_id, days, *, lift=lambda k: 1.0, brier=lambda k: None):
+    for k, d in enumerate(days):
+        api.db.add(NewsSourceScoreHistory(source_id=source_id, as_of=d, n=20, hits=10,
+                                          score=0.5, lift=lift(k), prior_mean=0.4,
+                                          brier=brier(k)))
+    await api.db.commit()
+
+
+@pytest.mark.asyncio
+async def test_d7_sources_history_is_the_last_60_ascending_with_latest_brier(api):
+    src = await _source(api)
+    days = [date(2026, 6, 1) + timedelta(days=k) for k in range(61)]
+    await _history(api, src, days[::-1], lift=lambda k: round(0.5 + k / 100, 4),
+                   brier=lambda k: round(0.1 + k / 1000, 4))
+    plain = await _source(api)
+    body = (await api.client.get(f"{URL}/sources")).json()
+    mine = next(s for s in body["sources"] if s["id"] == str(src))
+    assert [h["as_of"] for h in mine["history"]] == [d.isoformat() for d in days[1:]]
+    assert mine["history"][-1] == {"as_of": days[-1].isoformat(), "lift": 0.5, "n": 20}
+    assert mine["history"][0]["lift"] == 1.09
+    assert mine["brier"] == 0.1
+    other = next(s for s in body["sources"] if s["id"] == str(plain))
+    assert (other["history"], other["brier"]) == ([], None)
+
+
+@pytest.mark.asyncio
+async def test_d7_platform_keeps_its_own_history(api):
+    author = await _source(api)
+    await _history(api, author, [date(2099, 1, 1)], lift=lambda k: 2.0, brier=lambda k: 0.3)
+    days = [date(2099, 1, 1) + timedelta(days=k) for k in range(3)]
+    await _history(api, api.platform_id, days, lift=lambda k: 1.0 + k / 10,
+                   brier=lambda k: 0.2 + k / 100)
+    body = (await api.client.get(f"{URL}/sources", params={"kind": "platform"})).json()
+    [platform] = body["sources"]
+    assert platform["history"][-3:] == [
+        {"as_of": d.isoformat(), "lift": 1.0 + k / 10, "n": 20} for k, d in enumerate(days)]
+    assert platform["brier"] == 0.22

@@ -4,6 +4,7 @@ task (kill switch, advisory lock, heartbeat, routing, beat). Real PostgreSQL
 (rolled back); bars, the panel's last complete session and the held set are
 injected, and ``_notify`` is a recorder."""
 
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
@@ -21,7 +22,9 @@ from quant.data import calendar as qcal
 
 import app.models_registry  # noqa: F401
 from app.config import settings
-from app.modules.news import evaluate
+from app.modules.llm.client import LLMResult
+from app.modules.llm.models import LLMCall
+from app.modules.news import evaluate, judge
 from app.modules.news.ingest import platform_source
 from app.modules.news.models import (
     NewsItem, NewsItemSource, NewsItemSymbol, NewsOutcome, NewsSource, NewsSourceScoreHistory
@@ -41,6 +44,16 @@ SETTINGS = (("NEWS_PRIOR_STRENGTH", 10.0), ("NEWS_PRIOR_MEAN_DEFAULT", 0.40),
             ("NEWS_HIT_MIN_EXCESS_PCT", 1.0), ("NEWS_NODATA_GRACE_SESSIONS", 5))
 FULL = {ANCHOR: (100.0, 101.0), date(2026, 10, 13): (101.0, 102.0), END: (103.0, 105.0)}
 FLAT = {ANCHOR: (100.0, 100.0), date(2026, 10, 13): (100.0, 100.0), END: (100.0, 101.0)}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm(monkeypatch):
+    async def no_llm(*a, **kw):
+        raise AssertionError("judge.call_llm must be faked explicitly in this test")
+
+    monkeypatch.setattr(settings, "AI_PROVIDER", "deepseek")
+    monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "")
+    monkeypatch.setattr(judge, "call_llm", no_llm)
 
 
 class Recorder:
@@ -155,10 +168,11 @@ async def test_v2_horizon_not_ended_is_not_evaluated(db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_v3_non_price_claims_are_left_for_p7b(db, monkeypatch):
+async def test_v3_non_price_claims_get_no_price_outcome(db, monkeypatch):
     await _claim(db, claim_type="non_price")
     run = await _run(db, monkeypatch)
     assert run.out["price_due"] == 0 and await _outcomes(db) == []
+    assert run.out["judge"]["waiting"] == 1
 
 
 @pytest.mark.asyncio
@@ -370,3 +384,79 @@ async def test_x09_backfill_claim_is_scored_but_not_counted(db, monkeypatch):
                             .execution_options(populate_existing=True))).scalar_one()
     assert (src.n_evaluated, src.hits, run.out["global_n"], run.out["sources_scored"]) == (
         0, 0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_j14_judged_claim_counts_for_its_source_and_reopens_the_held_review(
+        db, monkeypatch):
+    for key, value in (("AI_PROVIDER", "claude_cli"), ("NEWS_LLM_DAILY_BUDGET", 150),
+                       ("NEWS_JUDGE_DAILY_BUDGET", 20), ("CLAUDE_CLI_DAILY_CAP", 300),
+                       ("CLAUDE_CLI_TIMEOUT_SECONDS", 60.0)):
+        monkeypatch.setattr(settings, key, value)
+    row = await _claim(db, claim_type="non_price", review_status="done")
+    follow = NewsItem(id=uuid4(), origin="live", headline="ZQXPA deal closes",
+                      headline_norm=f"zqxp7 {uuid4().hex}",
+                      published_at=datetime(2026, 10, 15, 14, 0, tzinfo=timezone.utc))
+    db.add(follow)
+    await db.flush()
+    db.add(NewsItemSymbol(id=uuid4(), news_id=follow.id, symbol="ZQXPA"))
+    await db.flush()
+    prompts = []
+
+    async def fake_llm(_db, *, context, prompt, system):
+        prompts.append(prompt)
+        call_id = uuid4()
+        _db.add(LLMCall(id=call_id, context=context, platform="claude-cli", model="haiku",
+                        billing="subscription", success=True))
+        return LLMResult(text=json.dumps([{"i": 1, "verdict": "happened", "evidence": "[1]"}]),
+                         call_id=call_id, input_tokens=10, output_tokens=5, cost_usd=0,
+                         success=True)
+
+    monkeypatch.setattr(judge, "call_llm", fake_llm)
+    rec = Recorder()
+    monkeypatch.setattr(evaluate, "_notify", rec)
+    now = datetime(2026, 10, 20, 3, 40, tzinfo=timezone.utc)
+    out = await evaluate.run_evaluation(
+        db, now=now, latest_complete=lambda: LAST,
+        bars_fn=Bars({"ZQXPA": FULL, "SPY": FLAT}), sectors_fn=dict,
+        relevance_fn=_held("ZQXPA"))
+    assert len(prompts) == 1 and "ZQXPA deal closes" in prompts[0]
+    assert (out["judge"]["judged"], out["price_due"], out["global_n"]) == (1, 0, 1)
+    [o] = await _outcomes(db)
+    assert (o.method, o.verdict, o.hit, float(o.score)) == ("llm", "happened", True, 1.0)
+    src = (await db.execute(select(NewsSource).where(NewsSource.id == db.info["source"].id)
+                            .execution_options(populate_existing=True))).scalar_one()
+    assert (src.n_evaluated, src.hits) == (1, 1)
+    fresh = await _fresh(db, row)
+    assert (fresh.review_status, fresh.reviewed_at, fresh.review_at) == ("open", None, now)
+    assert fresh.action_reason == "horizon ended: event happened · held"
+    assert out["held_reviews"] == 1 and rec.calls == []
+
+
+@pytest.mark.asyncio
+async def test_j15_failed_judgement_keeps_scoring_and_the_held_review(db, monkeypatch):
+    monkeypatch.setattr(settings, "AI_PROVIDER", "claude_cli")
+    price_id = (await _claim(db, review_status="done")).id
+    await _claim(db, "ZQXPB", claim_type="non_price")
+    follow = NewsItem(id=uuid4(), origin="live", headline="ZQXPB deal closes",
+                      headline_norm=f"zqxp7 {uuid4().hex}",
+                      published_at=datetime(2026, 10, 15, 14, 0, tzinfo=timezone.utc))
+    db.add(follow)
+    await db.flush()
+    db.add(NewsItemSymbol(id=uuid4(), news_id=follow.id, symbol="ZQXPB"))
+    await db.flush()
+
+    async def broken_llm(*a, **kw):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr(judge, "call_llm", broken_llm)
+    monkeypatch.setattr(evaluate, "_notify", Recorder())
+    out = await evaluate.run_evaluation(
+        db, now=datetime(2026, 10, 20, 3, 40, tzinfo=timezone.utc), latest_complete=lambda: LAST,
+        bars_fn=Bars({"ZQXPA": FULL, "ZQXPB": FULL, "SPY": FLAT}), sectors_fn=dict,
+        relevance_fn=_held("ZQXPA", "ZQXPB"))
+    assert out["judge"] == {"llm": "error"}
+    assert (out["scored"], out["global_n"], out["held_reviews"]) == (1, 1, 1)
+    fresh = await _fresh(db, SimpleNamespace(id=price_id))
+    assert fresh.review_status == "open"
+    assert fresh.action_reason == "horizon ended: hit excess +4.0% vs claim up 2% · held"

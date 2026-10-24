@@ -7,7 +7,7 @@
           Verified when n ≥ {{ thresholds.min_n ?? '—' }} and lift ≥ {{ thresholds.action_min_lift ?? '—' }}
           · auto-disable below lift {{ thresholds.disable_below_lift ?? '—' }} for {{ thresholds.consecutive_days ?? '—' }} days
         </p>
-        <p class="jd-sub">Scores and auto-disable start with P7a; until then every source is unverified.</p>
+        <p class="jd-sub">Scores update nightly at 03:40 UTC from claims whose window has closed; platform rows aggregate their authors and are never auto-disabled.</p>
       </div>
       <div class="head-actions">
         <button type="button" class="jd-btn jd-btn-ghost jd-btn-sm" :disabled="loading" @click="load">
@@ -38,6 +38,24 @@
       </template>
       <template #cell:lift="{ value }">
         <span class="jd-mono">{{ fmtNum(value) }}</span>
+      </template>
+      <template #cell:trend="{ row }">
+        <svg v-if="row.history?.length > 1" class="spark" viewBox="0 0 120 28" preserveAspectRatio="none">
+          <line v-if="thresholds.action_min_lift != null" x1="0" x2="120"
+                :y1="yOf(thresholds.action_min_lift, ...sparkRange(row.history))"
+                :y2="yOf(thresholds.action_min_lift, ...sparkRange(row.history))"
+                stroke="var(--jd-green)" stroke-width="1" stroke-dasharray="3 3" />
+          <line v-if="thresholds.disable_below_lift != null" x1="0" x2="120"
+                :y1="yOf(thresholds.disable_below_lift, ...sparkRange(row.history))"
+                :y2="yOf(thresholds.disable_below_lift, ...sparkRange(row.history))"
+                stroke="var(--jd-red)" stroke-width="1" stroke-dasharray="3 3" />
+          <polyline :points="sparkPoints(row.history)" fill="none"
+                    stroke="var(--jd-cyan)" stroke-width="1.5" />
+        </svg>
+        <span v-else class="cell-muted">—</span>
+      </template>
+      <template #cell:brier="{ value }">
+        <span class="jd-mono">{{ value == null ? '—' : Number(value).toFixed(3) }}</span>
       </template>
       <template #cell:disabled_reason="{ value }">
         <span class="cell-muted">{{ value || '—' }}</span>
@@ -99,16 +117,30 @@ const saving = ref(false)
 const columns = [
   { key: 'name', header: 'Name', sortable: true },
   { key: 'kind', header: 'Kind', filterable: true, filterLabel: 'Kind' },
-  { key: 'parent', header: 'Parent' },
   { key: 'state', header: 'State', accessor: (r) => (r.enabled ? 'on' : 'off'), filterable: true, filterLabel: 'State' },
   { key: 'score', header: 'Score', align: 'right' },
   { key: 'lift', header: 'Lift', align: 'right' },
+  { key: 'trend', header: 'Lift trend' },
   { key: 'n_evaluated', header: 'n', sortable: true, align: 'right' },
   { key: 'hits', header: 'Hits', align: 'right' },
+  { key: 'brier', header: 'Brier', align: 'right' },
   { key: 'disabled_reason', header: 'Disabled reason' },
 ]
 
 const fmtNum = (v) => (v == null ? '—' : Number(v).toFixed(2))
+
+const sparkRange = (h) => {
+  const vals = [...h.map((p) => p.lift), thresholds.value.action_min_lift, thresholds.value.disable_below_lift]
+    .filter((v) => v != null)
+  const lo = Math.min(...vals)
+  const hi = Math.max(...vals)
+  return hi === lo ? [lo - 0.5, lo + 0.5] : [lo, hi]
+}
+const yOf = (v, lo, hi) => (26 - ((v - lo) / (hi - lo)) * 24).toFixed(1)
+const sparkPoints = (h) => {
+  const [lo, hi] = sparkRange(h)
+  return h.map((p, i) => `${((i / (h.length - 1)) * 120).toFixed(1)},${yOf(p.lift, lo, hi)}`).join(' ')
+}
 
 async function load() {
   loading.value = true
@@ -152,5 +184,6 @@ onMounted(load)
 <style scoped>
 .head-actions { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .cell-muted { color: var(--jd-text-muted); font-size: 12px; }
+.spark { width: 80px; height: 28px; display: block; }
 .confirm-text { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--jd-text); }
 </style>

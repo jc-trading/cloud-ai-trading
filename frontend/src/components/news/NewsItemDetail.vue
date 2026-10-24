@@ -49,6 +49,20 @@
               Review: {{ s.review_status }}<template v-if="s.review_at"> · due {{ fmtEt(s.review_at) }}</template>
               <template v-if="s.review_note"> · {{ s.review_note }}</template>
             </div>
+            <template v-if="s.outcome">
+              <div class="line">
+                Outcome: <span :class="['jd-badge', OUTCOME_COLORS[outcomeLabel(s.outcome)]]">{{ outcomeLabel(s.outcome) }}</span>
+                <template v-if="s.outcome.status === 'scored'"> · score {{ fmtNum(s.outcome.score) }}</template>
+                · {{ s.outcome.method }} · <span class="nowrap">{{ s.outcome.anchor_session }} → {{ s.outcome.end_session }}</span>
+              </div>
+              <div v-if="s.outcome.realized_move_pct != null" class="line muted jd-mono">
+                move {{ fmtPct(s.outcome.realized_move_pct) }} · SPY {{ fmtPct(s.outcome.spy_move_pct) }} · excess {{ fmtPct(s.outcome.excess_move_pct) }}<template v-if="s.outcome.sector_etf"> · {{ s.outcome.sector_etf }} {{ fmtPct(s.outcome.sector_move_pct) }}</template>
+              </div>
+              <div v-if="s.outcome.verdict" class="line">Verdict: {{ s.outcome.verdict }} · evidence {{ s.outcome.evidence || '—' }}</div>
+              <div v-if="s.outcome.reason" class="line muted">{{ s.outcome.reason }}</div>
+              <div v-if="!s.outcome.scoring_eligible" class="line muted">Not scored (backfill)</div>
+            </template>
+            <div v-else class="line muted">Outcome: pending (window ends {{ s.evaluate_after }})</div>
           </template>
           <div v-else class="line muted">No claim</div>
         </div>
@@ -94,6 +108,7 @@ defineProps({
 
 const ACTION_COLORS = { buy: 'green', sell: 'red', review: 'yellow', ignore: 'gray' }
 const STATUS_COLORS = { extracted: 'green', pending: 'yellow', failed: 'red' }
+const OUTCOME_COLORS = { hit: 'green', miss: 'red', 'no data': 'gray', excluded: 'gray' }
 
 const fmtEt = (iso) => {
   if (!iso) return '—'
@@ -103,6 +118,12 @@ const fmtEt = (iso) => {
   }) + ' ET'
 }
 const fmtInt = (v) => (v ?? 0).toLocaleString()
+const fmtNum = (v) => (v == null ? '—' : Number(v).toFixed(2))
+const fmtPct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
+const outcomeLabel = (o) => {
+  if (o.status === 'scored') return o.hit ? 'hit' : 'miss'
+  return o.status === 'no_data' ? 'no data' : 'excluded'
+}
 const safeUrl = (u) => (typeof u === 'string' && /^https?:\/\//i.test(u) ? u : null)
 </script>
 
@@ -127,4 +148,5 @@ const safeUrl = (u) => (typeof u === 'string' && /^https?:\/\//i.test(u) ? u : n
 .source a { color: var(--jd-cyan); }
 .off { margin-left: 6px; }
 .llm { font-size: 12px; line-height: 1.7; color: var(--jd-text); overflow-wrap: anywhere; }
+.nowrap { white-space: nowrap; }
 </style>

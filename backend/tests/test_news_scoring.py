@@ -16,7 +16,7 @@ from quant.data import calendar as qcal
 
 import app.models_registry  # noqa: F401
 from app.config import settings
-from app.modules.news import evaluate, scoring
+from app.modules.news import evaluate, judge, scoring
 from app.modules.news.ingest import platform_source
 from app.modules.news.models import (
     NewsItem, NewsItemSource, NewsItemSymbol, NewsOutcome, NewsSource, NewsSourceScoreHistory
@@ -31,6 +31,16 @@ SETTINGS = (("NEWS_PRIOR_STRENGTH", 10.0), ("NEWS_PRIOR_MEAN_DEFAULT", 0.40),
             ("NEWS_PRIOR_MIN_GLOBAL_N", 100), ("NEWS_SOURCE_MIN_N", 20),
             ("NEWS_DISABLE_BELOW_LIFT", 0.75), ("NEWS_DISABLE_CONSECUTIVE_DAYS", 3),
             ("NEWS_HIT_MIN_EXCESS_PCT", 1.0), ("NEWS_NODATA_GRACE_SESSIONS", 5))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm(monkeypatch):
+    async def no_llm(*a, **kw):
+        raise AssertionError("judge.call_llm must be faked explicitly in this test")
+
+    monkeypatch.setattr(settings, "AI_PROVIDER", "deepseek")
+    monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "")
+    monkeypatch.setattr(judge, "call_llm", no_llm)
 
 
 class Recorder:

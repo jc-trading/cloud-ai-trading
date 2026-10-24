@@ -10,6 +10,7 @@
 3. A leaf source whose lift stayed below the bar for consecutive sessions is
    disabled after the commit, with one notification per run.
 4. A held name whose claim horizon just ended is reopened for review, silently.
+Between 1 and 2, ``judge`` scores non-price claims; if it fails, the run goes on.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from quant.data import bars as qbars, calendar as qcal, panel as qpanel, sectors as qsectors
 
 from app.config import settings
-from app.modules.news import outcomes, scoring
+from app.modules.news import judge, outcomes, scoring
 from app.modules.news.models import (
     NewsItem, NewsItemSource, NewsItemSymbol, NewsOutcome, NewsSource, NewsSourceScoreHistory
 )
@@ -55,8 +56,6 @@ class Prices:
 def _review_reason(row: NewsItemSymbol, o: NewsOutcome) -> str:
     if o.status == "no_data":
         return f"horizon ended: no price data ({o.reason}) · held"
-    if o.method == "llm":
-        return f"horizon ended: event {o.verdict.replace('_', ' ')} · held"
     return (f"horizon ended: {'hit' if o.hit else 'miss'} excess "
             f"{float(o.excess_move_pct):+.1f}% vs claim {row.direction} "
             f"{float(row.expected_move_pct):g}% · held")
@@ -93,7 +92,7 @@ async def _evaluate_prices(db, *, last, prices: Prices, sector_map: dict, out: d
                                           end_session=row.evaluate_after, **r)
                     db.add(outcome)
                     await db.flush()
-                written.append((row, outcome))
+                written.append((row.id, row.symbol, _review_reason(row, outcome)))
                 out[r["status"]] += 1
         except Exception as e:
             logger.warning("news evaluation: could not evaluate %s (%s)",
@@ -203,14 +202,14 @@ async def _reopen_held(db, written: list, *, now, relevance_fn, out: dict) -> No
     if not written:
         return
     held = {s for s, (tier, _) in (await relevance_fn(db)).items() if tier == TIER_HELD}
-    for row, o in written:
-        if row.symbol not in held:
+    for row_id, symbol, reason in written:
+        if symbol not in held:
             continue
         result = await db.execute(
             update(NewsItemSymbol)
-            .where(NewsItemSymbol.id == row.id, NewsItemSymbol.review_status != "open")
+            .where(NewsItemSymbol.id == row_id, NewsItemSymbol.review_status != "open")
             .values(review_status="open", review_at=now, reviewed_at=None, reviewed_by=None,
-                    action_reason=_review_reason(row, o)[:200])
+                    action_reason=reason[:200])
             .execution_options(synchronize_session=False))
         out["held_reviews"] += result.rowcount
     await db.commit()
@@ -230,6 +229,13 @@ async def run_evaluation(db, *, now, latest_complete=qpanel.latest_complete,
 
     written = await _evaluate_prices(db, last=last, prices=prices, sector_map=sector_map,
                                      out=out)
+    try:
+        out["judge"] = await judge.run_judgement(db, last=last, now=now, prices=prices,
+                                                 sector_map=sector_map, written=written)
+    except Exception:
+        logger.exception("news judgement failed")
+        await db.rollback()
+        out["judge"] = {"llm": "error"}
     await _score_sources(db, last=last, now=now, out=out)
     await _auto_disable(db, last=last, now=now, out=out)
     await _reopen_held(db, written, now=now, relevance_fn=relevance_fn, out=out)
