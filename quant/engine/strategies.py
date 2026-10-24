@@ -12,11 +12,12 @@ from dataclasses import asdict, dataclass, fields
 
 from quant.engine.exits import ExitParams
 from quant.engine.funnel import FunnelParams
+from quant.engine.intraday_strategies import ORBConfig, ORBSignal, RankParams
 from quant.engine.strategy import StrategyParams
 
 V1_COMPOSITE_KEY = "cat.v1.composite"
+M1_ORB_KEY = "cat.m1.orb"
 
-_SECTIONS = {"strategy": StrategyParams, "funnel": FunnelParams, "exits": ExitParams}
 _TYPE_NAMES = {int: "int", float: "float"}
 
 
@@ -29,6 +30,11 @@ class V1Config:
     strategy: StrategyParams
     funnel: FunnelParams
     exits: ExitParams
+
+
+def _sections(cls) -> dict[str, type]:
+    hints = typing.get_type_hints(cls)
+    return {f.name: hints[f.name] for f in fields(cls)}
 
 
 def _coerce(section: str, name: str, ftype: type, value):
@@ -46,13 +52,15 @@ class StrategySpec:
     key: str
     description: str
     defaults: V1Config
+    timeframe: str = "1d"
 
     def default_params(self) -> dict:
-        return {section: asdict(getattr(self.defaults, section)) for section in _SECTIONS}
+        return {section: asdict(getattr(self.defaults, section))
+                for section in _sections(type(self.defaults))}
 
     def params_schema(self) -> dict:
         schema: dict = {}
-        for section, cls in _SECTIONS.items():
+        for section, cls in _sections(type(self.defaults)).items():
             hints = typing.get_type_hints(cls)
             default = getattr(self.defaults, section)
             schema[section] = {
@@ -68,11 +76,12 @@ class StrategySpec:
         any non-bool number."""
         if not isinstance(params, dict):
             raise StrategyParamsError(f"params must be an object, got {params!r}")
-        unknown = sorted(set(params) - set(_SECTIONS))
+        sections = _sections(type(self.defaults))
+        unknown = sorted(set(params) - set(sections))
         if unknown:
             raise StrategyParamsError(f"unknown section(s): {', '.join(unknown)}")
         built = {}
-        for section, cls in _SECTIONS.items():
+        for section, cls in sections.items():
             given = params.get(section, {})
             if not isinstance(given, dict):
                 raise StrategyParamsError(f"{section} must be an object, got {given!r}")
@@ -86,7 +95,7 @@ class StrategySpec:
                 name: (_coerce(section, name, hints[name], given[name])
                        if name in given else getattr(default, name))
                 for name in names})
-        return V1Config(**built)
+        return type(self.defaults)(**built)
 
 
 REGISTRY: dict[str, StrategySpec] = {
@@ -98,6 +107,9 @@ REGISTRY: dict[str, StrategySpec] = {
                           ExitParams()),
     ),
 }
+REGISTRY[M1_ORB_KEY] = StrategySpec(
+    M1_ORB_KEY, "Opening-range breakout on 1min bars (long-only)",
+    ORBConfig(ORBSignal(), RankParams()), "1m")
 
 
 def get_spec(key: str) -> StrategySpec:
@@ -128,6 +140,14 @@ BOUNDS: dict[str, dict[str, dict[str, tuple[float, float]]]] = {
         },
     },
 }
+BOUNDS[M1_ORB_KEY] = {
+    "signal": {
+        "range_minutes": (5, 60), "breakout_buffer_pct": (0, 0.01),
+        "entry_window_minutes": (10, 390), "min_volume_ratio": (0, 10),
+        "atr_period": (5, 120),
+    },
+    "rank": {"rank_window": (2, 60), "watch_max": (1, 30)},
+}
 
 # (left, right): left must be strictly less than right
 CROSS_RULES: dict[str, tuple[tuple[str, str], ...]] = {
@@ -137,6 +157,7 @@ CROSS_RULES: dict[str, tuple[tuple[str, str], ...]] = {
         ("funnel.atr_pct_min", "funnel.atr_pct_max"),
     ),
 }
+CROSS_RULES[M1_ORB_KEY] = (("signal.range_minutes", "signal.entry_window_minutes"),)
 
 
 def check_bounds(key: str, cfg: V1Config) -> list[str]:
@@ -144,7 +165,7 @@ def check_bounds(key: str, cfg: V1Config) -> list[str]:
     every violated cross rule. Empty list = the config is within bounds."""
     bounds = BOUNDS[key]
     problems = []
-    for section, cls in _SECTIONS.items():
+    for section, cls in _sections(type(cfg)).items():
         values = getattr(cfg, section)
         for f in fields(cls):
             lo, hi = bounds[section][f.name]
@@ -178,17 +199,24 @@ GRIDS: dict[str, dict[str, tuple]] = {
         "exits.trailing_atr_mult": (2.0, 3.0, 4.0),
     },
 }
+GRIDS[M1_ORB_KEY] = {
+    "signal.range_minutes": (5, 15, 30),
+    "signal.breakout_buffer_pct": (0.0, 0.0005, 0.001),
+    "signal.min_volume_ratio": (0.0, 1.0, 1.5),
+}
 GRID_MAX_KNOBS = 6
 GRID_MAX_VALUES = 5
-GRID_SECTIONS = ("funnel", "exits")
+GRID_SECTIONS: dict[str, tuple[str, ...]] = {V1_COMPOSITE_KEY: ("funnel", "exits"),
+                                             M1_ORB_KEY: ("signal",)}
 
 
 def validate_grid(key: str, grid) -> dict[str, tuple]:
     """Validate a walk-forward search grid. None means the strategy's default
-    grid; otherwise only funnel.* / exits.* knobs, 1-5 distinct values each,
+    grid; otherwise only the key's GRID_SECTIONS knobs, 1-5 distinct values each,
     every value type-checked like params_json and within bounds when applied
     on top of the defaults. Keeps the caller's knob order."""
     spec = get_spec(key)
+    sections = GRID_SECTIONS[key]
     if grid is None:
         return {k: tuple(v) for k, v in GRIDS[key].items()}
     if not isinstance(grid, dict) or not grid:
@@ -198,10 +226,10 @@ def validate_grid(key: str, grid) -> dict[str, tuple]:
     out: dict[str, tuple] = {}
     for knob, values in grid.items():
         section, _, name = str(knob).partition(".")
-        cls = _SECTIONS.get(section) if section in GRID_SECTIONS else None
+        cls = _sections(type(spec.defaults)).get(section) if section in sections else None
         if cls is None or name not in {f.name for f in fields(cls)}:
             raise StrategyParamsError(
-                f"grid.{knob}: unknown knob (only funnel.* and exits.*)")
+                f"grid.{knob}: unknown knob (only {' and '.join(s + '.*' for s in sections)})")
         if not isinstance(values, (list, tuple)) or not 1 <= len(values) <= GRID_MAX_VALUES:
             raise StrategyParamsError(f"grid.{knob}: 1-{GRID_MAX_VALUES} values")
         hint = typing.get_type_hints(cls)[name]

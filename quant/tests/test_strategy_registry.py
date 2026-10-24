@@ -12,7 +12,7 @@ from quant.engine.strategy import StrategyParams
 
 
 def test_registry_has_exactly_the_v1_key():
-    assert list(REGISTRY) == [V1_COMPOSITE_KEY]
+    assert list(REGISTRY) == [V1_COMPOSITE_KEY, "cat.m1.orb"]
     assert get_spec(V1_COMPOSITE_KEY).key == V1_COMPOSITE_KEY
     with pytest.raises(StrategyParamsError):
         get_spec("cat.v2.unknown")
@@ -250,3 +250,138 @@ def test_validate_grid_custom_grid_keeps_order_and_coerces():
     assert list(got) == ["exits.stagnation_bars", "funnel.min_confidence"]
     assert got == {"exits.stagnation_bars": (45, 20), "funnel.min_confidence": (70.0, 80.5)}
     assert all(type(v) is float for v in got["funnel.min_confidence"])
+
+
+# --- P5a: the 1min ORB strategy and the generalised registry ---------------
+
+M1 = "cat.m1.orb"
+V1_BEFORE_P5 = (
+    '{"defaults": {"exits": {"reversal_bars": 3, "stagnation_bars": 30, "stagnation_h'
+    'urdle": 0.0, "trailing_atr_mult": 3.0, "trailing_start_r": 1.5}, "funnel": {"atr'
+    '_pct_max": 0.08, "atr_pct_min": 0.01, "max_per_sector": 2, "min_adv": 20000000.0'
+    ', "min_confidence": 65.0, "min_price": 5.0, "shortlist_max": 10}, "strategy": {"'
+    'atr_period": 14, "expected_move_atr_mult": 1.0, "ma_fast": 5, "ma_slow": 20, "ma'
+    'cd_fast": 12, "macd_signal": 9, "macd_slow": 26, "rsi_overbought": 70.0, "rsi_pe'
+    'nalty_floor": 0.2, "rsi_period": 14, "stop_atr_mult": 2.0, "zscore_window": 60}}'
+    ', "grid": {"exits.reversal_bars": [2, 3, 5], "exits.stagnation_bars": [20, 30, 4'
+    '5], "exits.trailing_atr_mult": [2.0, 3.0, 4.0], "exits.trailing_start_r": [1.0, '
+    '1.5, 2.0], "funnel.min_confidence": [65.0, 70.0, 75.0]}, "schema": {"exits": {"r'
+    'eversal_bars": {"default": 3, "type": "int"}, "stagnation_bars": {"default": 30,'
+    ' "type": "int"}, "stagnation_hurdle": {"default": 0.0, "type": "float"}, "traili'
+    'ng_atr_mult": {"default": 3.0, "type": "float"}, "trailing_start_r": {"default":'
+    ' 1.5, "type": "float"}}, "funnel": {"atr_pct_max": {"default": 0.08, "type": "fl'
+    'oat"}, "atr_pct_min": {"default": 0.01, "type": "float"}, "max_per_sector": {"de'
+    'fault": 2, "type": "int"}, "min_adv": {"default": 20000000.0, "type": "float"}, '
+    '"min_confidence": {"default": 65.0, "type": "float"}, "min_price": {"default": 5'
+    '.0, "type": "float"}, "shortlist_max": {"default": 10, "type": "int"}}, "strateg'
+    'y": {"atr_period": {"default": 14, "type": "int"}, "expected_move_atr_mult": {"d'
+    'efault": 1.0, "type": "float"}, "ma_fast": {"default": 5, "type": "int"}, "ma_sl'
+    'ow": {"default": 20, "type": "int"}, "macd_fast": {"default": 12, "type": "int"}'
+    ', "macd_signal": {"default": 9, "type": "int"}, "macd_slow": {"default": 26, "ty'
+    'pe": "int"}, "rsi_overbought": {"default": 70.0, "type": "float"}, "rsi_penalty_'
+    'floor": {"default": 0.2, "type": "float"}, "rsi_period": {"default": 14, "type":'
+    ' "int"}, "stop_atr_mult": {"default": 2.0, "type": "float"}, "zscore_window": {"'
+    'default": 60, "type": "int"}}}, "ui": {"exits": {"reversal_bars": {"default": 3,'
+    ' "max": 20, "min": 1, "type": "int"}, "stagnation_bars": {"default": 30, "max": '
+    '250, "min": 5, "type": "int"}, "stagnation_hurdle": {"default": 0.0, "max": 0.5,'
+    ' "min": -0.5, "type": "float"}, "trailing_atr_mult": {"default": 3.0, "max": 10,'
+    ' "min": 0.5, "type": "float"}, "trailing_start_r": {"default": 1.5, "max": 10, "'
+    'min": 0.25, "type": "float"}}, "funnel": {"atr_pct_max": {"default": 0.08, "max"'
+    ': 1, "min": 0.001, "type": "float"}, "atr_pct_min": {"default": 0.01, "max": 0.5'
+    ', "min": 0, "type": "float"}, "max_per_sector": {"default": 2, "max": 10, "min":'
+    ' 1, "type": "int"}, "min_adv": {"default": 20000000.0, "max": 10000000000.0, "mi'
+    'n": 0, "type": "float"}, "min_confidence": {"default": 65.0, "max": 100, "min": '
+    '0, "type": "float"}, "min_price": {"default": 5.0, "max": 1000, "min": 0, "type"'
+    ': "float"}, "shortlist_max": {"default": 10, "max": 30, "min": 1, "type": "int"}'
+    '}, "strategy": {"atr_period": {"default": 14, "max": 50, "min": 2, "type": "int"'
+    '}, "expected_move_atr_mult": {"default": 1.0, "max": 5, "min": 0.1, "type": "flo'
+    'at"}, "ma_fast": {"default": 5, "max": 50, "min": 2, "type": "int"}, "ma_slow": '
+    '{"default": 20, "max": 250, "min": 5, "type": "int"}, "macd_fast": {"default": 1'
+    '2, "max": 50, "min": 2, "type": "int"}, "macd_signal": {"default": 9, "max": 50,'
+    ' "min": 2, "type": "int"}, "macd_slow": {"default": 26, "max": 100, "min": 5, "t'
+    'ype": "int"}, "rsi_overbought": {"default": 70.0, "max": 95, "min": 50, "type": '
+    '"float"}, "rsi_penalty_floor": {"default": 0.2, "max": 1, "min": 0, "type": "flo'
+    'at"}, "rsi_period": {"default": 14, "max": 50, "min": 2, "type": "int"}, "stop_a'
+    'tr_mult": {"default": 2.0, "max": 6, "min": 0.5, "type": "float"}, "zscore_windo'
+    'w": {"default": 60, "max": 250, "min": 20, "type": "int"}}}}'
+)
+
+
+def test_orb_default_params_round_trip():
+    spec = get_spec(M1)
+    assert spec.build(spec.default_params()) == spec.defaults
+
+
+def test_timeframes_come_from_the_spec():
+    assert get_spec(M1).timeframe == "1m"
+    assert get_spec(V1_COMPOSITE_KEY).timeframe == "1d"
+
+
+def test_v1_schema_ui_defaults_and_grid_are_unchanged_by_p5():
+    import json
+
+    from quant.engine import strategies as s
+
+    k = V1_COMPOSITE_KEY
+    now = json.dumps({"schema": s.get_spec(k).params_schema(), "ui": s.ui_schema(k),
+                      "defaults": s.get_spec(k).default_params(),
+                      "grid": {a: list(b) for a, b in s.GRIDS[k].items()}}, sort_keys=True)
+    assert now == V1_BEFORE_P5
+
+
+def _orb_bounds(params):
+    from quant.engine.strategies import check_bounds
+    return check_bounds(M1, get_spec(M1).build(params))
+
+
+def test_orb_defaults_are_within_bounds():
+    assert _orb_bounds({}) == []
+
+
+def test_orb_out_of_range_is_reported():
+    assert _orb_bounds({"signal": {"range_minutes": 4}, "rank": {"watch_max": 31}}) == [
+        "params_json.signal.range_minutes: 4 < min 5",
+        "params_json.rank.watch_max: 31 > max 30"]
+
+
+def test_orb_cross_rule_range_before_entry_window():
+    assert _orb_bounds({"signal": {"range_minutes": 60, "entry_window_minutes": 30}}) == [
+        "params_json: signal.range_minutes (60) must be < signal.entry_window_minutes (30)"]
+
+
+def test_orb_grid_rejects_v1_knobs():
+    from quant.engine.strategies import validate_grid
+
+    with pytest.raises(StrategyParamsError) as e:
+        validate_grid(M1, {"funnel.min_confidence": [70.0]})
+    assert str(e.value) == "grid.funnel.min_confidence: unknown knob (only signal.*)"
+
+
+def test_orb_ui_schema_bounds_every_field_around_its_default():
+    from quant.engine.strategies import ui_schema
+
+    schema = ui_schema(M1)
+    assert set(schema) == {"signal", "rank"}
+    for entries in schema.values():
+        for entry in entries.values():
+            assert entry["min"] <= entry["default"] <= entry["max"]
+
+
+def test_orb_rejects_unknown_section():
+    with pytest.raises(StrategyParamsError, match="unknown section"):
+        get_spec(M1).build({"strategy": {}})
+
+
+def test_orb_default_grid():
+    from quant.engine.strategies import GRIDS, validate_grid
+
+    assert validate_grid(M1, None) == GRIDS[M1]
+
+
+def test_orb_grid_coerces_and_checks_bounds():
+    from quant.engine.strategies import validate_grid
+
+    assert validate_grid(M1, {"signal.min_volume_ratio": [0, 2]}) == {
+        "signal.min_volume_ratio": (0.0, 2.0)}
+    with pytest.raises(StrategyParamsError, match="out of bounds"):
+        validate_grid(M1, {"signal.range_minutes": [90]})

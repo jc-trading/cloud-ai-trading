@@ -405,3 +405,65 @@ def test_unreachable_probability_floors_at_infinity():
     acct = _acct()
     (runtimes, _), _ = _load(_prob_group(acct, p=0.9), acct, {CAL_RID: _cal_run()})
     assert runtimes[0].score_floor == math.inf
+
+
+# --- P5a: 1m groups are validated by their spec and skipped by load_groups ---
+
+ORB_KEY = "cat.m1.orb"
+
+
+def _orb_group(acct, name="orb", **overrides):
+    fields = dict(strategy_key=ORB_KEY, params_json=get_spec(ORB_KEY).default_params(),
+                  timeframe="1m", screener_json=JIACONG_SCREENER)
+    fields.update(overrides)
+    return group_for(acct, name=name, **fields)
+
+
+def test_orb_on_the_daily_timeframe_is_refused():
+    with pytest.raises(GroupRefused) as e:
+        validate_group(_orb_group(_acct(), timeframe="1d"))
+    assert str(e.value) == "orb: timeframe '1d' is not supported"
+
+
+def test_orb_on_1m_with_a_screener_validates():
+    from quant.engine.intraday_strategies import ORBConfig
+
+    cfg = validate_group(_orb_group(_acct()))
+    assert isinstance(cfg, ORBConfig) and cfg == get_spec(ORB_KEY).defaults
+
+
+def test_a_1m_group_needs_screener_rules():
+    with pytest.raises(GroupRefused) as e:
+        validate_group(_orb_group(_acct(), screener_json={}))
+    assert str(e.value) == "orb: screener_json: 1m groups need screener rules"
+
+
+def test_a_1m_group_takes_the_1m_trade_settings():
+    with pytest.raises(GroupRefused) as e:
+        validate_group(_orb_group(_acct(), trade_settings_json={"holding_style": "swing"}))
+    assert str(e.value) == "orb: trade_settings_json.holding_style: 1m groups support scalping only"
+    validate_group(_orb_group(_acct(), trade_settings_json={"stop_pct": 0.01}))
+
+
+def test_load_groups_skips_valid_1m_groups_without_refusing_them():
+    v1_acct, orb_acct = _acct(), _acct()
+    db = _TradeDb([(group_for(v1_acct, name="v1"), v1_acct), (_orb_group(orb_acct), orb_acct)])
+    runtimes, refused = asyncio.run(load_groups(db, ("active",)))
+    assert [rt.group.name for rt in runtimes] == ["v1"] and refused == []
+
+
+def test_v1_on_1m_is_still_refused_verbatim():
+    acct = _acct()
+    bad = group_for(acct, name="bad", timeframe="1m")
+    with pytest.raises(GroupRefused) as e:
+        validate_group(bad)
+    assert str(e.value) == "bad: timeframe '1m' is not supported"
+    runtimes, refused = asyncio.run(load_groups(_TradeDb([(bad, acct)]), ("active",)))
+    assert runtimes == [] and refused == ["bad: timeframe '1m' is not supported"]
+
+
+def test_an_invalid_1m_group_is_refused_by_load_groups():
+    acct = _acct()
+    db = _TradeDb([(_orb_group(acct, screener_json={}), acct)])
+    runtimes, refused = asyncio.run(load_groups(db, ("active",)))
+    assert runtimes == [] and refused == ["orb: screener_json: 1m groups need screener rules"]

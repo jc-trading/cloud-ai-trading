@@ -202,6 +202,45 @@ def screen_history(spec, as_ofs, *, progress=lambda *_: None, check=lambda: None
     return dict(sorted(pools.items())), dict(sorted(gaps.items()))
 
 
+def _rank_spec(field: str, window: int):
+    return screener.parse_spec({"rules": [{"field": field, "window": window, "op": ">=",
+                                           "value": 0}]})
+
+
+def rank_values(field: str, window: int, as_of: date, codes) -> pd.Series:
+    """One screener feature for ``codes`` on ``as_of`` with ``run_screen``'s math
+    — the 1m shortlist rank."""
+    spec1 = _rank_spec(field, window)
+    f = _features(spec1, as_of, list(codes), securities.asset_types(), pd.Series(dtype="float64"))
+    return f[spec1.rules[0].key]
+
+
+def rank_history(field: str, window: int, as_ofs, codes_by_as_of) -> dict[date, pd.Series]:
+    """``rank_values`` for many sessions, reading the panel one year at a time."""
+    spec1 = _rank_spec(field, window)
+    key = spec1.rules[0].key
+    lookback = screener.required_lookback(spec1)
+    types = securities.asset_types()
+    empty = pd.Series(dtype="float64")
+    out: dict[date, pd.Series] = {}
+    days_all = sorted(set(as_ofs))
+    for year in sorted({d.year for d in days_all}):
+        days = [d for d in days_all if d.year == year]
+        codes = sorted(set().union(*(codes_by_as_of[d] for d in days)))
+        if not codes:
+            out.update({d: empty.rename(key) for d in days})
+            continue
+        close, volume, ret = panel.read(
+            codes, calendar.sessions_in_range(window_sessions(days[0], lookback)[0], days[-1]))
+        for d in days:
+            w = window_sessions(d, lookback)
+            f = screener.compute_features(spec1, d, w, close.loc[w], volume.loc[w], ret.loc[w],
+                                          empty, types)
+            out[d] = f[key].loc[sorted({c.upper() for c in codes_by_as_of[d]})]
+        del close, volume, ret
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Run a screener spec against the panel")
     ap.add_argument("--spec", required=True, help="screener_json as a JSON string")

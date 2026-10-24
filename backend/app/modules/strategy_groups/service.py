@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from quant.backtest.calibration import max_p, score_threshold
 from quant.engine.screener import ScreenerSpec, ScreenerSpecError, parse_spec
-from quant.engine.strategies import StrategyParamsError, V1Config, check_bounds, get_spec
+from quant.engine.strategies import (REGISTRY, StrategyParamsError, V1Config, check_bounds,
+                                     get_spec)
 from quant.engine.trade_rules import (TradeSettings, TradeSettingsError, normalize,
                                       parse_trade_settings)
 
@@ -65,12 +66,15 @@ def validate_group(group: StrategyGroup) -> V1Config:
 
     if group.market != "us":
         raise refuse(f"market {group.market!r} is not supported")
-    if group.timeframe != "1d":
+    expected = REGISTRY[group.strategy_key].timeframe if group.strategy_key in REGISTRY else "1d"
+    if group.timeframe != expected:
         raise refuse(f"timeframe {group.timeframe!r} is not supported")
     try:
-        parse_spec(group.screener_json)
+        screener = parse_spec(group.screener_json)
     except ScreenerSpecError as e:
         raise refuse(f"screener_json invalid: {e}") from None
+    if group.timeframe == "1m" and screener is None:
+        raise refuse("screener_json: 1m groups need screener rules")
     try:
         parse_trade_settings(group.trade_settings_json, timeframe=group.timeframe)
     except TradeSettingsError as e:
@@ -112,6 +116,9 @@ async def load_groups(db: AsyncSession, statuses) -> tuple[list[GroupRuntime], l
     for group, account in rows:
         try:
             cfg = validate_group(group)
+            # 1m groups belong to the intraday engine (P5c); the daily cycles never see them
+            if group.timeframe != "1d":
+                continue
             trade = parse_trade_settings(group.trade_settings_json, timeframe=group.timeframe)
             floor = None
             if trade is not None and trade.entry_prob_min is not None:
@@ -193,6 +200,8 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
         raise GroupInvalid("name: must be 1-100 characters")
     if any(ord(ch) < 0x20 for ch in name):
         raise GroupInvalid("name: must not contain control characters")
+    if strategy_key in REGISTRY and REGISTRY[strategy_key].timeframe != "1d":
+        raise GroupInvalid("timeframe '1d' is not supported")
     try:
         params = normalize_params(strategy_key, params_json)
     except StrategyParamsError as e:

@@ -53,8 +53,8 @@ def test_non_object_rejected(obj):
 
 
 def test_timeframe_1m_rejects_settings_but_accepts_empty():
-    assert _err({"take_profit_pct": 0.1}, "1m") == \
-        "trade_settings_json: only supported on timeframe 1d"
+    assert tr.parse_trade_settings({"take_profit_pct": 0.1}, timeframe="1m") == \
+        tr.IntradayTradeSettings(take_profit_pct=0.1)
     assert tr.parse_trade_settings({}, timeframe="1m") is None
 
 
@@ -257,3 +257,137 @@ def test_take_profit_fires_when_the_high_equals_the_target_exactly():
     assert target == 125.0
     d = _decide(pos, low=105.0, close=120.0, high=target, open_=110.0, settings=s)
     assert d.action == "take_profit" and d.price == target
+
+
+# --- P5a: 1m trade settings -------------------------------------------------
+
+INT_1M = {"entry_ttl_minutes": (1, 30), "atr_period": (5, 120), "max_hold_minutes": (1, 390),
+          "flatten_minutes_before_close": (1, 60), "max_entries_per_symbol_day": (1, 10)}
+FLOAT_1M = {"entry_limit_offset_pct": (-0.05, 0.01), "stop_pct": (0.001, 0.10),
+            "stop_atr_mult": (0.25, 10), "take_profit_pct": (0.001, 0.20),
+            "take_profit_atr_mult": (0.25, 20)}
+
+
+def _parse_1m(obj):
+    return tr.parse_trade_settings(obj, timeframe="1m")
+
+
+@pytest.mark.parametrize("k", sorted(FLOAT_1M))
+def test_1m_float_bounds_are_inclusive(k):
+    lo, hi = FLOAT_1M[k]
+    for v in (lo, hi):
+        assert getattr(_parse_1m({k: v}), k) == v
+    for v in (lo - 1e-6, hi + 1e-6):
+        assert _err({k: v}, "1m") == f"trade_settings_json.{k}: {v} outside [{lo}, {hi}]"
+    assert _err({k: "1"}, "1m") == f"trade_settings_json.{k}: expected a number"
+    assert _err({k: True}, "1m") == f"trade_settings_json.{k}: expected a number"
+
+
+@pytest.mark.parametrize("k", sorted(INT_1M))
+def test_1m_int_bounds_and_type(k):
+    lo, hi = INT_1M[k]
+    assert getattr(_parse_1m({k: hi}), k) == hi
+    low = _parse_1m({k: lo})
+    assert low is None or getattr(low, k) == lo
+    for v in (lo - 1, hi + 1):
+        assert _err({k: v}, "1m") == f"trade_settings_json.{k}: {v} outside [{lo}, {hi}]"
+    for v in (float(lo), True, "3"):
+        assert _err({k: v}, "1m") == f"trade_settings_json.{k}: expected int"
+
+
+@pytest.mark.parametrize("v", [0, -0.01, 0.2000001, "0.1"])
+def test_1m_loss_pause_bounds(v):
+    msg = _err({"intraday_loss_pause_pct": v}, "1m")
+    assert msg in ("trade_settings_json.intraday_loss_pause_pct: must be > 0 and <= 0.2",
+                   "trade_settings_json.intraday_loss_pause_pct: expected a number")
+
+
+def test_1m_loss_pause_upper_bound_inclusive():
+    assert _parse_1m({"intraday_loss_pause_pct": 0.2}).intraday_loss_pause_pct == 0.2
+
+
+def test_1m_stop_pct_and_atr_mult_are_exclusive():
+    assert _err({"stop_pct": 0.01, "stop_atr_mult": 2.0}, "1m") == \
+        "trade_settings_json.stop_pct: cannot combine with stop_atr_mult"
+
+
+def test_1m_take_profit_pct_and_atr_mult_are_exclusive():
+    assert _err({"take_profit_pct": 0.01, "take_profit_atr_mult": 2.0}, "1m") == \
+        "trade_settings_json.take_profit_pct: cannot combine with take_profit_atr_mult"
+
+
+@pytest.mark.parametrize("style", ["swing", "long", "day"])
+def test_1m_rejects_non_scalping(style):
+    assert _err({"holding_style": style}, "1m") == \
+        "trade_settings_json.holding_style: 1m groups support scalping only"
+
+
+@pytest.mark.parametrize("session", ["extended", "all"])
+def test_1m_rejects_extended_hours(session):
+    assert _err({"session": session}, "1m") == \
+        "trade_settings_json.session: extended hours not supported (IEX prints too thin)"
+
+
+@pytest.mark.parametrize("obj", [{}, {"holding_style": "scalping", "session": "rth"},
+                                 {"stop_atr_mult": 1.0, "entry_ttl_minutes": 3}])
+def test_1m_empty_and_default_are_none(obj):
+    assert _parse_1m(obj) is None
+    assert tr.normalize(obj, timeframe="1m") == {}
+
+
+def test_1m_stop_pct_alone_clears_the_default_atr_stop():
+    s = _parse_1m({"stop_pct": 0.01})
+    assert s.stop_pct == 0.01 and s.stop_atr_mult is None
+
+
+def test_1m_normalize_drops_defaults_and_none():
+    out = tr.normalize({"stop_pct": 0.01, "entry_ttl_minutes": 3, "atr_period": 20,
+                        "holding_style": "scalping", "max_hold_minutes": 30}, timeframe="1m")
+    assert out == {"stop_pct": 0.01, "atr_period": 20, "max_hold_minutes": 30}
+
+
+def test_1m_rejects_1d_only_keys():
+    assert _err({"max_hold_days": 5}, "1m") == "trade_settings_json: unknown key 'max_hold_days'"
+
+
+def test_1m_unknown_key_reports_first_alphabetically():
+    assert _err({"zeta": 1, "alpha": 2, "stop_pct": 0.01}, "1m") == \
+        "trade_settings_json: unknown key 'alpha'"
+
+
+def test_1m_prob_and_calibration_copy_the_1d_rules():
+    s = _parse_1m({"entry_prob_min": 0.55, "calibration_run_id": CAL})
+    assert s.entry_prob_min == 0.55 and s.calibration_run_id == CAL
+    assert _err({"entry_prob_min": 0.55}, "1m") == \
+        "trade_settings_json: entry_prob_min and calibration_run_id must be set together"
+    assert _err({"entry_prob_min": 1, "calibration_run_id": CAL}, "1m") == \
+        "trade_settings_json.entry_prob_min: must be > 0 and < 1"
+    assert _err({"entry_prob_min": 0.5, "calibration_run_id": "x"}, "1m") == \
+        "trade_settings_json.calibration_run_id: expected a uuid string"
+
+
+def test_1m_registry_keys_match_keys_1m():
+    r = tr.registry_entry()
+    assert set(r["keys_1m"]) == set(tr.KEYS_1M) and len(tr.KEYS_1M) == 15
+    assert r["keys_1m"]["stop_pct"]["excludes"] == "stop_atr_mult"
+    assert r["keys_1m"]["stop_atr_mult"]["excludes"] == "stop_pct"
+    assert r["keys_1m"]["take_profit_pct"]["excludes"] == "take_profit_atr_mult"
+    assert r["keys_1m"]["take_profit_atr_mult"]["excludes"] == "take_profit_pct"
+    assert r["holding_styles_1m"] == ["scalping"] and r["sessions_1m"] == ["rth"]
+    defaults = tr.IntradayTradeSettings()
+    for k, entry in r["keys_1m"].items():
+        if "default" in entry:
+            assert entry["default"] == getattr(defaults, k)
+    for k, (lo, hi) in {**INT_1M, **FLOAT_1M}.items():
+        assert (r["keys_1m"][k]["min"], r["keys_1m"][k]["max"]) == (lo, hi)
+
+
+def test_1m_keys_follow_the_d5_order():
+    from dataclasses import fields
+
+    assert tr.KEYS_1M == tuple(f.name for f in fields(tr.IntradayTradeSettings))
+
+
+def test_unknown_timeframe_still_takes_the_1d_refusal():
+    assert _err({"take_profit_pct": 0.1}, "1w") == \
+        "trade_settings_json: only supported on timeframe 1d"

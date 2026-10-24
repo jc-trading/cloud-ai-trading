@@ -556,3 +556,31 @@ async def test_load_groups_refuses_a_group_whose_calibration_turns_unusable(api)
     runtimes, refused = await load_groups(api.db, MANAGED_STATUSES)
     assert name not in [rt.group.name for rt in runtimes]
     assert any(x.startswith(f"{name}: ") and "calibration insufficient" in x for x in refused)
+
+
+# --- P5a-1: a 1m strategy cannot be created through the daily-only API ----------
+
+ORB_KEY = "cat.m1.orb"
+ORB_SCREENER = {"rules": [{"field": "market_cap", "op": ">=", "value": 100000000}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("over", [
+    {},
+    {"params_json": get_spec(ORB_KEY).default_params()},
+    {"params_json": get_spec(ORB_KEY).default_params(), "screener_json": ORB_SCREENER},
+])
+async def test_create_refuses_a_1m_strategy_with_422_and_no_rows(api, over):
+    before = (await api.db.execute(select(func.count()).select_from(SimAccount))).scalar()
+    r = await api.client.post(URL, json=_body(strategy_key=ORB_KEY, **over))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "timeframe '1d' is not supported"
+    after = (await api.db.execute(select(func.count()).select_from(SimAccount))).scalar()
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_registry_still_lists_the_1m_strategy(api):
+    r = await api.client.get(f"{URL}/registry")
+    assert r.status_code == 200
+    assert [s["key"] for s in r.json()["strategies"]] == [V1_COMPOSITE_KEY, ORB_KEY]

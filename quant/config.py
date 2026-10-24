@@ -154,3 +154,14 @@ CA_RECENT_DAYS: int = 30
 FRESH_EMPTY_DORMANT_AFTER: int = 3
 FRESH_DORMANT_RETRY_DAYS: int = 7
 UNIVERSE_SYNC_DEADLINE_S: int = 5400
+
+# --------------------------------------------------------------------------
+# Minute engine (strategy lab P5)
+# --------------------------------------------------------------------------
+INTRADAY_ROOT: Path = DATA_ROOT / "intraday"
+INTRADAY_WARMUP_SESSIONS: int = 2
+INTRADAY_BACKFILL_YEARS_1M: int = 2
+INTRADAY_BACKFILL_RPM: int = 60
+INTRADAY_STORE_MAX_GB: float = 20.0
+INTRADAY_MIN_COVERAGE: float = 0.98
+INTRADAY_MIN_TICK: float = 0.01

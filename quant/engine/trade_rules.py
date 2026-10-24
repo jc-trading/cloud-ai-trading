@@ -15,6 +15,17 @@ MAX_HOLD_BOUNDS = (1, 250)
 HOLDING_STYLES_1D = ("swing", "long")
 KEYS = ("entry_prob_min", "calibration_run_id", "entry_limit_offset_pct",
         "take_profit_pct", "max_hold_days", "holding_style")
+KEYS_1M = ("entry_prob_min", "calibration_run_id", "entry_limit_offset_pct",
+           "entry_ttl_minutes", "stop_pct", "stop_atr_mult", "take_profit_pct",
+           "take_profit_atr_mult", "atr_period", "max_hold_minutes",
+           "flatten_minutes_before_close", "max_entries_per_symbol_day",
+           "intraday_loss_pause_pct", "holding_style", "session")
+FLOAT_BOUNDS_1M = (("entry_limit_offset_pct", (-0.05, 0.01)), ("stop_pct", (0.001, 0.10)),
+                   ("stop_atr_mult", (0.25, 10)), ("take_profit_pct", (0.001, 0.20)),
+                   ("take_profit_atr_mult", (0.25, 20)))
+INT_BOUNDS_1M = (("entry_ttl_minutes", (1, 30)), ("atr_period", (5, 120)),
+                 ("max_hold_minutes", (1, 390)), ("flatten_minutes_before_close", (1, 60)),
+                 ("max_entries_per_symbol_day", (1, 10)))
 
 
 @dataclass(frozen=True)
@@ -25,6 +36,25 @@ class TradeSettings:
     take_profit_pct: float | None = None
     max_hold_days: int | None = None
     holding_style: str = "swing"
+
+
+@dataclass(frozen=True)
+class IntradayTradeSettings:
+    entry_prob_min: float | None = None
+    calibration_run_id: str | None = None
+    entry_limit_offset_pct: float | None = None
+    entry_ttl_minutes: int = 3
+    stop_pct: float | None = None
+    stop_atr_mult: float | None = 1.0
+    take_profit_pct: float | None = None
+    take_profit_atr_mult: float | None = None
+    atr_period: int = 14
+    max_hold_minutes: int | None = None
+    flatten_minutes_before_close: int = 5
+    max_entries_per_symbol_day: int = 1
+    intraday_loss_pause_pct: float = 0.02
+    holding_style: str = "scalping"
+    session: str = "rth"
 
 
 class TradeSettingsError(ValueError):
@@ -52,6 +82,8 @@ def parse_trade_settings(obj, *, timeframe: str) -> TradeSettings | None:
         raise TradeSettingsError("trade_settings_json: must be an object")
     if obj == {}:
         return None
+    if timeframe == "1m":
+        return _parse_intraday(obj)
     unknown = sorted(k for k in obj if k not in KEYS)
     if unknown:
         raise TradeSettingsError(f"trade_settings_json: unknown key '{unknown[0]}'")
@@ -102,7 +134,74 @@ def parse_trade_settings(obj, *, timeframe: str) -> TradeSettings | None:
     return None if s == TradeSettings() else s
 
 
+def _parse_intraday(obj: dict) -> IntradayTradeSettings | None:
+    unknown = sorted(k for k in obj if k not in KEYS_1M)
+    if unknown:
+        raise TradeSettingsError(f"trade_settings_json: unknown key '{unknown[0]}'")
+    fields: dict = {}
+    for k, (lo, hi) in FLOAT_BOUNDS_1M:
+        if k in obj:
+            v = _number(k, obj[k])
+            _bounded(k, v, lo, hi)
+            fields[k] = float(v)
+    if "intraday_loss_pause_pct" in obj:
+        v = _number("intraday_loss_pause_pct", obj["intraday_loss_pause_pct"])
+        if not 0 < v <= 0.2:
+            raise TradeSettingsError(
+                "trade_settings_json.intraday_loss_pause_pct: must be > 0 and <= 0.2")
+        fields["intraday_loss_pause_pct"] = float(v)
+    for k, (lo, hi) in INT_BOUNDS_1M:
+        if k in obj:
+            v = obj[k]
+            if type(v) is not int:
+                raise TradeSettingsError(f"trade_settings_json.{k}: expected int")
+            _bounded(k, v, lo, hi)
+            fields[k] = v
+    if "entry_prob_min" in obj:
+        v = _number("entry_prob_min", obj["entry_prob_min"])
+        if not 0 < v < 1:
+            raise TradeSettingsError("trade_settings_json.entry_prob_min: must be > 0 and < 1")
+        fields["entry_prob_min"] = float(v)
+    if "calibration_run_id" in obj:
+        v = obj["calibration_run_id"]
+        try:
+            if not isinstance(v, str):
+                raise ValueError
+            fields["calibration_run_id"] = str(UUID(v))
+        except ValueError:
+            raise TradeSettingsError(
+                "trade_settings_json.calibration_run_id: expected a uuid string") from None
+    if "holding_style" in obj:
+        if obj["holding_style"] != "scalping":
+            raise TradeSettingsError(
+                "trade_settings_json.holding_style: 1m groups support scalping only")
+        fields["holding_style"] = "scalping"
+    if "session" in obj:
+        if obj["session"] != "rth":
+            raise TradeSettingsError(
+                "trade_settings_json.session: extended hours not supported (IEX prints too thin)")
+        fields["session"] = "rth"
+    if "stop_pct" in obj and "stop_atr_mult" in obj:
+        raise TradeSettingsError("trade_settings_json.stop_pct: cannot combine with stop_atr_mult")
+    if "take_profit_pct" in obj and "take_profit_atr_mult" in obj:
+        raise TradeSettingsError(
+            "trade_settings_json.take_profit_pct: cannot combine with take_profit_atr_mult")
+    if ("entry_prob_min" in obj) != ("calibration_run_id" in obj):
+        raise TradeSettingsError(
+            "trade_settings_json: entry_prob_min and calibration_run_id must be set together")
+    if "stop_pct" in fields:
+        fields["stop_atr_mult"] = None
+
+    s = IntradayTradeSettings(**fields)
+    return None if s == IntradayTradeSettings() else s
+
+
 def normalize(obj, *, timeframe: str = "1d") -> dict:
+    if timeframe == "1m":
+        s = parse_trade_settings(obj, timeframe="1m")
+        return {} if s is None else {
+            k: getattr(s, k) for k in KEYS_1M
+            if getattr(s, k) is not None and getattr(s, k) != getattr(IntradayTradeSettings(), k)}
     s = parse_trade_settings(obj, timeframe=timeframe)
     if s is None:
         return {}
@@ -169,4 +268,30 @@ def registry_entry() -> dict:
                               "default": "swing"},
         },
         "holding_styles_1d": ["swing", "long"],
+        "keys_1m": {
+            "entry_prob_min": {"type": "float", "gt": 0.0, "lt": 1.0,
+                               "requires": "calibration_run_id"},
+            "calibration_run_id": {"type": "uuid", "requires": "entry_prob_min"},
+            "entry_limit_offset_pct": {"type": "float", "min": -0.05, "max": 0.01},
+            "entry_ttl_minutes": {"type": "int", "min": 1, "max": 30, "default": 3},
+            "stop_pct": {"type": "float", "min": 0.001, "max": 0.10,
+                         "excludes": "stop_atr_mult"},
+            "stop_atr_mult": {"type": "float", "min": 0.25, "max": 10, "default": 1.0,
+                              "excludes": "stop_pct"},
+            "take_profit_pct": {"type": "float", "min": 0.001, "max": 0.20,
+                                "excludes": "take_profit_atr_mult"},
+            "take_profit_atr_mult": {"type": "float", "min": 0.25, "max": 20,
+                                     "excludes": "take_profit_pct"},
+            "atr_period": {"type": "int", "min": 5, "max": 120, "default": 14},
+            "max_hold_minutes": {"type": "int", "min": 1, "max": 390},
+            "flatten_minutes_before_close": {"type": "int", "min": 1, "max": 60,
+                                             "default": 5},
+            "max_entries_per_symbol_day": {"type": "int", "min": 1, "max": 10, "default": 1},
+            "intraday_loss_pause_pct": {"type": "float", "gt": 0.0, "max": 0.2,
+                                        "default": 0.02},
+            "holding_style": {"type": "enum", "values": ["scalping"], "default": "scalping"},
+            "session": {"type": "enum", "values": ["rth"], "default": "rth"},
+        },
+        "holding_styles_1m": ["scalping"],
+        "sessions_1m": ["rth"],
     }
