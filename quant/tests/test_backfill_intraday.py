@@ -10,7 +10,7 @@ import pytest
 
 from quant import config
 from quant.data import backfill, calendar, store
-from quant.data.registry import StreamSymbol, SystemAccount
+from quant.data.registry import ManagedGroup, StreamSymbol
 from quant.tests.conftest import FakeRegistry
 
 ET = "America/New_York"
@@ -23,10 +23,14 @@ class BackfillRegistry(FakeRegistry):
         self.positions = list(positions)
         self.configured = list(configured)
         self.watchlist = list(watchlist)
-        self.account = SystemAccount(account_id="acct", user_id="user") if account else None
+        self.account = (ManagedGroup("g1", "v1", "1d", "active", "acct", "user", None)
+                        if account else None)
 
-    def system_account(self):
-        return self.account
+    def managed_groups(self):
+        return [] if self.account is None else [self.account]
+
+    def intraday_watch_rows(self, session):
+        return []
 
     def open_position_symbols(self, account_id):
         return list(self.positions)

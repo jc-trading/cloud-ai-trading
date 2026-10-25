@@ -11,7 +11,7 @@ import pytest
 
 from quant import config
 from quant.data import eod_correction, store
-from quant.data.registry import StreamSymbol, SystemAccount
+from quant.data.registry import ManagedGroup, StreamSymbol
 from quant.tests.conftest import FakeRegistry
 
 ET = "America/New_York"
@@ -27,10 +27,14 @@ class EodRegistry(FakeRegistry):
         self.positions = list(positions)
         self.configured = list(configured)
         self.watchlist = list(watchlist)
-        self.account = SystemAccount(account_id="acct", user_id="user") if account else None
+        self.account = (ManagedGroup("g1", "v1", "1d", "active", "acct", "user", None)
+                        if account else None)
 
-    def system_account(self):
-        return self.account
+    def managed_groups(self):
+        return [] if self.account is None else [self.account]
+
+    def intraday_watch_rows(self, session):
+        return []
 
     def open_position_symbols(self, account_id):
         return list(self.positions)
@@ -416,3 +420,29 @@ def test_registry_status_update_is_isolated_to_the_row():
     assert reg.update_status("MSFT", "1min", DAY, status="stale") == 0
     row = reg.get_row("AAPL", "1min", DAY)
     assert (row.status, row.meta, row.provider) == ("partial", {"a": 1}, "alpaca:iex")
+
+
+class _GroupsRegistry(EodRegistry):
+    def __init__(self, groups, positions, **kw):
+        super().__init__(**kw)
+        self.groups = groups
+        self.by_account = positions
+
+    def managed_groups(self):
+        return list(self.groups)
+
+    def open_position_symbols(self, account_id):
+        return list(self.by_account.get(account_id, []))
+
+
+def test_liquid_symbols_cover_every_managed_group():
+    groups = [ManagedGroup("g1", "v1", "1d", "active", "a1", "u", None),
+              ManagedGroup("g2", "orb", "1m", "paused", "a2", "u", None)]
+    reg = _GroupsRegistry(groups, {"a1": ["nvda"], "a2": ["TSLA"]}, configured=["SPY"])
+    assert eod_correction._liquid_symbols(reg) == {"SPY", "NVDA", "TSLA"}
+
+
+def test_liquid_symbols_without_groups_are_the_configured_set():
+    reg = EodRegistry(positions=["NVDA"], configured=["SPY", "QQQ"], watchlist=["ZZZ"],
+                      account=False)
+    assert eod_correction._liquid_symbols(reg) == {"SPY", "QQQ"}

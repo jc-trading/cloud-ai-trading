@@ -180,7 +180,7 @@ async def _check_quant_heartbeats() -> None:
             )
 
 
-# 方案 Phase 8: the realtime writer beats every 60s; a restart takes ~60s, so 3
+# 方案 Phase 8: the realtime writer beats every 15s; a restart takes ~60s, so 3
 # minutes of silence during the session is a real outage, not a redeploy.
 MARKET_STREAM_STALE = 3 * 60
 EOD_CORRECTION_GRACE = 3600      # slack after the scheduled 01:30 UTC run
@@ -275,6 +275,35 @@ async def _check_market_stream() -> None:
         _last_alert_at.pop("eod correction incomplete", None)
 
 
+async def _check_stream_rejected() -> None:
+    """Symbols the IEX stream refused: a live heartbeat reporting rejected names
+    or an effective cap below the configured one means 1m shortlists may be
+    cut. A stale or missing heartbeat is _check_market_stream's alert."""
+    from app.database import AsyncSessionLocal
+    from app.modules.simledger.models import HeartbeatRecord
+    from quant import config as qconfig
+
+    async with AsyncSessionLocal() as db:
+        beat = (await db.execute(
+            select(HeartbeatRecord).where(HeartbeatRecord.name == "market_stream")
+        )).scalar_one_or_none()
+    if beat is None or time.time() - beat.last_beat_at.timestamp() > MARKET_STREAM_STALE:
+        return
+    meta = beat.meta or {}
+    rejected = meta.get("rejected") or []
+    cap = meta.get("cap_effective")
+    if rejected or (cap is not None and cap < qconfig.STREAM_SYMBOL_CAP):
+        await _alert(
+            "stream rejected symbols",
+            f"IEX stream cap_effective {cap} (configured {qconfig.STREAM_SYMBOL_CAP}); "
+            f"rejected {len(rejected)}: {', '.join(rejected[:10]) or '-'} — 1m "
+            f"shortlists may be cut. Check docker logs cat_market_stream | grep -iE "
+            f"'error|405'; a restart resets the cap.",
+        )
+    else:
+        _last_alert_at.pop("stream rejected symbols", None)
+
+
 async def _check_sim_stops() -> None:
     """TOP-severity: every open sim lot must carry a usable stop — a lot without
     one has NO exit protection (the internal analog of 'every position has a
@@ -308,6 +337,7 @@ async def run_watchdog() -> None:
         ("queue", _check_queue_depth),
         ("quant heartbeats", _check_quant_heartbeats),
         ("market stream", _check_market_stream),
+        ("stream rejected", _check_stream_rejected),
         ("sim stops", _check_sim_stops),
     )
     while True:

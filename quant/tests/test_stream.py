@@ -12,7 +12,7 @@ import pytest
 from quant import config
 from quant.data import store, stream
 from quant.data.providers.base import Bar
-from quant.data.registry import StreamSymbol, SystemAccount
+from quant.data.registry import ManagedGroup, StreamSymbol
 from quant.data.stream import StreamConsumer
 from quant.tests.conftest import FakeRegistry
 
@@ -45,11 +45,15 @@ class StreamRegistry(FakeRegistry):
         self.positions = list(positions)
         self.configured = list(configured)
         self.watchlist = list(watchlist)
-        self.account = SystemAccount(account_id="acct", user_id="user") if account else None
+        self.account = (ManagedGroup("g1", "v1", "1d", "active", "acct", "user", None)
+                        if account else None)
         self.beats: list[tuple[str, dict]] = []
 
-    def system_account(self):
-        return self.account
+    def managed_groups(self):
+        return [] if self.account is None else [self.account]
+
+    def intraday_watch_rows(self, session):
+        return []
 
     def open_position_symbols(self, account_id):
         return list(self.positions)
@@ -67,6 +71,9 @@ class StreamRegistry(FakeRegistry):
 
 class FakeSource:
     provider_key = "alpaca:iex"
+    confirmed = None
+    errors = ()
+    resubscribes = 0
 
     def __init__(self, script=None):
         self.script = script
@@ -95,6 +102,16 @@ class FakeSource:
 
     def stop(self):
         self.stops += 1
+
+    def confirmed_symbols(self):
+        return None if self.confirmed is None else list(self.confirmed)
+
+    def drain_errors(self):
+        errors, self.errors = list(self.errors), []
+        return errors
+
+    def resubscribe(self):
+        self.resubscribes += 1
 
 
 class FakeRest:
@@ -571,3 +588,170 @@ def test_preflight_tolerates_a_network_error(bars_root, caplog):
     with caplog.at_level("WARNING"):
         c.preflight_credentials()
     assert "pre-flight inconclusive" in caplog.text
+
+
+# --- P5b: cap guard, 405 handling, heartbeat meta -------------------------
+
+def _live(reg, clock):
+    source = FakeSource()
+    c = _consumer(reg, clock, source_factory=lambda: source)
+    c.refresh_subscriptions()
+    c._source = source
+    source.subscribe(c._symbols)
+    return c, source
+
+
+def test_stream_cap_comes_from_config():
+    assert stream.MAX_STREAM_SYMBOLS == config.STREAM_SYMBOL_CAP == 30
+
+
+def test_stream_flush_and_heartbeat_cadence():
+    assert (stream.FLUSH_SECONDS, stream.HEARTBEAT_SECONDS) == (10, 15)
+
+
+def test_heartbeat_meta_carries_the_subscription_view(bars_root):
+    reg = StreamRegistry(configured=["BBB", "AAA"])
+    clock = Clock(_et(DAY, "10:00"))
+    c, source = _live(reg, clock)
+    source.confirmed = ["AAA", "BBB"]
+    c.beat()
+    meta = reg.beats[-1][1]
+    assert set(meta) == {"symbols", "buffered", "period_key", "in_session", "connected",
+                         "subscribed", "dropped", "rejected", "cap_effective",
+                         "stream_errors"}
+    assert (meta["symbols"], meta["period_key"], meta["in_session"], meta["connected"]) == \
+        (2, DAY, True, True)
+    assert meta["subscribed"] == ["AAA", "BBB"]
+    assert (meta["dropped"], meta["rejected"], meta["cap_effective"],
+            meta["stream_errors"]) == ([], [], 30, [])
+
+    c._source = None
+    c.beat()
+    assert reg.beats[-1][1]["subscribed"] is None
+
+
+def test_heartbeat_meta_names_the_dropped(bars_root):
+    names = [f"C{i:02d}" for i in range(40)]
+    reg = StreamRegistry(configured=names, account=False)
+    c = _consumer(reg, Clock(_et(DAY, "10:00")))
+    c.refresh_subscriptions()
+    c.beat()
+    assert reg.beats[-1][1]["dropped"] == names[30:]
+
+
+def test_405_lowers_the_cap_to_the_acknowledged_count(bars_root):
+    names = [f"C{i:02d}" for i in range(30)]
+    reg = StreamRegistry(configured=names, account=False)
+    c, source = _live(reg, Clock(_et(DAY, "10:00")))
+    source.confirmed = names[:29]
+    source.errors = [{"code": 405, "msg": "symbol limit exceeded", "at": "t"}]
+    c.tick()
+    assert c._cap_effective == 29
+    assert source.symbols == names[:29]
+    assert source.resubscribes == 1
+    assert c._stream_errors == [{"code": 405, "msg": "symbol limit exceeded", "at": "t"}]
+
+
+@pytest.mark.parametrize("n", [30, 5])
+def test_405_without_an_ack_steps_the_cap_down_by_one(bars_root, n):
+    names = [f"C{i:02d}" for i in range(n)]
+    reg = StreamRegistry(configured=names, account=False)
+    c, source = _live(reg, Clock(_et(DAY, "10:00")))
+    source.errors = [{"code": 405, "msg": "symbol limit exceeded", "at": "t"}]
+    c.tick()
+    assert c._cap_effective == n - 1
+    assert source.symbols == names[:n - 1]
+    assert source.resubscribes == 1
+
+
+def test_other_stream_errors_are_recorded_only(bars_root, caplog):
+    names = [f"C{i:02d}" for i in range(30)]
+    reg = StreamRegistry(configured=names, account=False)
+    c, source = _live(reg, Clock(_et(DAY, "10:00")))
+    source.confirmed = names[:29]
+    source.errors = [{"code": 406, "msg": "connection limit exceeded", "at": "t"}]
+    with caplog.at_level("WARNING"):
+        c.tick()
+    assert c._cap_effective == 30
+    assert source.symbols == names
+    assert source.resubscribes == 0
+    assert c._stream_errors == [{"code": 406, "msg": "connection limit exceeded", "at": "t"}]
+    assert "stream error 406" in caplog.text
+
+
+def test_rejected_needs_thirty_seconds_since_the_change(bars_root):
+    reg = StreamRegistry(configured=["AAA", "BBB", "CCC"], account=False)
+    clock = Clock(_et(DAY, "10:00"))
+    c, source = _live(reg, clock)
+    source.confirmed = ["AAA", "CCC"]
+    clock.now = _et(DAY, "10:00:29")
+    c.beat()
+    assert reg.beats[-1][1]["rejected"] == []
+    clock.now = _et(DAY, "10:00:30")
+    c.beat()
+    assert reg.beats[-1][1]["rejected"] == ["BBB"]
+
+
+def test_unchanged_dropped_set_is_logged_once(bars_root, caplog):
+    reg = StreamRegistry(configured=[f"C{i:02d}" for i in range(31)], account=False)
+    c = _consumer(reg, Clock(_et(DAY, "10:00")))
+    with caplog.at_level("WARNING"):
+        c.resolve_symbols()
+        c.resolve_symbols()
+    assert caplog.text.count("exceeds the 30-symbol IEX cap") == 1
+
+
+def test_reconnect_after_405_stays_under_the_lowered_cap(bars_root):
+    names = [f"C{i:02d}" for i in range(30)]
+    reg = StreamRegistry(configured=names, account=False)
+    c, source = _live(reg, Clock(_et(DAY, "10:00")))
+    source.errors = [{"code": 405, "msg": "symbol limit exceeded", "at": "t"}]
+    c.tick()
+    fresh = FakeSource()
+    c._source_factory = lambda: fresh
+    c._session()
+    assert len(fresh.subscribed[0]) <= c._cap_effective == 29
+
+
+class _LoggingSource(FakeSource):
+    def __init__(self):
+        super().__init__()
+        self.calls: list[str] = []
+
+    def update_subscription(self, symbols):
+        self.calls.append("update_subscription")
+        return super().update_subscription(symbols)
+
+    def resubscribe(self):
+        self.calls.append("resubscribe")
+        super().resubscribe()
+
+
+def test_405_narrows_the_subscription_before_resending_it(bars_root):
+    names = [f"C{i:02d}" for i in range(30)]
+    reg = StreamRegistry(configured=names, account=False)
+    source = _LoggingSource()
+    c = _consumer(reg, Clock(_et(DAY, "10:00")), source_factory=lambda: source)
+    c.refresh_subscriptions()
+    c._source = source
+    source.subscribe(c._symbols)
+    source.confirmed = names[:29]
+    source.errors = [{"code": 405, "msg": "symbol limit exceeded", "at": "t"}]
+    c.tick()
+    assert source.calls == ["update_subscription", "resubscribe"]
+
+
+def test_subscription_change_restarts_the_rejected_clock(bars_root):
+    reg = StreamRegistry(configured=["AAA", "BBB"], account=False)
+    clock = Clock(_et(DAY, "10:00"))
+    c, source = _live(reg, clock)
+    clock.now = _et(DAY, "10:01")
+    reg.configured = ["AAA", "BBB", "CCC"]
+    c.refresh_subscriptions()
+    source.confirmed = ["AAA", "BBB"]
+    clock.now = _et(DAY, "10:01:10")
+    c.beat()
+    assert reg.beats[-1][1]["rejected"] == []
+    clock.now = _et(DAY, "10:01:31")
+    c.beat()
+    assert reg.beats[-1][1]["rejected"] == ["CCC"]

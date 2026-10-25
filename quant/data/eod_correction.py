@@ -187,13 +187,12 @@ def resolve_symbols(registry, period_key: str) -> list[str]:
 
 
 def _liquid_symbols(registry) -> set[str]:
-    """Names a partial day actually matters for: what the 对照账户 holds plus the
-    deliberately configured stream set. A watchlist name can be illiquid by
-    choice and must not page anyone at 21:30."""
+    """Names a partial day actually matters for: what any managed strategy group
+    holds plus the deliberately configured stream set. A watchlist name can be
+    illiquid by choice and must not page anyone at 21:30."""
     liquid = {row.symbol.upper() for row in registry.stream_symbols()}
-    account = registry.system_account()
-    if account is not None:
-        liquid |= {s.upper() for s in registry.open_position_symbols(account.account_id)}
+    for g in registry.managed_groups():
+        liquid |= {s.upper() for s in registry.open_position_symbols(g.account_id)}
     return liquid
 
 

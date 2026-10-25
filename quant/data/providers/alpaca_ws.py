@@ -9,17 +9,21 @@ reconnect supervision and heartbeats belong to the consumer, not here.
 from __future__ import annotations
 
 import logging
+import threading
+from datetime import datetime, timezone
 from typing import Callable, Iterable
 
 import pandas as pd
 
+from quant import config
 from quant.data.providers.alpaca_rest import _keys
 from quant.data.providers.base import Bar, StreamAuthError
 
 logger = logging.getLogger(__name__)
 
 # Alpaca's free IEX stream accepts at most 30 symbols per connection.
-MAX_STREAM_SYMBOLS = 30
+MAX_STREAM_SYMBOLS = config.STREAM_SYMBOL_CAP
+_ERRORS_KEPT = 10
 
 # alpaca-py raises auth rejections as a plain ValueError off the handshake, so
 # 401/403 can only be told apart from a transient drop by its message
@@ -69,6 +73,38 @@ class AlpacaWsSource:
         self._on_bar: Callable[[Bar], None] | None = None
         self._running = False
         self._auth_error: BaseException | None = None
+        self._confirmed: list[str] | None = None
+        self._errors: list[dict] = []
+        self._msg_lock = threading.Lock()
+
+    def confirmed_symbols(self) -> list[str] | None:
+        """The symbol set of the latest subscription ack on this connection."""
+        with self._msg_lock:
+            return None if self._confirmed is None else list(self._confirmed)
+
+    def drain_errors(self) -> list[dict]:
+        with self._msg_lock:
+            errors, self._errors = self._errors, []
+        return errors
+
+    def resubscribe(self) -> None:
+        """Resend the full subscription set (alpaca-py sends every handler's
+        symbols on each subscribe call)."""
+        if self._running and self._stream is not None and self._symbols:
+            self._stream.subscribe_bars(self._handle_bar, *self._symbols)
+
+    def _observe(self, msg) -> None:
+        if not isinstance(msg, dict):
+            return
+        kind = msg.get("T")
+        if kind == "subscription":
+            with self._msg_lock:
+                self._confirmed = sorted(str(s).upper() for s in msg.get("bars") or [])
+        elif kind == "error":
+            entry = {"code": msg.get("code"), "msg": str(msg.get("msg"))[:200],
+                     "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            with self._msg_lock:
+                self._errors = (self._errors + [entry])[-_ERRORS_KEPT:]
 
     def _checked(self, symbols: Iterable[str]) -> list[str]:
         syms = [s.upper() for s in symbols]
@@ -117,10 +153,16 @@ class AlpacaWsSource:
         stream.subscribe_bars(self._handle_bar, *self._symbols)
         self._running = True
         self._auth_error = None
+        with self._msg_lock:
+            self._confirmed = None
         start_ws = getattr(stream, "_start_ws", None)
         if start_ws is None:
             logger.warning("stream exposes no _start_ws — an auth rejection will "
                            "retry forever instead of exiting")
+        dispatch = getattr(stream, "_dispatch", None)
+        if dispatch is None:
+            logger.warning("stream exposes no _dispatch — subscription acks and "
+                           "errors are not tracked")
 
         async def guarded_start_ws():
             try:
@@ -131,13 +173,21 @@ class AlpacaWsSource:
                     stream._should_run = False
                 raise
 
+        async def watched_dispatch(msg):
+            self._observe(msg)
+            await dispatch(msg)
+
         if start_ws is not None:
             stream._start_ws = guarded_start_ws
+        if dispatch is not None:
+            stream._dispatch = watched_dispatch
         try:
             stream.run()
         finally:
             if start_ws is not None:
                 stream._start_ws = start_ws
+            if dispatch is not None:
+                stream._dispatch = dispatch
             self._running = False
         if self._auth_error is not None:
             raise StreamAuthError(str(self._auth_error))

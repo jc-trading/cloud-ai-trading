@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quant import config as qconfig
 from quant.backtest.calibration import max_p, score_threshold
 from quant.engine.screener import ScreenerSpec, ScreenerSpecError, parse_spec
 from quant.engine.strategies import (REGISTRY, StrategyParamsError, V1Config, check_bounds,
@@ -188,6 +189,17 @@ async def signal_cycle_in_flight(db: AsyncSession) -> bool:
             and row.last_beat_at > datetime.now(timezone.utc) - cycles.STARTED_DEAD_AFTER)
 
 
+async def watch_budget_problem(db: AsyncSession, add: int, *, exclude_id=None) -> str | None:
+    """Active 1m groups' ``rank.watch_max`` must sum to at most the stream cap
+    minus the reserved slots (P5 D-1), so no shortlist is ever truncated."""
+    rows = (await db.execute(select(StrategyGroup.id, StrategyGroup.params_json).where(
+        StrategyGroup.status == "active", StrategyGroup.timeframe == "1m"))).all()
+    used = sum(int(p["rank"]["watch_max"]) for gid, p in rows if gid != exclude_id)
+    limit = qconfig.STREAM_SYMBOL_CAP - qconfig.STREAM_RESERVED_SLOTS
+    total = used + add
+    return f"watch budget exceeded: {total} > {limit}" if total > limit else None
+
+
 async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: str,
                        params_json, screener_json, trade_settings_json, notes,
                        starting_capital: float, status: str) -> StrategyGroup:
@@ -229,6 +241,10 @@ async def create_group(db: AsyncSession, *, user_id, name: str, strategy_key: st
             raise GroupConflict(reason)
         if await signal_cycle_in_flight(db):
             raise GroupConflict(_IN_FLIGHT)
+        if timeframe == "1m":
+            problem = await watch_budget_problem(db, int(params["rank"]["watch_max"]))
+            if problem is not None:
+                raise GroupConflict(problem)
     taken = (await db.execute(
         select(StrategyGroup.id).where(StrategyGroup.name == name).limit(1)
     )).scalar_one_or_none()
@@ -305,6 +321,11 @@ async def set_status(db: AsyncSession, group: StrategyGroup, new: str) -> Strate
             raise GroupConflict(reason)
         if await signal_cycle_in_flight(db):
             raise GroupConflict(_IN_FLIGHT)
+        if group.timeframe == "1m":
+            problem = await watch_budget_problem(
+                db, int(group.params_json["rank"]["watch_max"]), exclude_id=group.id)
+            if problem is not None:
+                raise GroupConflict(problem)
         group.status = "active"
     else:
         group.status = "paused"

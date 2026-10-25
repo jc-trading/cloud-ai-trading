@@ -247,3 +247,103 @@ def test_ws_run_keeps_retrying_a_transient_failure():
     src.subscribe(["AAPL"])
     src.run(lambda bar: None)                          # returns, no auth error
     assert stream.attempts == 50 and stream._should_run is True
+
+
+# --- P5b: subscription acks and error frames --------------------------------
+
+class _DispatchingStream:
+    """alpaca-py's dispatch seam: _consume awaits ``self._dispatch(msg)`` for
+    every control frame, so an instance attribute replaces the method."""
+
+    def __init__(self, msgs=(), during_run=None):
+        self.msgs = list(msgs)
+        self.during_run = during_run
+        self.seen: list = []
+        self.subscribed: list[tuple] = []
+
+    def subscribe_bars(self, handler, *symbols):
+        self.subscribed.append(symbols)
+
+    async def _dispatch(self, msg):
+        self.seen.append(msg)
+
+    def run(self):
+        async def _consume():
+            for msg in self.msgs:
+                await self._dispatch(msg)
+            if self.during_run is not None:
+                self.during_run()
+
+        asyncio.run(_consume())
+
+
+def _ack(*symbols):
+    return {"T": "subscription", "trades": [], "quotes": [], "bars": list(symbols)}
+
+
+def _error(code, msg="symbol limit exceeded"):
+    return {"T": "error", "code": code, "msg": msg}
+
+
+def test_ws_tracks_the_latest_ack_and_recent_errors():
+    msgs = [_ack("msft", "aapl")] + [_error(400 + i) for i in range(12)] + \
+        [_ack("AAPL", "MSFT", "NVDA")]
+    stream = _DispatchingStream(msgs)
+    src = AlpacaWsSource(stream=stream)
+    src.subscribe(["AAPL", "MSFT", "NVDA"])
+    src.run(lambda bar: None)
+    assert src.confirmed_symbols() == ["AAPL", "MSFT", "NVDA"]
+    errors = src.drain_errors()
+    assert [e["code"] for e in errors] == list(range(402, 412))
+    assert all(e["msg"] == "symbol limit exceeded" and e["at"] for e in errors)
+    assert stream.seen == msgs
+    assert stream._dispatch.__name__ == "_dispatch"
+
+
+def test_ws_drain_errors_empties_the_buffer():
+    src = AlpacaWsSource(stream=_DispatchingStream([_error(405)]))
+    src.subscribe(["AAPL"])
+    src.run(lambda bar: None)
+    assert [e["code"] for e in src.drain_errors()] == [405]
+    assert src.drain_errors() == []
+
+
+def test_ws_new_run_resets_the_ack():
+    src = AlpacaWsSource(stream=_DispatchingStream([_ack("AAPL")]))
+    src.subscribe(["AAPL"])
+    src.run(lambda bar: None)
+    assert src.confirmed_symbols() == ["AAPL"]
+    src._stream.msgs = []
+    src.run(lambda bar: None)
+    assert src.confirmed_symbols() is None
+
+
+def test_ws_resubscribe_sends_the_full_set_only_while_running():
+    stream = _DispatchingStream()
+    src = AlpacaWsSource(stream=stream)
+    stream.during_run = src.resubscribe
+    src.subscribe(["AAPL", "MSFT"])
+    src.run(lambda bar: None)
+    assert stream.subscribed == [("AAPL", "MSFT"), ("AAPL", "MSFT")]
+    src.resubscribe()
+    assert len(stream.subscribed) == 2
+
+
+def test_ws_run_works_without_a_dispatch_seam():
+    class _Plain:
+        def subscribe_bars(self, handler, *symbols):
+            self.symbols = symbols
+
+        def run(self):
+            self.ran = True
+
+    stream = _Plain()
+    src = AlpacaWsSource(stream=stream)
+    src.subscribe(["AAPL"])
+    src.run(lambda bar: None)
+    assert stream.ran and src.confirmed_symbols() is None
+    assert not hasattr(stream, "_dispatch")
+
+
+def test_ws_cap_comes_from_config():
+    assert alpaca_ws.MAX_STREAM_SYMBOLS == config.STREAM_SYMBOL_CAP

@@ -2,18 +2,19 @@
 
 Run as ``python -m quant.data.stream``; the compose service ``market-stream``
 does exactly that, as a SINGLE instance (the 30-symbol cap is counted per
-connection, and the minute flush rewrites the whole day file — a second writer
+connection, and every flush rewrites the whole day file — a second writer
 would fight over both).
 
-Flow per connection: resolve the subscription set (open positions >
-``market_stream_symbols`` > the 对照账户 owner's stock watchlist, truncated to 30
-with the dropped names logged) -> reload today's stored bars back into the
-in-memory buffer -> fill the minutes missing since the last stored bar over IEX
-REST -> stream. Once a minute every symbol that received a bar is rewritten as
-the whole day file (``replace=True`` over the day buffer, which is why the
-reload has to happen first — an empty buffer would truncate the day). Writing
-stops at 20:00 ET, where the EOD SIP correction takes over; the heartbeat keeps
-beating regardless so the watchdog can tell "idle" from "dead".
+Flow per connection: resolve the subscription set (registry.resolve_watch: held
+1m > 1m shortlist > held 1d > market_stream_symbols > group owners' watchlists,
+truncated to the cap with the dropped names logged) -> reload today's stored
+bars back into the in-memory buffer -> fill the minutes missing since the last
+stored bar over IEX REST -> stream. Every FLUSH_SECONDS each symbol that
+received a bar is rewritten as the whole day file (``replace=True`` over the
+day buffer, which is why the reload has to happen first — an empty buffer would
+truncate the day). Writing stops at 20:00 ET, where the EOD SIP correction
+takes over; the heartbeat keeps beating regardless so the watchdog can tell
+"idle" from "dead".
 """
 
 from __future__ import annotations
@@ -48,9 +49,13 @@ HEARTBEAT_NAME = "market_stream"
 SESSION_OPEN_ET = calendar.SESSION_OPEN_ET
 SESSION_CLOSE_ET = calendar.SESSION_CLOSE_ET
 
-FLUSH_SECONDS = 60
-HEARTBEAT_SECONDS = 60
+FLUSH_SECONDS = 10
+HEARTBEAT_SECONDS = 15
 RESOLVE_SECONDS = 300
+# a symbol still missing from the server's ack this long after a subscription
+# change was rejected, not merely in flight
+REJECTED_AFTER_S = 30
+STREAM_ERRORS_KEPT = 5
 # alpaca-py rides out transient drops inside run() and resubscribes itself, so
 # the supervisor below never sees them; a tape that goes quiet this long during
 # a session is the only signal that a silent reconnect ate some minutes
@@ -112,6 +117,10 @@ class StreamConsumer:
         self._next_resolve = 0.0
         self._last_bar_at = self._clock()
         self._known_empty: dict[str, set[pd.Timestamp]] = {}
+        self._cap_effective = MAX_STREAM_SYMBOLS
+        self._dropped: list[str] = []
+        self._symbols_at = self._clock()
+        self._stream_errors: list[dict] = []
 
     def _period_bounds(self) -> tuple[pd.Timestamp, pd.Timestamp]:
         """The session window of the day being written — anchored on
@@ -124,13 +133,14 @@ class StreamConsumer:
     def resolve_symbols(self) -> list[str]:
         """Priority-ordered subscription set, truncated to the IEX
         per-connection cap — never silently."""
-        ordered, dropped = resolve_stream_symbols(self._registry,
-                                                  cap=MAX_STREAM_SYMBOLS)
-        if dropped:
+        cap = min(MAX_STREAM_SYMBOLS, self._cap_effective)
+        ordered, dropped = resolve_stream_symbols(self._registry, cap=cap,
+                                                  now=self._clock())
+        if dropped and dropped != self._dropped:
             logger.warning(
                 "subscription set of %d exceeds the %d-symbol IEX cap — dropping %s",
-                len(ordered) + len(dropped), MAX_STREAM_SYMBOLS,
-                ",".join(dropped))
+                len(ordered) + len(dropped), cap, ",".join(dropped))
+        self._dropped = dropped
         return ordered
 
     def refresh_subscriptions(self) -> tuple[list[str], list[str]]:
@@ -147,6 +157,7 @@ class StreamConsumer:
         self.flush()
         with self._lock:
             self._symbols = wanted
+            self._symbols_at = self._clock()
             for symbol in removed:
                 self._buf.pop(symbol, None)
                 self._dirty.discard(symbol)
@@ -162,12 +173,38 @@ class StreamConsumer:
                     ",".join(added) or "-", ",".join(removed) or "-", len(wanted))
         return added, removed
 
+    def handle_stream_errors(self) -> None:
+        """Act on the error frames the source collected. A 405 (symbol limit
+        exceeded) lowers the effective cap — to the acknowledged count when the
+        server kept part of the set, else by one — and resends the whole set,
+        since the server may have dropped every subscription. Runs on the tick
+        thread: resubscribing from inside the stream's event loop would
+        deadlock."""
+        errors = self._source.drain_errors()
+        if not errors:
+            return
+        self._stream_errors = (self._stream_errors + errors)[-STREAM_ERRORS_KEPT:]
+        if not any(e.get("code") == 405 for e in errors):
+            for e in errors:
+                logger.warning("stream error %s: %s", e.get("code"), e.get("msg"))
+            return
+        confirmed = self._source.confirmed_symbols()
+        n = len(self._symbols)
+        new = (len(confirmed) if confirmed is not None and 0 < len(confirmed) < n
+               else max(1, n - 1))
+        self._cap_effective = min(self._cap_effective, new)
+        logger.error("stream rejected the subscription (405): %d requested, %s "
+                     "acknowledged — lowering the cap to %d", n,
+                     "none" if confirmed is None else len(confirmed), self._cap_effective)
+        self.refresh_subscriptions()
+        self._source.resubscribe()
+
     # --- buffer ------------------------------------------------------------
 
     def reload_buffers(self, now=None, symbols=None) -> int:
         """Load the day's already-stored bars back into the buffer.
 
-        The minute flush rewrites the whole day file, so a writer that started
+        Every flush rewrites the whole day file, so a writer that started
         from an empty buffer would overwrite a full session with the handful of
         bars seen since it started (复核 Grok [90]). Called for the whole set at
         startup and for the added symbols on every subscription change."""
@@ -338,6 +375,12 @@ class StreamConsumer:
                       and open_ts <= _ts(now) < close_ts)
         with self._lock:
             buffered = sum(len(v) for v in self._buf.values())
+        source = self._source
+        confirmed = source.confirmed_symbols() if source is not None else None
+        rejected = []
+        if (confirmed is not None
+                and (_ts(now) - _ts(self._symbols_at)).total_seconds() >= REJECTED_AFTER_S):
+            rejected = sorted(set(self._symbols) - set(confirmed))
         try:
             self._registry.beat(HEARTBEAT_NAME, {
                 "symbols": len(self._symbols),
@@ -345,6 +388,11 @@ class StreamConsumer:
                 "period_key": self._period_key,
                 "in_session": bool(in_session),
                 "connected": self._source is not None,
+                "subscribed": confirmed,
+                "dropped": list(self._dropped),
+                "rejected": rejected,
+                "cap_effective": self._cap_effective,
+                "stream_errors": list(self._stream_errors),
             })
         except Exception:
             logger.warning("heartbeat write failed", exc_info=True)
@@ -355,6 +403,8 @@ class StreamConsumer:
         now = now or self._clock()
         elapsed = _ts(now).timestamp()
         self.roll_date(now)
+        if self._source is not None:
+            self.handle_stream_errors()
         if elapsed >= self._next_flush:
             self._next_flush = elapsed + FLUSH_SECONDS
             self.flush(now)
@@ -420,6 +470,7 @@ class StreamConsumer:
             raise RuntimeError("subscription set is empty — nothing to stream")
         source.subscribe(symbols)  # a reconnect resubscribes the FULL set
         self._symbols = symbols
+        self._symbols_at = self._clock()
         self._source = source
         logger.info("subscribing %d symbols: %s", len(symbols), ",".join(symbols))
         self.reload_buffers()

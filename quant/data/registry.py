@@ -5,10 +5,10 @@ Shape mirrors the retired ``manifest.py`` one-to-one for the file registry
 (``get_row / upsert / delete``), plus ``max_last_ts`` — the incremental-fetch
 high-water mark, now derived from the registry instead of stored separately —
 ``stream_symbols`` for the runtime realtime-subscription set, and the handful
-of read-only lookups the stream consumer needs from the ledger (the 对照账户,
-its open positions, its owner's watchlist) plus the ``heartbeats`` upsert the
-watchdog reads — raw SQL here rather than ``app.*`` ORM, which ``quant/`` must
-never import.
+of read-only lookups the stream consumer needs from the ledger (the managed
+strategy groups, their open positions, their owners' watchlists, the 1m watch
+rows) plus the ``heartbeats`` upsert the watchdog reads — raw SQL here rather
+than ``app.*`` ORM, which ``quant/`` must never import.
 
 Raw psycopg 3 on purpose: ``quant/`` stays framework-free (no SQLAlchemy). The
 driver is imported lazily inside the calls and NO connection is opened at
@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 from dotenv import dotenv_values
 
@@ -64,9 +65,31 @@ class StreamSymbol:
 
 
 @dataclass(frozen=True)
-class SystemAccount:
+class ManagedGroup:
+    group_id: Any
+    name: str
+    timeframe: str
+    status: str
     account_id: Any
     user_id: Any
+    created_at: datetime | None
+
+
+@dataclass(frozen=True)
+class WatchRow:
+    group_id: Any
+    group_name: str
+    symbol: str
+    rank: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class WatchEntry:
+    symbol: str
+    tier: str
+    groups: tuple[str, ...]
+    reason: str
 
 
 def _utc(dt: datetime | None) -> datetime | None:
@@ -268,16 +291,47 @@ def stream_symbols() -> list[StreamSymbol]:
     return [StreamSymbol(symbol=r[0], priority=r[1], note=r[2]) for r in rows]
 
 
-def system_account() -> SystemAccount | None:
-    """The 对照账户, by the same stable identity rule as
-    ``SimLedgerService.system_account``: the oldest ``is_system`` row wins."""
-    r = _run(
-        "SELECT id, user_id FROM sim_accounts WHERE is_system IS TRUE "
-        "ORDER BY created_at ASC LIMIT 1",
+def managed_groups() -> list[ManagedGroup]:
+    rows = _run(
+        "SELECT g.id, g.name, g.timeframe, g.status, a.id, a.user_id, g.created_at "
+        "FROM strategy_groups g JOIN sim_accounts a ON a.id = g.sim_account_id "
+        "WHERE g.status IN ('active', 'paused') ORDER BY g.created_at, g.id",
         (),
-        fetch="one",
+        fetch="all",
     )
-    return SystemAccount(account_id=r[0], user_id=r[1]) if r else None
+    return [ManagedGroup(group_id=r[0], name=r[1], timeframe=r[2], status=r[3],
+                         account_id=r[4], user_id=r[5], created_at=_utc(r[6]))
+            for r in rows]
+
+
+def intraday_watch_rows(session: date) -> list[WatchRow]:
+    """The active 1m groups' shortlist rows for one session. Empty while the
+    ``intraday_watch`` table does not exist yet — checked on every call, never
+    cached, so rows are picked up as soon as the migration lands."""
+    if _run("SELECT to_regclass('public.intraday_watch')", (), fetch="one")[0] is None:
+        return []
+    rows = _run(
+        "SELECT w.group_id, g.name, w.symbol, w.rank, w.reason FROM intraday_watch w "
+        "JOIN strategy_groups g ON g.id = w.group_id "
+        "WHERE w.session_date = %s AND g.status = 'active' AND g.timeframe = '1m' "
+        "ORDER BY g.created_at, g.id, w.rank",
+        (session,),
+        fetch="all",
+    )
+    return [WatchRow(group_id=r[0], group_name=r[1], symbol=str(r[2]).upper(),
+                     rank=r[3], reason=r[4]) for r in rows]
+
+
+def watch_session(now=None) -> date:
+    """The session the stream is watching: today until its extended close,
+    then the next trading day."""
+    from quant.data import calendar
+
+    now = _utc(now) if now is not None else datetime.now(timezone.utc)
+    day = now.astimezone(ZoneInfo("America/New_York")).date()
+    if calendar.is_trading_day(day) and now < calendar.session_bounds(day)[1]:
+        return day
+    return calendar.next_session(day)
 
 
 def open_position_symbols(account_id) -> list[str]:
@@ -301,35 +355,77 @@ def watchlist_symbols(user_id) -> list[str]:
     return [str(r[0]).upper() for r in rows]
 
 
-def resolve_stream_symbols(
-    source, *, cap: int | None = None, extra: Iterable[str] = (),
-) -> tuple[list[str], list[str]]:
-    """The subscription set every 1min path resolves the same way: the 对照账户's
-    open positions, then the enabled ``market_stream_symbols`` rows, then its
-    owner's stock watchlist, then ``extra`` (the EOD correction adds the day's
-    already-stored files). Deduped, uppercased, first occurrence wins.
+def resolve_watch(
+    source, *, session: date | None = None, now=None, cap: int | None = None,
+    extra: Iterable[str] = (),
+) -> tuple[list[WatchEntry], list[WatchEntry]]:
+    """The subscription set every 1min path resolves the same way, tier by tier:
+    the 1m groups' open positions, their shortlists for ``session`` (round-robin
+    across groups), the other groups' open positions, the enabled
+    ``market_stream_symbols`` rows, the group owners' stock watchlists, then
+    ``extra`` (the EOD correction adds the day's already-stored files).
+    Deduped and uppercased: the first occurrence sets tier and reason, every
+    occurrence adds its group.
 
     ``source`` is the registry to read from — this module in production, a fake
     in tests. Returns ``(kept, dropped)``; ``cap`` truncates and names what fell
     off so the caller can log it. REST callers pass no cap: the 30-symbol limit
     is counted per WebSocket connection, not per request.
     """
-    held: list[str] = []
-    watch: list[str] = []
-    account = source.system_account()
-    if account is not None:
-        held = source.open_position_symbols(account.account_id)
-        watch = source.watchlist_symbols(account.user_id)
-    configured = [row.symbol for row in source.stream_symbols()]
+    groups = source.managed_groups()
+    session = session or watch_session(now)
+    held_1m: list[tuple[str, str]] = []
+    held_1d: list[tuple[str, str]] = []
+    owners: list = []
+    for g in groups:
+        held = held_1m if g.timeframe == "1m" else held_1d
+        held.extend((s, g.name) for s in source.open_position_symbols(g.account_id))
+        if g.user_id not in owners:
+            owners.append(g.user_id)
 
-    ordered: list[str] = []
-    for symbol in (*held, *configured, *watch, *extra):
+    queues: dict[str, list] = {}
+    for row in source.intraday_watch_rows(session):
+        queues.setdefault(row.group_name, []).append(row)
+    shortlist = []
+    for i in range(max((len(q) for q in queues.values()), default=0)):
+        shortlist.extend(q[i] for q in queues.values() if i < len(q))
+
+    seq: list[tuple[str, str, str | None, str]] = []
+    seq += [(s, "held_1m", name, "open position") for s, name in held_1m]
+    seq += [(r.symbol, "shortlist_1m", r.group_name, r.reason) for r in shortlist]
+    seq += [(s, "held_1d", name, "open position") for s, name in held_1d]
+    seq += [(row.symbol, "configured", None,
+             f"market_stream_symbols priority {row.priority}")
+            for row in source.stream_symbols()]
+    for user_id in owners:
+        seq += [(s, "watchlist", None, "owner watchlist")
+                for s in source.watchlist_symbols(user_id)]
+    seq += [(s, "extra", None, "stored file") for s in extra]
+
+    order: list[str] = []
+    first: dict[str, tuple[str, str]] = {}
+    seen_groups: dict[str, list[str]] = {}
+    for symbol, tier, group, reason in seq:
         symbol = symbol.upper()
-        if symbol not in ordered:
-            ordered.append(symbol)
-    if cap is not None and len(ordered) > cap:
-        return ordered[:cap], ordered[cap:]
-    return ordered, []
+        if symbol not in first:
+            order.append(symbol)
+            first[symbol] = (tier, reason)
+            seen_groups[symbol] = []
+        if group is not None and group not in seen_groups[symbol]:
+            seen_groups[symbol].append(group)
+    entries = [WatchEntry(symbol=s, tier=first[s][0], groups=tuple(seen_groups[s]),
+                          reason=first[s][1]) for s in order]
+    if cap is not None and len(entries) > cap:
+        return entries[:cap], entries[cap:]
+    return entries, []
+
+
+def resolve_stream_symbols(
+    source, *, cap: int | None = None, extra: Iterable[str] = (), now=None,
+) -> tuple[list[str], list[str]]:
+    """``resolve_watch`` as two symbol lists ``(kept, dropped)``."""
+    kept, dropped = resolve_watch(source, now=now, cap=cap, extra=extra)
+    return [e.symbol for e in kept], [e.symbol for e in dropped]
 
 
 def beat(name: str, meta: dict | None = None) -> None:
