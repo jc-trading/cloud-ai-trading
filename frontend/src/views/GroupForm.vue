@@ -38,7 +38,7 @@
             <div class="jd-form-group">
               <label class="jd-label" for="group-strategy">Strategy</label>
               <select v-if="mode === 'create'" id="group-strategy" v-model="strategyKey" class="jd-input jd-select"
-                      @change="resetParams">
+                      @change="onStrategyChange">
                 <option v-for="s in registry.strategies" :key="s.key" :value="s.key">{{ s.key }}</option>
               </select>
               <input v-else id="group-strategy" class="jd-input jd-mono" :value="source.strategy_key" readonly />
@@ -81,6 +81,7 @@
       <section class="jd-card">
         <div class="jd-card-header"><h2 class="jd-card-title">Params</h2></div>
         <div class="jd-card-body">
+          <div v-if="timeframe === '1m'" class="jd-alert info"><i class="pi pi-info-circle"></i> Watch budget: active 1m groups already watch {{ budgetUsed ?? '?' }} symbols; this group adds {{ watchMax }} when active. Over the limit (stream cap − reserved slots) the server answers 409 "watch budget exceeded: total &gt; limit". Paused groups use no budget.</div>
           <ParamsForm
             v-if="strategy"
             v-model="params"
@@ -114,6 +115,7 @@
           <TradeSettingsForm
             v-model="trade"
             :registry="registry.trade_settings"
+            :timeframe="timeframe"
             :calibration-runs="calibrationRuns"
             :picker-available="mode === 'clone'"
             :errors="fieldErrors"
@@ -138,12 +140,13 @@ import { useRouter } from 'vue-router'
 import ParamsForm from '@/components/groups/ParamsForm.vue'
 import ScreenerBuilder from '@/components/groups/ScreenerBuilder.vue'
 import TradeSettingsForm, { toTradeSettingsJson } from '@/components/groups/TradeSettingsForm.vue'
-import { getRegistry, getStrategyGroup, createGroup, cloneGroup } from '@/api/strategyGroups'
+import { getRegistry, getStrategyGroup, createGroup, cloneGroup, listStrategyGroups } from '@/api/strategyGroups'
 import { listBacktests, getBacktest } from '@/api/backtests'
 import { useAuthStore } from '@/stores/auth'
 import { useStrategyGroupsStore } from '@/stores/strategyGroups'
 import { useToast } from '@/composables/useToast'
 import { detailOf, fieldErrorsOf } from '@/composables/useApiError'
+import { blankTrade1m, toTradeSettingsJson1m, watchBudgetUsed } from '@/composables/useIntraday'
 
 const props = defineProps({
   mode: { type: String, default: 'create' },
@@ -175,9 +178,11 @@ const TRADE_KEYS = ['entry_limit_offset_pct', 'take_profit_pct', 'max_hold_days'
 const trade = ref({})
 const tradeTouched = ref(false)
 const calibrationRuns = ref([])
+const budgetUsed = ref(null)
 
 const strategy = computed(() =>
   registry.value?.strategies.find((s) => s.key === strategyKey.value) || null)
+const timeframe = computed(() => strategy.value?.timeframe || '1d')
 
 const schemaDefaults = (schema) => Object.fromEntries(Object.entries(schema).map(
   ([section, fields]) => [section, Object.fromEntries(
@@ -187,11 +192,38 @@ const paramsBase = computed(() => {
   if (props.mode === 'clone') return source.value?.params_json || {}
   return strategy.value ? schemaDefaults(strategy.value.params_schema) : {}
 })
+const watchMax = computed(() => {
+  const v = params.value?.rank?.watch_max
+  return v === '' || v == null ? paramsBase.value?.rank?.watch_max : v
+})
 
 function resetParams() {
   const schema = strategy.value?.params_schema || {}
   params.value = Object.fromEntries(Object.entries(schema).map(
     ([section, fields]) => [section, Object.fromEntries(Object.keys(fields).map((f) => [f, '']))]))
+}
+
+function resetTrade() {
+  trade.value = timeframe.value === '1m'
+    ? blankTrade1m(registry.value.trade_settings.keys_1m)
+    : Object.fromEntries(TRADE_KEYS.map((k) => [k, k === 'holding_style' ? 'swing' : '']))
+}
+
+function onStrategyChange() {
+  resetParams()
+  resetTrade()
+  tradeTouched.value = false
+}
+
+async function loadBudget() {
+  try {
+    const { data } = await listStrategyGroups('active')
+    const ids = data.filter((g) => g.timeframe === '1m').map((g) => g.id)
+    const details = await Promise.all(ids.map((id) => getStrategyGroup(id).then((r) => r.data)))
+    budgetUsed.value = watchBudgetUsed(details)
+  } catch {
+    budgetUsed.value = null
+  }
 }
 
 async function load() {
@@ -219,15 +251,18 @@ async function load() {
       params.value = JSON.parse(JSON.stringify(source.value.params_json))
       screener.value = JSON.parse(JSON.stringify(source.value.screener_json))
       const ts = source.value.trade_settings_json || {}
-      trade.value = Object.fromEntries(TRADE_KEYS.map((k) => [k, ts[k] ?? (k === 'holding_style' ? 'swing' : '')]))
+      trade.value = timeframe.value === '1m'
+        ? Object.fromEntries(Object.keys(blankTrade1m(registry.value.trade_settings.keys_1m)).map((k) => [k, ts[k] ?? '']))
+        : Object.fromEntries(TRADE_KEYS.map((k) => [k, ts[k] ?? (k === 'holding_style' ? 'swing' : '')]))
       loadCalibrationRuns(props.sourceId, ts.calibration_run_id || '')
     } else {
       strategyKey.value = registry.value.strategies[0]?.key || ''
       startingCapital.value = 2000
       resetParams()
       screener.value = JSON.parse(JSON.stringify(registry.value.screener.default))
-      trade.value = Object.fromEntries(TRADE_KEYS.map((k) => [k, k === 'holding_style' ? 'swing' : '']))
+      resetTrade()
     }
+    loadBudget()
   } catch (e) {
     loadError.value = detailOf(e, props.mode === 'clone' ? 'Could not load the source group.' : 'Could not load the registry.')
   } finally {
@@ -272,6 +307,7 @@ function resolveGroupField(piece) {
     if (piece.startsWith(key)) return key
   }
   if (piece.startsWith('params_json') || piece.startsWith('unknown strategy_key')) return 'params'
+  if (piece.startsWith('watch budget')) return 'params.rank.watch_max'
   return null
 }
 
@@ -296,7 +332,9 @@ function buildBody() {
       name: name.value,
       params_json: Object.keys(override).length ? override : null,
       screener_json: screenerTouched.value ? screener.value : null,
-      trade_settings_json: tradeTouched.value ? toTradeSettingsJson(trade.value) : null,
+      trade_settings_json: tradeTouched.value
+        ? (timeframe.value === '1m' ? toTradeSettingsJson1m(trade.value) : toTradeSettingsJson(trade.value))
+        : null,
       notes: notes.value || null,
       starting_capital: startingCapital.value === '' ? null : startingCapital.value,
       status: status.value,
@@ -308,7 +346,7 @@ function buildBody() {
     strategy_key: strategyKey.value,
     params_json: paramsOverride(false),
     screener_json: screener.value,
-    trade_settings_json: toTradeSettingsJson(trade.value),
+    trade_settings_json: timeframe.value === '1m' ? toTradeSettingsJson1m(trade.value) : toTradeSettingsJson(trade.value),
     notes: notes.value || null,
     starting_capital: Number(startingCapital.value),
     status: status.value,

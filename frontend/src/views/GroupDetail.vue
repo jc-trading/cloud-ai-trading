@@ -56,7 +56,7 @@
             </div>
             <div>
               <div class="jd-h2">trade_settings_json</div>
-              <p v-if="isEmpty(group.trade_settings_json)" class="d-nodata">v1 defaults (swing; no limit / take-profit / max hold)</p>
+              <p v-if="isEmpty(group.trade_settings_json)" class="d-nodata">{{ group.timeframe === '1m' ? '1m defaults (scalping, RTH only)' : 'v1 defaults (swing; no limit / take-profit / max hold)' }}</p>
               <pre v-else class="jd-mono">{{ JSON.stringify(group.trade_settings_json, null, 2) }}</pre>
             </div>
           </div>
@@ -110,7 +110,7 @@
         </div>
       </section>
 
-      <GroupBacktests :group-id="id" :is-admin="auth.isAdmin" />
+      <GroupBacktests :group-id="id" :is-admin="auth.isAdmin" :timeframe="group.timeframe" />
 
       <section v-if="!isEmpty(group.screener_json)" class="jd-card">
         <div class="jd-card-header flex-header">
@@ -286,7 +286,9 @@ const confirm = reactive({ status: null, title: '', text: '' })
 function askStatus(status) {
   const name = group.value.name
   const copy = {
-    active: ['Activate', `Activate ${name}? From the next signal cycle it publishes recommendations and books entries on its own account.`],
+    active: ['Activate', group.value.timeframe === '1m'
+      ? `Activate ${name}? It takes ${group.value.params_json?.rank?.watch_max} of the watch budget's symbols. The nightly task builds its shortlist, the stream subscribes it, and the intraday engine trades it during RTH.`
+      : `Activate ${name}? From the next signal cycle it publishes recommendations and books entries on its own account.`],
     paused: ['Pause', `Pause ${name}? It stops publishing recommendations and booking entries. Its open lots keep their stops and exits.`],
     archived: ['Archive', `Archive ${name}? This is final. It needs a flat book and must be outside market hours (RTH + 10 min).`],
   }[status]

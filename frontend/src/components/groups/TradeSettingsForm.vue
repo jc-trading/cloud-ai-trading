@@ -1,6 +1,7 @@
 <template>
   <p v-if="registry?.available !== true" class="d-nodata">Trade settings need the P3c backend.</p>
   <fieldset v-else class="trade" :disabled="disabled" @input="emit('touched')" @change="emit('touched')">
+    <template v-if="timeframe !== '1m'">
     <div class="trade-grid">
       <div>
         <label class="jd-label" for="trade-limit">Entry limit offset</label>
@@ -40,6 +41,27 @@
         <p v-if="errors['trade.holding_style']" class="field-error">{{ errors['trade.holding_style'] }}</p>
       </div>
     </div>
+    </template>
+    <template v-else>
+      <div class="trade-grid">
+        <div v-for="[k, spec] in numeric1m" :key="k">
+          <label class="jd-label" :for="`trade-${k}`">{{ k }}</label>
+          <input :id="`trade-${k}`" v-model.number="local[k]" class="jd-input jd-mono" type="number"
+                 :step="spec.type === 'int' ? 1 : 'any'" :min="spec.min ?? spec.gt" :max="spec.max"
+                 :placeholder="spec.default == null ? '' : String(spec.default)" />
+          <div class="jd-src hint">{{ boundsText(spec) }}<template v-if="spec.excludes"> · not with {{ spec.excludes }}</template></div>
+          <p v-if="errors['trade.' + k]" class="field-error">{{ errors['trade.' + k] }}</p>
+        </div>
+        <div>
+          <div class="jd-label">Holding style · session</div>
+          <div class="radios">
+            <label class="off"><input type="radio" checked disabled /> scalping</label>
+            <label class="off"><input type="radio" checked disabled /> rth</label>
+          </div>
+          <div class="jd-src hint">1m groups: scalping only, regular hours only</div>
+        </div>
+      </div>
+    </template>
 
     <div class="trade-grid">
       <div>
@@ -93,10 +115,14 @@ const props = defineProps({
   pickerAvailable: { type: Boolean, default: false },
   errors: { type: Object, default: () => ({}) },
   disabled: { type: Boolean, default: false },
+  timeframe: { type: String, default: '1d' },
 })
 const emit = defineEmits(['update:modelValue', 'touched'])
 
 const keys = computed(() => props.registry?.keys || {})
+const numeric1m = computed(() => Object.entries(props.registry?.keys_1m || {})
+  .filter(([k, s]) => (s.type === 'int' || s.type === 'float') && k !== 'entry_prob_min'))
+const boundsText = (s) => (s.gt != null ? `(${s.gt}, ${s.max}]` : `[${s.min}, ${s.max}]`)
 const clone = (m) => JSON.parse(JSON.stringify(m))
 
 const local = ref(clone(props.modelValue))

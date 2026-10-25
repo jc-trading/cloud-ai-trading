@@ -70,6 +70,7 @@ const routes = [
       { path: 'compare', name: 'Compare', component: () => import('@/views/Compare.vue') },
       { path: 'news', name: 'News', component: () => import('@/views/News.vue') },
       { path: 'news/sources', name: 'NewsSources', component: () => import('@/views/NewsSources.vue') },
+      { path: 'intraday', name: 'IntradayWatch', component: () => import('@/views/IntradayWatch.vue') },
       {
         // Catch-all for deleted/unknown routes (/portfolio, /trading, ...):
         // lowest match score, so it only fires when nothing above matched.

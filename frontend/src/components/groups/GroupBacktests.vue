@@ -23,6 +23,7 @@
           <div>
             <label class="jd-label" for="bt-start">Start</label>
             <input id="bt-start" v-model="form.start" class="jd-input jd-mono" type="date" />
+            <div v-if="timeframe === '1m'" class="jd-src" style="margin-top:3px">1m: inside the 1min backfill horizon</div>
             <p v-if="fieldErrors.start" class="field-error">{{ fieldErrors.start }}</p>
           </div>
           <div>
@@ -31,7 +32,7 @@
             <div class="jd-src" style="margin-top:3px">≤ last closed session</div>
             <p v-if="fieldErrors.end" class="field-error">{{ fieldErrors.end }}</p>
           </div>
-          <template v-if="form.kind === 'walk_forward'">
+          <template v-if="form.kind === 'walk_forward' && timeframe !== '1m'">
             <div>
               <label class="jd-label" for="bt-is">IS years</label>
               <input id="bt-is" v-model.number="form.is_years" class="jd-input jd-mono" type="number" step="1" min="1" max="5" />
@@ -43,6 +44,20 @@
               <input id="bt-oos" v-model.number="form.oos_years" class="jd-input jd-mono" type="number" step="1" min="1" max="2" />
               <div class="jd-src" style="margin-top:3px">[1, 2]</div>
               <p v-if="fieldErrors.oos_years" class="field-error">{{ fieldErrors.oos_years }}</p>
+            </div>
+          </template>
+          <template v-if="form.kind === 'walk_forward' && timeframe === '1m'">
+            <div>
+              <label class="jd-label" for="bt-is-sessions">IS sessions</label>
+              <input id="bt-is-sessions" v-model.number="form.is_sessions" class="jd-input jd-mono" type="number" step="1" min="20" max="250" />
+              <div class="jd-src" style="margin-top:3px">[20, 250]</div>
+              <p v-if="fieldErrors.is_sessions" class="field-error">{{ fieldErrors.is_sessions }}</p>
+            </div>
+            <div>
+              <label class="jd-label" for="bt-oos-sessions">OOS sessions</label>
+              <input id="bt-oos-sessions" v-model.number="form.oos_sessions" class="jd-input jd-mono" type="number" step="1" min="10" max="120" />
+              <div class="jd-src" style="margin-top:3px">[10, 120]</div>
+              <p v-if="fieldErrors.oos_sessions" class="field-error">{{ fieldErrors.oos_sessions }}</p>
             </div>
           </template>
           <div class="run-submit">
@@ -104,10 +119,12 @@ import DataTable from '@/components/common/DataTable.vue'
 import Modal from '@/components/common/Modal.vue'
 import { listBacktests, createBacktest } from '@/api/backtests'
 import { detailOf, fieldErrorsOf } from '@/composables/useApiError'
+import { backtestBody, backtestFieldOf } from '@/composables/useIntraday'
 
 const props = defineProps({
   groupId: { type: String, required: true },
   isAdmin: { type: Boolean, default: false },
+  timeframe: { type: String, default: '1d' },
 })
 
 const router = useRouter()
@@ -115,7 +132,7 @@ const router = useRouter()
 const runs = ref([])
 const loading = ref(false)
 const error = ref(null)
-const form = reactive({ kind: 'single', start: '2016-01-01', end: '', is_years: 3, oos_years: 1 })
+const form = reactive({ kind: 'single', start: props.timeframe === '1m' ? '' : '2016-01-01', end: '', is_years: 3, oos_years: 1, is_sessions: 60, oos_sessions: 20 })
 const showConfirm = ref(false)
 const queueing = ref(false)
 const formError = ref(null)
@@ -162,8 +179,7 @@ function ask() {
 async function queue() {
   if (queueing.value) return
   queueing.value = true
-  const body = { group_id: props.groupId, kind: form.kind, start: form.start, end: form.end }
-  if (form.kind === 'walk_forward') Object.assign(body, { is_years: form.is_years, oos_years: form.oos_years })
+  const body = backtestBody(form, props.timeframe, props.groupId)
   try {
     const { data } = await createBacktest(body)
     showConfirm.value = false
@@ -171,7 +187,7 @@ async function queue() {
   } catch (e) {
     showConfirm.value = false
     formError.value = detailOf(e, 'Could not queue the backtest')
-    fieldErrors.value = fieldErrorsOf(e, (piece) => piece.match(/^(kind|start|end|is_years|oos_years|grid)/)?.[1] || null)
+    fieldErrors.value = fieldErrorsOf(e, backtestFieldOf)
   } finally {
     queueing.value = false
   }

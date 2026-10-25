@@ -30,6 +30,7 @@
           <div class="jd-nav-label">Strategy Lab</div>
           <SidebarItem to="/groups" icon="pi-sitemap" label="Groups" :isActive="route.path.startsWith('/groups') || route.path.startsWith('/backtests')" />
           <SidebarItem to="/compare" icon="pi-chart-line" label="Compare" :isActive="route.path === '/compare'" />
+          <SidebarItem v-if="authStore.isAdmin" to="/intraday" icon="pi-stopwatch" label="Intraday" :isActive="route.path === '/intraday'" />
         </div>
 
         <div class="jd-nav-section">
@@ -198,6 +199,7 @@ const pageTitles = {
   'GroupDetail': 'Strategy Group',
   'BacktestDetail': 'Backtest',
   'Compare': 'Compare',
+  'IntradayWatch': 'Intraday Watch',
   'News': 'News',
   'NewsSources': 'News Sources',
 }
@@ -217,6 +219,7 @@ const pageDescriptions = {
   'GroupDetail': 'Config, account, cycles and backtests',
   'BacktestDetail': 'Run progress, metrics, windows and calibration',
   'Compare': 'Live accounts and backtests side by side',
+  'IntradayWatch': 'Realtime 1min subscription set and stream health',
   'News': 'Extracted news claims and the review queue',
   'NewsSources': 'Source scores and enable / disable',
 }
