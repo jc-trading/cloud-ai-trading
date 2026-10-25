@@ -92,6 +92,15 @@ class WatchEntry:
     reason: str
 
 
+@dataclass(frozen=True)
+class IntradayGroupRow:
+    group_id: Any
+    name: str
+    strategy_key: str
+    params: dict
+    screener: dict
+
+
 def _utc(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
@@ -304,6 +313,17 @@ def managed_groups() -> list[ManagedGroup]:
             for r in rows]
 
 
+def active_1m_groups() -> list[IntradayGroupRow]:
+    rows = _run(
+        "SELECT id, name, strategy_key, params_json, screener_json FROM strategy_groups "
+        "WHERE status = 'active' AND timeframe = '1m' ORDER BY created_at, id",
+        (),
+        fetch="all",
+    )
+    return [IntradayGroupRow(group_id=r[0], name=r[1], strategy_key=r[2], params=r[3],
+                             screener=r[4]) for r in rows]
+
+
 def intraday_watch_rows(session: date) -> list[WatchRow]:
     """The active 1m groups' shortlist rows for one session. Empty while the
     ``intraday_watch`` table does not exist yet — checked on every call, never
@@ -320,6 +340,26 @@ def intraday_watch_rows(session: date) -> list[WatchRow]:
     )
     return [WatchRow(group_id=r[0], group_name=r[1], symbol=str(r[2]).upper(),
                      rank=r[3], reason=r[4]) for r in rows]
+
+
+def replace_watch_rows(session: date, group_id, rows: list[tuple]) -> int:
+    """Replace one group's watch rows for ``session`` with ``rows`` of
+    ``(symbol, rank, score, reason)`` in a single transaction, so a reader never
+    sees the old and new lists mixed. Not retried: a dropped connection mid-way
+    rolls back and the next nightly slot rebuilds."""
+    global _conn
+    if _conn is None or _conn.closed:
+        _conn = _connect()
+    with _conn.transaction():
+        with _conn.cursor() as cur:
+            cur.execute("DELETE FROM intraday_watch WHERE session_date = %s AND group_id = %s",
+                        (session, group_id))
+            cur.executemany(
+                "INSERT INTO intraday_watch (id, session_date, group_id, symbol, rank, score, "
+                "reason, created_at) VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s, now())",
+                [(session, group_id, symbol, rank, score, reason)
+                 for symbol, rank, score, reason in rows])
+    return len(rows)
 
 
 def watch_session(now=None) -> date:

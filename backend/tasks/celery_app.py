@@ -29,6 +29,7 @@ celery_app = Celery(
         "app.tasks.telegram_tasks",
         "app.tasks.news_tasks",
         "app.tasks.research_tasks",
+        "app.tasks.intraday_tasks",
     ],
 )
 
@@ -53,7 +54,8 @@ celery_app.conf.update(
     task_routes={"market.universe_sync": {"queue": "bulk"},
                  "news.cycle": {"queue": "news"},
                  "news.evaluate": {"queue": "news"},
-                 "research.dispatch": {"queue": "research"}},
+                 "research.dispatch": {"queue": "research"},
+                 "intraday.nightly": {"queue": "bulk"}},
 )
 
 # NOTE: no autodiscover_tasks() — every task module is registered explicitly via
@@ -138,6 +140,8 @@ celery_app.conf.beat_schedule.update({
     },
     "news-evaluate": {"task": "news.evaluate", "schedule": crontab(minute=40, hour=3),
                       "options": {"expires": 3300}},
+    # P5b: each slot picks its session from the calendar; a session already done returns at once
+    "intraday-nightly": {"task": "intraday.nightly", "schedule": crontab(minute="5,35", hour="2-13"), "options": {"expires": 1500}},
     "research-dispatch": {"task": "research.dispatch", "schedule": 60.0, "options": {"expires": 55}},
 })
 

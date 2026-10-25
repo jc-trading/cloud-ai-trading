@@ -304,6 +304,52 @@ async def _check_stream_rejected() -> None:
         _last_alert_at.pop("stream rejected symbols", None)
 
 
+INTRADAY_SHORTLIST_LEAD = 3600   # the watch list must be done an hour before the open
+
+
+async def _check_intraday_nightly() -> None:
+    """From an hour before today's open until the close: with any active 1m
+    group, intraday.nightly must have finished today's watch lists — otherwise
+    those groups have nothing to trade or stream."""
+    from app.database import AsyncSessionLocal
+    from app.modules.simledger.models import HeartbeatRecord
+    from app.modules.strategy_groups.models import StrategyGroup
+    from quant.data import calendar as qcal
+
+    check = "intraday shortlist missing"
+    now_utc = datetime.now(timezone.utc)
+    day = now_utc.astimezone(ZoneInfo("America/New_York")).date()
+    if not qcal.is_trading_day(day):
+        _last_alert_at.pop(check, None)
+        return
+    o, c = qcal.rth_bounds(day)
+    if not o.timestamp() - INTRADAY_SHORTLIST_LEAD <= now_utc.timestamp() < c.timestamp():
+        _last_alert_at.pop(check, None)
+        return
+
+    async with AsyncSessionLocal() as db:
+        n = (await db.execute(
+            select(func.count()).select_from(StrategyGroup).where(
+                StrategyGroup.status == "active", StrategyGroup.timeframe == "1m")
+        )).scalar_one()
+        beat = (await db.execute(
+            select(HeartbeatRecord).where(HeartbeatRecord.name == "intraday_nightly")
+        )).scalar_one_or_none()
+    if n == 0:
+        _last_alert_at.pop(check, None)
+        return
+    meta = (beat.meta if beat is not None else None) or {}
+    if meta.get("session") != day.isoformat() or meta.get("done") is not True:
+        await _alert(
+            check,
+            f"{n} active 1m group(s) but intraday.nightly has not finished the watch "
+            f"list for {day} (heartbeat session {meta.get('session')}, done "
+            f"{meta.get('done')}) — check cat_celery_bulk / cat_celery_beat logs",
+        )
+    else:
+        _last_alert_at.pop(check, None)
+
+
 async def _check_sim_stops() -> None:
     """TOP-severity: every open sim lot must carry a usable stop — a lot without
     one has NO exit protection (the internal analog of 'every position has a
@@ -338,6 +384,7 @@ async def run_watchdog() -> None:
         ("quant heartbeats", _check_quant_heartbeats),
         ("market stream", _check_market_stream),
         ("stream rejected", _check_stream_rejected),
+        ("intraday nightly", _check_intraday_nightly),
         ("sim stops", _check_sim_stops),
     )
     while True:
